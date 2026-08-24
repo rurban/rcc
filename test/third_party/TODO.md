@@ -38,6 +38,59 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-24, test_c3 NaN comparison -- missing nan()/nanf()/nanl())
+
+- **rcc's bundled `<math.h>` never declared `nan`/`nanf`/`nanl`** --
+  `include/math.h`. The header is self-contained (no `#include_next`
+  chaining to glibc), and unlike every other libm function it lists, the
+  C99 `nan(const char *)` family had no prototype at all. A call to the
+  undeclared function falls back to an implicit `int nan()` declaration,
+  so rcc read the return value out of `%rax` (integer register) via
+  `cvtsi2sd` instead of `%xmm0` (double register) -- `nan("")` silently
+  returned `0.0` instead of a quiet NaN (confirmed by disassembly: the
+  call was followed by `mov %rax,%r10; cvtsi2sd %r10d,%xmm0`).
+
+  Found via c3lang/c3c (`./testrun unit/stdlib/core/test_test.c3`,
+  `test::std::core::test::test_almost_equal_fails_equal_nan_false`
+  failing "test case expected to fail, but it's not"): c3c's own stdlib
+  builds the `double::nan`/`float::nan` compile-time constants with
+  `nan("")` (`src/compiler/sema_expr.c`, `TYPE_PROPERTY_NAN`). With the
+  bug, `double::nan` was actually `0.0`, so `double::nan == double::nan`
+  evaluated to _true_, corrupting every NaN-aware comparison built on
+  top of it in c3c's own compiled-by-rcc binary (not a codegen bug in
+  c3c's LLVM backend -- `0.0/0.0` computed at c3 runtime already gave the
+  correct NaN bit pattern `0x7ff8000000000000`).
+
+  First fix attempt just added `double nan(const char *)` /
+  `float nanf(const char *)` / `long double nanl(const char *)`
+  prototypes -- correct on Linux (glibc genuinely exports these
+  symbols) but the mingw CI leg caught a second, platform-specific bug
+  immediately: on `x86_64-w64-mingw32`, the classic MSVCRT target rcc
+  links against provides no `nan`/`nanf`/`nanl` symbols at all
+  (`nm libmsvcrt.a` shows both as themselves-undefined references, not
+  definitions) -- a plain prototype linked "successfully" (no
+  undefined-reference error) but resolved to something bogus, and
+  calling it crashed at runtime (`EXEC FAIL`, exit `-1073741819` /
+  `STATUS_ACCESS_VIOLATION`). Fixed properly by routing `nan`/`nanf`/
+  `nanl` through rcc's existing `__builtin_nan`/`__builtin_nanf`/
+  `__builtin_nanl` (already implemented, a real quiet-NaN constant, no
+  libc call needed) as function-like macros -- no libc symbol
+  dependency on any target, matching real mingw-w64's own `<math.h>`
+  (which likewise `#define`s `nan`/`nanf`/`nanl` to the builtins for
+  exactly this reason).
+
+  New regression test: `test/test_nan.c` (merged with the pre-existing
+  `test_nan_sign.c`'s NAN/INFINITY sign checks -- `nan`/`nanf`/`nanl`
+  return a real NaN and never compare equal to themselves; reproduces
+  the bug with the fix reverted -- `nan("") not NaN: 0`). Full local
+  regression matrix re-run clean on both native Linux (Unit 320/320,
+  TCC 118/118, Compliance 15/15, C-testsuite 220/220, Torture
+  3605/3609, Dg-error 34/34, Link 12/12) and the mingw cross target
+  (Unit 318/318, TCC 118/118, Compliance 15/15, C-testsuite 220/220,
+  Torture 3574/3574, Dg-error 34/34) -- 0 failed on either. `test_c3`'s
+  own unit suite (`c3c compile-test unit`) goes from 1365/1366 to
+  1366/1366 passed.
+
 ### Fixed (2026-08-22, sqlite build session -- 3 stacked bugs)
 
 - **`#include_next <limits.h>` from glibc's limits.h failed with a user
@@ -4403,7 +4456,7 @@ CC=$(pwd)/rcc bash test/linux*thirdparty.bash test*<name>
 | test_mruby       | **fixed** — was: assignment-expr-as-lvalue bug + missing `erf`/`erfc` declarations, see "Fixed (2026-08-08, continued — ...)" sections above; `Total: 1686, OK: 1677, KO: 0, Crash: 0` (matches gcc-built mruby exactly)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | test_curl        | **fixed** — was: configure "compiler does not halt on prototype mismatch"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | test_c23doku     | needs arbitrary-precision `_BitInt` codegen (up to 11163 bits) — see "Needs fixing" item 1 below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| test_c3          | CMake: missing LLD_COFF                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| test_c3          | **fixed** — was: `nan()`/`nanf()`/`nanl()` undeclared in rcc's bundled `<math.h>`, so calls fell back to implicit-int and returned garbage instead of NaN (c3c's own `double::nan`/`float::nan` compile-time constants are built via `nan("")`), corrupting NaN comparisons; see "Fixed (2026-08-24, test_c3 NaN comparison -- missing nan()/nanf()/nanl() declarations)" above. `c3c compile-test unit`: 1366/1366 passed (was 1365/1366)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | test_coremarkpro | benchmark runner can't find perf logs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | test_box3d       | C++ binary (g++ compiled, not rcc)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | test_glib        | **investigated, not an rcc bug** — `configure` fails before any compilation: `Package requirements (libpcre >= 8.31) were not met: Package 'libpcre' not found` (missing system dev package in this sandbox, not an rcc issue)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |

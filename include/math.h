@@ -33,6 +33,19 @@ double expm1(double);
 double log1p(double);
 double cbrt(double);
 double hypot(double, double);
+/* nan()/nanf()/nanl() are NOT implemented as real declared functions:
+ * mingw-w64's classic MSVCRT target provides no nan/nanf/nanl DLL
+ * export at all (confirmed via `nm libmsvcrt.a`: both symbols are
+ * themselves undefined references, not definitions) -- a plain
+ * prototype linked and resolved to garbage instead of erroring,
+ * crashing at runtime (SIGSEGV/ACCESS_VIOLATION) the moment nan("")
+ * was called. rcc already implements __builtin_nan/nanf/nanl directly
+ * (a real quiet-NaN constant, no libc call needed at all) -- routing
+ * through the builtin sidesteps the missing-symbol problem on every
+ * target, matching real mingw-w64's own <math.h> (which likewise
+ * `#define`s nan/nanf/nanl to __builtin_nan/nanf/nanl for exactly
+ * this reason). */
+#define nan(tagp) __builtin_nan(tagp)
 double erf(double);
 double erfc(double);
 double copysign(double, double);
@@ -116,6 +129,7 @@ float expm1f(float);
 float log1pf(float);
 float cbrtf(float);
 float hypotf(float, float);
+#define nanf(tagp) __builtin_nanf(tagp)
 float erff(float);
 float erfcf(float);
 float copysignf(float, float);
@@ -168,6 +182,7 @@ long double expm1l(long double);
 long double log1pl(long double);
 long double cbrtl(long double);
 long double hypotl(long double, long double);
+#define nanl(tagp) __builtin_nanl(tagp)
 long double erfl(long double);
 long double erfcl(long double);
 long double copysignl(long double, long double);
