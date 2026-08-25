@@ -942,6 +942,21 @@ static Node *declare_builtin_on_demand(Token *tok) {
         param_tys[0] = ty_double;
         param_tys[1] = ty_double;
         nparams = 2;
+    } else if (equalc(tok, "__builtin_nextafter")) {
+        ret_ty = ty_double;
+        param_tys[0] = ty_double;
+        param_tys[1] = ty_double;
+        nparams = 2;
+    } else if (equalc(tok, "__builtin_nextafterf")) {
+        ret_ty = ty_float;
+        param_tys[0] = ty_float;
+        param_tys[1] = ty_float;
+        nparams = 2;
+    } else if (equalc(tok, "__builtin_nextafterl")) {
+        ret_ty = ty_ldouble;
+        param_tys[0] = ty_ldouble;
+        param_tys[1] = ty_ldouble;
+        nparams = 2;
         // double(double _Complex) group
     } else if (equalc(tok, "__builtin_creal")) {
         ret_ty = ty_double;

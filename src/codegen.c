@@ -2218,6 +2218,12 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             call_target = "cimag";
         else if (!strcmp(call_target, "__builtin_cimagf"))
             call_target = "cimagf";
+        else if (!strcmp(call_target, "__builtin_nextafterf"))
+            call_target = "nextafterf";
+        else if (!strcmp(call_target, "__builtin_nextafter"))
+            call_target = "nextafter";
+        else if (!strcmp(call_target, "__builtin_nextafterl"))
+            call_target = "nextafterl";
     }
 
     // __builtin_ia32_* SIMD intrinsics (SSE/SSE2/SSSE3/SSE4.x): the

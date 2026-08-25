@@ -904,6 +904,18 @@ int main(int argc, char **argv) {
             // promoting the otherwise-tolerated unknown flag into a hard
             // "unrecognized command-line option '-m64'" error.
             ; // no-op
+        } else if (!strcmp(argv[i], "-s")) {
+            // Accepted no-op: real GCC/clang pass "-s" straight to the
+            // linker (strip all symbol table and relocation info from
+            // the output). rcc's own native linker has no strip pass,
+            // but the flag only affects binary size/debuggability, never
+            // program behavior, so silently tolerating it (like -m64
+            // above) is strictly safer than hard-erroring a build that
+            // happens to combine it with -Werror. Found via jerryscript's
+            // CMake build (`-Werror ... -s` on its doc-example link
+            // step): "rcc: error: unrecognized command-line option '-s'"
+            // hard-failed the whole build.
+            ; // no-op
         } else if (!strcmp(argv[i], "-m32") || !strcmp(argv[i], "-mx32") ||
                    !strcmp(argv[i], "-m16")) {
             // Native-only: one binary is one word width/ABI (AGENTS.md).

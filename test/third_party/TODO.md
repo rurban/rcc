@@ -38,6 +38,100 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-25, continued unfixed.txt sweep -- -s driver flag, nextafter family)
+
+- **`rcc -s` (link-time strip, universally accepted by every real GCC/
+  clang/ld) hard-failed under `-Werror`**: `"rcc: error: unrecognized
+command-line option '-s'"` -- `src/main.c`'s generic unknown-flag
+  bucket promotes any non-`-W` flag to a hard error once the caller
+  opted into `-Werror`, and `-s` had no dedicated case. rcc's own
+  native linker has no strip pass, but `-s` only affects binary size/
+  debuggability, never program behavior, so it's accepted as a no-op
+  (matching the existing `-m64` precedent) rather than implemented.
+  Found via jerryscript's CMake build (`-Werror ... -s` on its
+  `unit-doc`/API-reference link steps), which hard-failed the whole
+  build the moment any such target linked.
+
+- **`__builtin_nextafter`/`__builtin_nextafterf`/`__builtin_nextafterl`
+  (real GCC/Clang's builtin spelling, reached via `#if defined(__GNUC__)`
+  gates in real-world code since rcc defines `__GNUC__` for
+  compatibility) had no declaration or codegen dispatch at all**:
+  `"undefined reference to `**builtin_nextafter'"`at link time --`src/parser.c`'s `declare_builtin_on_demand()`never recognized the
+name (so it fell through to an ordinary, wrongly-typed implicit
+external symbol call literally named`**builtin_nextafter`), and
+`src/codegen.c`'s existing `**builtin_pow`/`**builtin_fabs`/etc.
+rename-to-libm table had no entry to redirect it to the real
+`nextafter` symbol. Fixed by adding both.
+
+- **A SEPARATE, more consequential bug in the same area: rcc's bundled
+  `<math.h>` never declared plain `nextafter`/`nextafterf`/`nextafterl`
+  at all** (a real, standard C99/POSIX libm function family, not GCC-
+  specific) -- exactly the same "implicit-int, reads the wrong return
+  register" bug `test_gamma_family.c` already documents for `tgamma`/
+  `lgamma`: with no declaration, every call was implicit-int, so the
+  compiler assumed the result came back in RAX and never touched XMM0
+  at all -- the "returned" value was simply whatever double happened to
+  already be sitting in XMM0 from an unrelated, textually-preceding
+  call. Two back-to-back calls like `f(1.0, 2.0); nextafter(1.0, 2.0);`
+  silently returned `f`'s own result a second time. Fixed by adding the
+  three declarations.
+
+  Found while root-causing jerryscript's `__builtin_nextafter` link
+  failure above (`ecma-helpers-number.c`'s `ecma_number_get_prev/next`).
+  Regression test: `test/test_nextafter_family.c` (a prior double-
+  returning call primes XMM0 with a distinguishable value, confirming
+  `nextafter`'s real result doesn't come back stale; also exercises
+  `nextafterf`, both `__builtin_nextafter[f]` forms, and a genuinely-
+  unsupported `-x fortran` still being rejected -- see the `-x c-header`
+  entry above). With both fixes, jerryscript builds end to end and its
+  own unit-test suites pass 82/84 (97.6%, up from a hard compile/link
+  failure) -- the 2 remaining failures are unrelated, see below.
+
+### Investigated, not fixed (2026-08-25, static-archive PC32-relocation precision divergence)
+
+**jerryscript's `unittests-math` suite's `unit-test-math` fails 26/91
+acos/asin sub-cases** (bit-exact comparisons against jerry-math's own,
+from-scratch fdlibm-derived software `acos`/`asin`/`sqrt` implementation,
+e.g. `acos(0.5)` returns `0x3ff0c2a6874d5540` instead of the expected
+`0x3ff0c152382d7366`) -- confirmed NOT a codegen bug (the compiled
+object code is bit-for-bit identical either way; verified via `cmp`).
+Root-caused to rcc's native ELF linker (`src/link_elf.c`): the SAME
+`acos.o`+`sqrt.o`, linked as loose object-file arguments
+(`rcc driver.c acos.o sqrt.o -lm`), produce the numerically-correct
+result; linked with `acos.o` pulled from a **static archive** instead
+(`rcc driver.c sqrt.o -L. -lacos_only -lm`, `libacos_only.a` containing
+only `acos.o`), the identical object's own float-literal constant loads
+(`crc32`-unrelated `.LF0`../`.LFn` PC32-relative `.rodata` references)
+resolve to wrong addresses -- reproduces with a single archive member,
+no cross-object collision needed. Debug instrumentation of
+`apply_dynamic_relocs()`'s `RL_PC32` case (the function that actually
+applies these relocations for a dynamically-linked executable, NOT
+`link_apply_relocs()` -- that's the dead-for-non-`-static` "Static
+link: apply relocations normally" branch) showed only 1 of `acos.o`'s
+51 own `.LF*`-targeted relocations reaching that switch case when
+linked directly, vs. all 51 when `acos.o` is archive-loaded -- meaning
+~50 of them are resolved through some OTHER, not-yet-located mechanism
+in the direct-load case (correctly), which the archive-load path
+doesn't take, falling through to `apply_dynamic_relocs()` for
+everything instead (each individual entry's own `S` computation looked
+arithmetically consistent in isolation, so the bug is in _which_
+relocations take which path, not an arithmetic error in this switch
+case itself). Not root-caused further this session -- next step is
+tracing where/why direct-loaded objects' local-symbol PC32 relocations
+bypass `apply_dynamic_relocs()` almost entirely while archive-loaded
+ones don't, likely in whatever pass classifies a relocation as
+"needs the dynamic/PLT/GOT machinery at all" vs. "purely link-time
+resolvable, apply directly" ahead of this function. Minimal repro
+preserved: any two-file jerry-math-style .c pair (a function with
+several `#define`d `double` constants baked into `.rodata`, referenced
+via PC32-relative loads, calling a second function from a different
+TU) reproduces with `ar qc lib.a a.o && rcc main.c b.o -L. -la -lm`
+vs. `rcc main.c a.o b.o -lm`. `test_jerryscript` stays on
+`unfixed.txt` pending this fix (its `unittests`/`unittests-init-fini`
+build variants each show the identical `unit-test-ext-arg` failure too
+-- `Assertion 'arg2 == 10.5' failed`, not yet investigated, possibly
+unrelated).
+
 ### Fixed (2026-08-25, unfixed.txt sweep -- CRC32/PCMPEQx memory-operand asm gaps + -x c-header driver rejection)
 
 - **`crc32b`/`crc32w`/`crc32l`/`crc32q` (SSE4.2 hardware CRC32) with a
