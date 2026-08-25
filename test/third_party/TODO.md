@@ -38,6 +38,72 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-25, \_\_int128/\_Decimal128 truthiness address-vs-value session)
+
+- **A bare `if (x)`/`while (x)`/`&&`/`||` operand, a value ternary
+  (`x ? a : b`), or a lvalue struct ternary whose condition `x` is
+  `__int128`, `unsigned __int128`, or `_Decimal128`-typed tested the
+  operand's 16-byte stack-slot ADDRESS instead of its stored value** --
+  `src/codegen.c`, four call sites (`gen_cond_branch_inv()`'s generic
+  truthiness fallback; `gen()`'s value-ternary `ND_COND` case;
+  `gen_addr()`'s lvalue-ternary `ND_COND` case; `gen_int128()`'s own
+  `ND_COND` case for a nested int128-typed condition). `gen_int128()`/
+  `gen_decimal()` return a GP register holding the _address_ of the
+  16-byte slot the value lives in (a stack address, never zero), but
+  every one of these four sites called `gen(cond)` and then did a plain
+  `cmp $0, rcond` on that register as if it held the value itself --
+  unconditionally "truthy" no matter what the actual 128-bit value was.
+  Two of the four sites additionally passed the RAW operand size (16,
+  `cond->ty->size`) to `asm_cmp_zero()`, which only handles 1/2/4/8;
+  size 16 silently skipped the REX prefix entirely in `rex_for_size()`,
+  so a VReg mapped to a register >= R8 (e.g. `%r10`) lost its REX.B bit
+  and the emitted `cmp` tested a _different_, aliased physical register
+  instead (`%rdx` in the reported repro, which happened to hold the
+  just-returned call result's high word) -- explaining the reported
+  "crashes with no output" symptom: `assert(f(a,b))` aborted even
+  though `f(a,b)` was actually true, because the compare never touched
+  the real condition at all.
+
+  Fixed by adding `gen_int128_branch_if_zero()` (loads both 8-byte
+  halves from the slot address, ORs them, and branches on THAT being
+  zero) and calling it from all four sites whenever the condition's
+  type is `__int128`-like (`is_int128_like()`: `TY_INT128`,
+  `TY_DECIMAL128`, or `_BitInt(65..128)` -- the last is already routed
+  through the separate, already-correct `is_wide_bitint()` path before
+  any of these four sites is reached, so in practice this only ever
+  fires for `TY_INT128`/`TY_DECIMAL128`).
+
+  Found via the item below's `assert(f(a,b))` repro (originally
+  reported as "needs a dedicated minimal-repro bisection"); the plain
+  `if (var)`/`if (f())` shapes claimed to "work correctly" there were
+  independently re-verified to be equally broken (always truthy
+  regardless of the operand's real value -- confirmed with a
+  gdb breakpoint on `asm_cmp_zero()` showing `cond`'s VReg mapped to
+  `%r10`, a slot address, being compared directly).
+
+  Regression tests: `test/test_int128.c`'s `test_truthiness_var`,
+  `test_truthiness_funcall`, `test_truthiness_int128_funcall_cond`,
+  `test_truthiness_nested_int128_cond` (all four fail on the unfixed
+  compiler: 3 abort/crash, reproducing the exact reported shape; one
+  degenerately passed pre-fix by coincidence of the specific literal
+  values used). Full suite verified: Unit tests 332/332, Torture
+  3605/3609 (100% of non-skipped), Dg-error 34/34, Link tests 12/12 --
+  0 failed overall (native Linux x86-64); also re-verified clean on
+  the mingw and ARM64/qemu cross targets.
+
+  Note: this fix also makes `_Decimal128` conditions test the slot's
+  actual bit pattern instead of always-truthy, but `_Decimal128`'s
+  canonical "zero" is not always all-bits-clear (e.g. the `0.0dl`
+  literal encodes a nonzero biased-exponent field in its high word),
+  so a bare `if (dec128_var)` can still misclassify a decimal zero as
+  truthy -- a separate, pre-existing decimal128 zero-representation
+  gap (shared by the pre-existing `(_Bool)` decimal128 cast path, which
+  has its own latent bug: it truncates the OR'd 64-bit truthiness
+  result to a single byte before storing it into the `_Bool`, which
+  only "works" for `0.0dl` by coincidence since its low byte happens to
+  be zero). Not fixed this session; out of scope for the `__int128`
+  regression this session targeted.
+
 ### Fixed (2026-08-25, valkey -- sizeof unsigned type / int128 shift clobber / rdtsc)
 
 - **`sizeof(...)` (and `sizeof(type-name)`) produced the correct
@@ -5348,18 +5414,14 @@ n, ...)` helper) — "unable to parse OID - contains invalid
    bug.
 
 10. **`__int128`/`unsigned __int128` truthiness testing inconsistently
-    aborts depending on the exact expression shape** -- `if (var)` and
-    `if (f())` (a bare call) both work correctly, but
-    `assert(f(a, b))` where `f` takes two `__int128` parameters and
-    internally compares them with `==` before returning the (int128)
-    boolean result crashes with no output at all (not even a
-    partially-buffered printf immediately before the `assert`, so the
-    crash is very early -- likely during argument marshaling or the
-    call itself, not the truthiness test). Found incidentally while
-    isolating item 9's `gen_int128` fix above; not related to that fix
-    (reproduces identically with or without it) and not root-caused
-    this session -- needs a dedicated minimal-repro bisection separate
-    from the shift-clobber investigation that found it.
+    aborts depending on the exact expression shape** -- **fixed**, see
+    "Fixed (2026-08-25, **int128/\_Decimal128 truthiness address-vs-value
+    session)" above. Root cause: `if`/`while`/`&&`/`||`/ternary
+    conditions typed `**int128`/`\_Decimal128`tested the 16-byte slot's
+ADDRESS (always truthy) instead of its value, and two of the four
+affected sites also mis-sized the compare (16 bytes, unsupported),
+silently dropping the REX.B bit needed for a VReg mapped to`%r8`-`%r15` and testing an unrelated aliased register instead --
+exactly matching the reported "`assert(f(a,b))` crashes" symptom.
 
 ---
 

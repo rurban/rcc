@@ -754,6 +754,7 @@ static VReg gen_bitint(Node *node);
 static void gen_flonum_branch_if_zero_preloaded(size_t *fwd_off, const char *shared_label);
 static void gen_flonum_branch_if_nonzero_preloaded(const char *label);
 static void gen_flonum_truthiness(VReg r);
+static void gen_int128_branch_if_zero(VReg addr, bool keep_addr, size_t *fwd_off, const char *shared_label);
 
 static void emit_bitint_bits_arg(int bits);
 static void emit_bitint_addr_arg(VReg r, int n);
@@ -6195,6 +6196,28 @@ VReg gen_addr(Node *node) {
             cg_def_label(format(".L.end.%d", c));
             return r;
         }
+        if (node->cond->ty && is_int128_like(node->cond->ty)) {
+            // int128/_Decimal128 truthiness: `cond` holds the 16-byte
+            // slot ADDRESS (see gen_int128()/gen_decimal()'s calling
+            // convention), never zero -- a bitwise `cmp $0` on it (as
+            // the generic path below does) is always "truthy"
+            // regardless of the actual stored value. Test both 8-byte
+            // halves instead.
+            gen_int128_branch_if_zero(cond, false, NULL, format(".L.else.%d", c));
+            VReg then_r = gen_addr(node->then);
+            asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
+            free_reg(then_r);
+            {
+                size_t o = asm_jmp_label(cg_sec); // b .L.end.%d
+                asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 0);
+            }
+            cg_def_label(format(".L.else.%d", c));
+            VReg else_r = gen_addr(node->els);
+            asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
+            free_reg(else_r);
+            cg_def_label(format(".L.end.%d", c));
+            return r;
+        }
         int cond_sz = node->cond->ty->size;
 #ifdef ARCH_ARM64
         asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
@@ -6551,6 +6574,25 @@ static void gen_flonum_branch_if_nonzero_preloaded(const char *label) {
         asm_fixup_add(cg_sec, o, label, 1);
     }
 #endif
+}
+
+static void gen_int128_branch_if_zero(VReg addr, bool keep_addr, size_t *fwd_off, const char *shared_label) {
+    VReg lo = alloc_reg();
+    VReg hi = alloc_reg();
+    asm_ldr_reg_off(cg_sec, lo, addr, 8, 0);
+    asm_ldr_reg_off(cg_sec, hi, addr, 8, 8);
+    if (!keep_addr)
+        free_reg(addr);
+    asm_or_reg_reg(cg_sec, lo, hi, 8);
+    asm_cmp_zero(cg_sec, lo, 8);
+    free_reg(hi);
+    free_reg(lo);
+#ifdef ARCH_ARM64
+    size_t o = asm_jcc_label(cg_sec, ARM64_EQ);
+#else
+    size_t o = asm_jcc_label(cg_sec, X86_E);
+#endif
+    cg_add_fwd(o, 1, fwd_off, shared_label);
 }
 
 // Normalize the flonum value in GP register `r` (double bit pattern) to a
@@ -6951,6 +6993,15 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
 #endif
         free_reg(r);
         gen_flonum_branch_if_zero_preloaded(fwd_off, shared_label);
+        return;
+    }
+    if (cond->ty && is_int128_like(cond->ty)) {
+        // int128/_Decimal128 truthiness: r holds the 16-byte slot
+        // ADDRESS (see gen_int128()/gen_decimal()'s calling convention),
+        // never zero -- a bitwise `cmp $0` on it is always "truthy"
+        // regardless of the actual stored value. Test both 8-byte
+        // halves instead.
+        gen_int128_branch_if_zero(r, false, fwd_off, shared_label);
         return;
     }
     if (cond->ty && is_wide_bitint(cond->ty)) {
@@ -7836,6 +7887,10 @@ static VReg gen_int128(Node *node) {
 #endif
             free_reg(cond_r);
             gen_flonum_branch_if_zero_preloaded(NULL, format(".L.else.%d", c));
+        } else if (node->cond->ty && is_int128_like(node->cond->ty)) {
+            // Nested int128/_Decimal128-typed condition: cond_r holds the
+            // 16-byte slot ADDRESS, never zero -- see gen_int128_branch_if_zero.
+            gen_int128_branch_if_zero(cond_r, false, NULL, format(".L.else.%d", c));
         } else {
             asm_cmp_zero(cg_sec, cond_r, node->cond->ty ? node->cond->ty->size : 4);
             free_reg(cond_r);
@@ -12178,6 +12233,19 @@ VReg gen(Node *node) {
 #endif
             if (!gnu_omitted) free_reg(cond);
             gen_flonum_branch_if_zero_preloaded(NULL, else_label);
+        } else if (node->cond->ty && is_int128_like(node->cond->ty)) {
+            // int128/_Decimal128 truthiness: `cond` holds the 16-byte
+            // slot ADDRESS (see gen_int128()/gen_decimal()'s calling
+            // convention), never zero -- a bitwise `cmp $0` on it (as
+            // the generic path below does) is always "truthy"
+            // regardless of the actual stored value; also `cond_sz`
+            // above is 16, a width asm_cmp_zero doesn't support, which
+            // silently drops the REX.B needed for a VReg >= R8 and
+            // tests an unrelated physical register instead. gnu_omitted
+            // can't apply here: an int128 `then` would make the whole
+            // ND_COND int128-typed, routed to gen_int128()'s own
+            // ND_COND case before reaching this generic gen() dispatch.
+            gen_int128_branch_if_zero(cond, false, NULL, else_label);
         } else {
             asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
             // Free `cond` right after its value is consumed by the compare

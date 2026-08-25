@@ -106,6 +106,91 @@ int test_cond(void) {
     return 0;
 }
 
+/* Regression: bare `if (x)` on a __int128 VARIABLE, and `if (f())` on a
+ * __int128-returning FUNCTION CALL, both tested the 16-byte stack slot's
+ * ADDRESS instead of its stored value in gen_cond_branch_inv()'s generic
+ * truthiness fallback (codegen.c) -- an address is never zero, so both
+ * forms were unconditionally "truthy" regardless of the actual value. */
+__attribute__((noinline)) int returns_eq128(__int128 a, __int128 b) {
+    return a == b;
+}
+
+int test_truthiness_var(void) {
+    __int128 x = 0;
+    if (x) return 1; /* zero must be falsy */
+    x = 5;
+    if (!x) return 2; /* nonzero must be truthy */
+    x = -1; /* all bits set, both halves nonzero */
+    if (!x) return 3;
+    return 0;
+}
+
+int test_truthiness_funcall(void) {
+    __int128 a = 5, b = 5;
+    __int128 c = 6;
+    if (!(a == b)) return 1; /* sanity: the comparison itself is correct */
+    if (!(a == b ? 1 : 0)) return 2;
+    /* direct `if` on the funcall result (int, not __int128, sanity check) */
+    if (!returns_eq128(a, b)) return 3;
+    if (returns_eq128(a, c)) return 4;
+    return 0;
+}
+
+/* Regression: `f(a,b)` returning __int128 (e.g. the boolean result of an
+ * internal comparison, sign-extended to 128 bits) used directly as a
+ * condition -- `assert(f(a,b))`-shaped ternaries with void branches, and
+ * `int r = f(a,b) ? 1 : 0`-shaped value ternaries -- both misbehaved:
+ * the generic value-ternary path in gen() passed the __int128 operand's
+ * size (16) to asm_cmp_zero(), a width it silently mishandles (no size-16
+ * case in rex_for_size()), so the emitted `cmp` dropped the REX.B bit
+ * needed to address a VReg mapped to r8-r15 and instead tested an
+ * unrelated physical register (whatever aliased the low 3 ModRM bits --
+ * here %rdx, which happened to hold the just-returned hi word). On top of
+ * the wrong size, it was also testing the int128 slot's ADDRESS rather
+ * than its value, same as the plain `if`/funcall bug above. */
+__attribute__((noinline)) __int128 eq128(__int128 a, __int128 b) {
+    return a == b;
+}
+
+int test_truthiness_int128_funcall_cond(void) {
+    __int128 a = ((__int128)5 << 64) + 3;
+    __int128 b = ((__int128)5 << 64) + 3;
+    __int128 c = ((__int128)5 << 64) + 4;
+    int aborted = 0;
+
+    /* void-branch ternary, exactly the `assert(eq128(a,b))` shape. */
+    (eq128(a, b) ? (void)0 : (void)(aborted = 1));
+    if (aborted) return 1;
+    (eq128(a, c) ? (void)0 : (void)(aborted = 1));
+    if (!aborted) return 2;
+
+    /* int-typed value ternary. */
+    int r = eq128(a, b) ? 1 : 0;
+    if (r != 1) return 3;
+    r = eq128(a, c) ? 1 : 0;
+    if (r != 0) return 4;
+    return 0;
+}
+
+/* Regression: a __int128-RESULT ternary (gen_int128()'s own ND_COND case)
+ * whose CONDITION is itself __int128-typed (e.g. nested inside another
+ * int128 expression) hit the same address/size bug as above, just inside
+ * gen_int128() instead of gen(). */
+int test_truthiness_nested_int128_cond(void) {
+    __int128 a = 10, b = 20;
+    __int128 cond_true = 1, cond_false = 0;
+    __int128 r = cond_true ? a : b;
+    if (r != 10) return 1;
+    r = cond_false ? a : b;
+    if (r != 20) return 2;
+    /* condition itself a funcall returning __int128 */
+    r = eq128(a, a) ? a : b;
+    if (r != 10) return 3;
+    r = eq128(a, b) ? a : b;
+    if (r != 20) return 4;
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     printf("test_post_inc: %s\n", test_post_inc() == 0 ? "PASS" : "FAIL");
@@ -128,6 +213,14 @@ int main(void) {
     if (test_comma()) failures++;
     printf("test_cond: %s\n", test_cond() == 0 ? "PASS" : "FAIL");
     if (test_cond()) failures++;
+    printf("test_truthiness_var: %s\n", test_truthiness_var() == 0 ? "PASS" : "FAIL");
+    if (test_truthiness_var()) failures++;
+    printf("test_truthiness_funcall: %s\n", test_truthiness_funcall() == 0 ? "PASS" : "FAIL");
+    if (test_truthiness_funcall()) failures++;
+    printf("test_truthiness_int128_funcall_cond: %s\n", test_truthiness_int128_funcall_cond() == 0 ? "PASS" : "FAIL");
+    if (test_truthiness_int128_funcall_cond()) failures++;
+    printf("test_truthiness_nested_int128_cond: %s\n", test_truthiness_nested_int128_cond() == 0 ? "PASS" : "FAIL");
+    if (test_truthiness_nested_int128_cond()) failures++;
     printf("\n%d failures\n", failures);
     return failures;
 }
