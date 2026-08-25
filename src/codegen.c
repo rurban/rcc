@@ -6078,6 +6078,22 @@ VReg gen_addr(Node *node) {
         }
         return r;
     }
+    case ND_STR: {
+        // A string literal is a (non-modifiable) lvalue of array type
+        // (C11 6.5.1p4) -- `&"literal"` is valid C, yielding `char (*)[N]`.
+        // Its "address" is exactly the same label address gen()'s own
+        // ND_STR case materializes as the literal's decayed rvalue
+        // (pointer to first element): there is no separate "storage
+        // location" object to compute a *different* address for. Found
+        // via util-linux's isosize.c: `memcmp(&label, &"\1CD001\1", 8)`.
+        VReg r = alloc_reg();
+#ifdef ARCH_ARM64
+        emit_adrp_add(r, format(".LC%d", node->str_id));
+#else
+        asm_lea_rip_reg(cg_sec, r, format(".LC%d", node->str_id)); // lea rip, rr
+#endif
+        return r;
+    }
     case ND_DEREF:
         return gen(node->lhs);
     case ND_REAL:

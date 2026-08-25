@@ -38,6 +38,41 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-25, util-linux -- &"string literal" codegen crash)
+
+- **`&"string literal"` (address-of a string literal) crashed the
+  compiler with "lvalue required as left operand of assignment"** --
+  `src/codegen.c`, `gen_addr()`. A string literal is a (non-modifiable)
+  lvalue of array type (C11 6.5.1p4): `&"abc"` legally yields
+  `char (*)[4]`, the array's own address. `gen_addr()` -- the address-
+  computing codegen dispatcher invoked for any `&expr`/lvalue context
+  -- had no `ND_STR` case, so it fell through to the `default:` branch,
+  which unconditionally raises that error for any node kind it doesn't
+  recognize as addressable. `gen()`'s own (separate) `ND_STR` case
+  already computes exactly this address as the literal's decayed
+  rvalue (`lea .LCn(%rip), r` / ARM64 `adrp+add`); `gen_addr()` just
+  never reused it. The parser already tracks a string literal's
+  un-decayed array type (`char[N]`) at construction time, so
+  `check_type()`'s existing `ND_ADDR` handling (`node->ty =
+pointer_to(operand->ty)`) already produced the correct `char(*)[N]`
+  type -- only the codegen path was missing, confirmed by comparing
+  `sizeof(*&"abc")` (4, matching gcc exactly) before and after.
+
+  Found via util-linux's `disk-utils/isosize.c`: `memcmp(&label,
+&"\1CD001\1", 8)` -- comparing a magic-number buffer directly against
+  a string literal's address, avoiding a separate named buffer for a
+  short fixed byte sequence.
+
+  Regression test: `test/test_addr_string_literal.c` (fails on the old
+  code with the exact reported error; also verifies the `char(*)[N]`
+  type is correct, not just that it compiles). util-linux (v2.42.2) now
+  builds completely clean with rcc -- every target links, including
+  fdisk/mount/lsblk/findmnt/cfdisk/blkid -- and its extensive test
+  suite runs clean as far as observed (134/134 blkid superblock-probing
+  sub-tests, fdisk invalid-input tests, and more, all PASS; the full
+  suite is large enough that a complete run wasn't fully exhausted in
+  this session, but no failure was seen anywhere it reached).
+
 ### Fixed (2026-08-24, libtommath -- one-sided &&/|| dead-branch elimination)
 
 - **`A && CONST_FALSE` / `A || CONST_TRUE`, with the constant operand on
