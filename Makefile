@@ -126,9 +126,12 @@ SRCS += src/arm64_enc.c
 OBJ_EXT = .arm64.o
 ARM64_SYSROOT := $(shell $(CC) -print-sysroot 2>/dev/null)
 LIBDFP_A = lib/libdfp-arm64.a
-# aarch64-linux-gnu-gcc specs have a broken -latomic_asneeded spec;
-# suppress it since rcc doesn't need libatomic.
+# Fedora aarch64 gcc may inject a broken -latomic_asneeded spec.
+# Add -fno-link-libatomic only when this compiler needs and supports it.
+ARM64_NO_LINK_LIBATOMIC := $(shell $(CC) -dumpspecs 2>/dev/null | grep -q latomic_asneeded && $(CC) -fno-link-libatomic -x c -c /dev/null -o /dev/null >/dev/null 2>&1 && echo yes)
+ifeq ($(ARM64_NO_LINK_LIBATOMIC),yes)
 CFLAGS += -fno-link-libatomic
+endif
 ifneq ($(ARM64_SYSROOT),/)
 ifeq ($(shell test -d "$(ARM64_SYSROOT)/usr/include" && echo yes),)
 # Try fc44, then fc43, then fc41 for older Fedora versions
