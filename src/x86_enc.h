@@ -307,6 +307,7 @@ void x86_sysretq(SecBuf *s);
 void x86_rdrand(SecBuf *s, int size, X86Reg r);
 void x86_rdseed(SecBuf *s, int size, X86Reg r);
 void x86_crc32(SecBuf *s, int dst_size, int src_size, X86Reg dst, X86Reg src);
+void x86_crc32_rm(SecBuf *s, int dst_size, int src_size, X86Reg dst, X86Mem src);
 void x86_invpcid(SecBuf *s, X86Reg type_reg, X86Mem desc);
 void x86_rdfsbase(SecBuf *s, int size, X86Reg r);
 void x86_rdgsbase(SecBuf *s, int size, X86Reg r);
@@ -555,6 +556,10 @@ void x86_pand_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
 void x86_por_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
 void x86_pcmpeqd_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
 void x86_pcmpgtd_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
+void x86_pcmpeqb_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
+void x86_pcmpeqw_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
+void x86_pcmpgtb_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
+void x86_pcmpgtw_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
 // PSHUFB xmm, xmm (SSSE3): byte-lane shuffle/permute, dst = shuffle(dst, src)
 void x86_pshufb(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 // PSHUFD xmm, xmm, imm8 (SSE2, 66 0F 70 /r ib): dword-lane shuffle,

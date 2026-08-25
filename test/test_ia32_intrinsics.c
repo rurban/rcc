@@ -148,6 +148,53 @@ int main(void) {
     if (__builtin_ia32_crc32qi(0xFFFFFFFFu, 0xAA) != 0x642B3130u) return 30;
     if (__builtin_ia32_crc32si(0xFFFFFFFFu, 0xCCCCCCCCu) != 0x70B16A3Du) return 31;
 
+#if defined(__x86_64__) || defined(_M_X64)
+    /* GNU inline-asm crc32b/crc32q with a MEMORY source operand (as used
+     * by memcached/zlib-ng/RocksDB's hand-written SSE4.2 CRC32C hot
+     * loops, e.g. "crc32q (%1), %0") computed the CRC of the pointer's
+     * own VALUE instead of the bytes it points to: asm.c's dispatch
+     * unconditionally called the register-source encoder with whatever
+     * R(0) silently resolved to for a non-register operand string, and
+     * no memory-operand encoder existed at all for this instruction --
+     * unlike __builtin_ia32_crc32qi/si above, which always materializes
+     * its argument in a register first and so never exercised this path.
+     * Fixed by adding x86_crc32_rm() and dispatching to it whenever the
+     * source operand is a memory operand. Found via memcached's
+     * crc32c.c: crc32c_hw()'s three-way-parallel SSE4.2 implementation
+     * SIGABRT'd testapp's test_crc32c on the known-good constants below. */
+    {
+        unsigned char buf[16];
+        for (int i = 0; i < 16; i++) buf[i] = (unsigned char)(i + 1);
+
+        unsigned long long crc_byte = ~0u;
+        for (int i = 0; i < 16; i++) {
+            unsigned char const *p = buf + i;
+            __asm__ __volatile__("crc32b\t(%1), %0"
+                                  : "+r"(crc_byte)
+                                  : "r"(p), "m"(*p));
+        }
+        unsigned long long crc_qword = ~0u;
+        unsigned char const *next = buf, *end = buf + 16;
+        while (next < end) {
+            __asm__ __volatile__("crc32q\t(%1), %0"
+                                  : "+r"(crc_qword)
+                                  : "r"(next), "m"(*next));
+            next += 8;
+        }
+        if (crc_byte != crc_qword) return 32;
+        if ((unsigned)~crc_qword != 0xa0de6714u) return 32;
+
+        /* register-source form must still agree with the memory-source
+         * form for the same data -- guards against a fix that repairs
+         * the memory path but regresses the register one. */
+        unsigned int w = 0x89abcdefu;
+        unsigned int crc_reg = 0, crc_mem = 0;
+        __asm__ __volatile__("crc32l\t%1, %0" : "+r"(crc_reg) : "r"(w));
+        __asm__ __volatile__("crc32l\t%1, %0" : "+r"(crc_mem) : "m"(w));
+        if (crc_reg != crc_mem) return 32;
+    }
+#endif
+
     /* SSE4.1: vec_set_* (used by _mm_insert_epi{8,16,32,64}). Was
      * misimplemented as vec_init_*, corrupting the unchanged lane. */
     __m128i ins = _mm_set_epi64x(0x123456789abcdef0ULL, 0xfedcba9876543210ULL);

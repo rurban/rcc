@@ -3417,11 +3417,16 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     if (!strcmp(mnem, "crc32") || !strcmp(mnem, "crc32b") || !strcmp(mnem, "crc32w") ||
         !strcmp(mnem, "crc32l") || !strcmp(mnem, "crc32q")) {
         // AT&T: crc32 src, dst — src carries the size suffix (or is inferred
-        // from the source register), dst is always 32- or 64-bit.
+        // from the source register), dst is always 32- or 64-bit. A memory
+        // src (e.g. "crc32q (%rdi), %rax") has no register to infer the
+        // size from, so it relies entirely on the mnemonic suffix.
         int src_sz = suffix_size(mnem);
         if (src_sz == 0) src_sz = is_reg(0) ? reg_size_x86(ops[0]) : 4;
         int dst_sz = is_reg(1) ? reg_size_x86(ops[1]) : 4;
-        x86_crc32(buf, dst_sz, src_sz, R(1), R(0));
+        if (is_mem(0))
+            x86_crc32_rm(buf, dst_sz, src_sz, R(1), M(0));
+        else
+            x86_crc32(buf, dst_sz, src_sz, R(1), R(0));
         return true;
     }
 
@@ -4622,6 +4627,30 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         if (is_mem(0)) x86_pcmpgtd_rm(buf, parse_x86_xmm(ops[1]), M(0));
         else
             x86_pcmpgtd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pcmpeqb")) {
+        if (is_mem(0)) x86_pcmpeqb_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else
+            x86_pcmpeqb(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pcmpeqw")) {
+        if (is_mem(0)) x86_pcmpeqw_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else
+            x86_pcmpeqw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pcmpgtb")) {
+        if (is_mem(0)) x86_pcmpgtb_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else
+            x86_pcmpgtb(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pcmpgtw")) {
+        if (is_mem(0)) x86_pcmpgtw_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else
+            x86_pcmpgtw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "shufps")) {

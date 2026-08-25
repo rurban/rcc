@@ -38,6 +38,125 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-25, unfixed.txt sweep -- CRC32/PCMPEQx memory-operand asm gaps + -x c-header driver rejection)
+
+- **`crc32b`/`crc32w`/`crc32l`/`crc32q` (SSE4.2 hardware CRC32) with a
+  MEMORY source operand -- `"crc32q (%1), %0"` -- silently computed the
+  CRC of the pointer's own VALUE instead of the bytes it points to** --
+  `src/asm.c`'s inline-asm dispatch unconditionally called the
+  register-source encoder (`x86_crc32()`, `src/x86_enc.c`) with `R(0)`
+  regardless of whether `ops[0]` was actually a memory operand; `R()` on
+  a non-register operand string doesn't error, it silently resolves to
+  some register anyway, so `crc32q (%rdi), %r11` got encoded as the
+  register-register form `crc32 %rdi, %r11`. No memory-operand encoder
+  existed at all for this instruction family. Fixed by adding
+  `x86_crc32_rm()` (F2 [66] 0F 38 F0/F1 /r, mirroring `adx_op_rm`/
+  `bop_rm`'s reg,mem shape) and dispatching to it whenever `ops[0]` is a
+  memory operand; the memory form has no source register to infer the
+  operand size from, so it relies entirely on the mnemonic's b/w/l/q
+  suffix (already computed via `suffix_size()`).
+
+  Found via memcached's `crc32c.c` (`crc32c_hw()`'s three-way-parallel
+  SSE4.2 CRC32C implementation, shared with zlib-ng/RocksDB/etc.): its
+  own `testapp` unit-test suite SIGABRT'd on `test_crc32c`'s known-good
+  constant assertions, right after `test_issue_101`. Regression test:
+  added to `test/test_ia32_intrinsics.c` (crc32q memory-form 8-byte-at-
+  a-time loop vs. an independently-computed crc32b byte-at-a-time
+  ground truth, plus a known-good CRC32C constant and a register/
+  memory-form consistency check -- all fail on the unfixed compiler),
+  alongside that file's existing `__builtin_ia32_crc32qi/si` register-
+  only intrinsic checks (a separate code path that always materializes
+  its argument in a register first, so it never exercised this
+  memory-operand bug at all). With the fix, memcached's full `testapp`
+  suite passes 56/56 (was aborting at test 18/56), and
+  `make test`'s Perl integration suite (`t/*.t`) runs hundreds of tests
+  clean as far as observed (cut off only by the harness's per-test
+  wall-clock budget, not a failure).
+
+- **`pcmpeqb`/`pcmpeqw`/`pcmpgtb`/`pcmpgtw` (SSE2 packed-byte/word
+  compare) had NO inline-asm dispatch entry at all** -- `src/asm.c` --
+  only their dword siblings `pcmpeqd`/`pcmpgtd` were wired up (from an
+  earlier session's `paddd`-family memory-operand fix), so any use of
+  the byte/word forms hard-failed with "unknown x86 instruction:
+  pcmpeqb" despite `x86_pcmpeqb`/`x86_pcmpeqw` (register-register
+  encoders) already existing in `x86_enc.c` for the vector-compare
+  codegen path -- just never reachable from raw inline-asm text. Added
+  the missing dispatch entries plus the previously-nonexistent
+  memory-operand encoders (`x86_pcmpeqb_rm`/`x86_pcmpeqw_rm`/
+  `x86_pcmpgtb_rm`/`x86_pcmpgtw_rm`, matching the `pcmpeqd_rm`/
+  `pcmpgtd_rm` pattern) for parity with the rest of the family.
+
+  Found via rvvm's `src/util/bit_ops.h` zero-byte-detection idiom
+  (`pcmpeqb %xmm,%xmm` used twice in a row, a common "does this integer
+  contain a zero byte" trick). Regression test: extended the existing
+  `test/test_asm_movdqa_paddd_mem.c` (byte-for-byte objdump comparison
+  against real GNU `as` output) with `pcmpeqb`/`pcmpeqw`/`pcmpgtb`/
+  `pcmpgtw` register and memory-operand cases. With the fix, rvvm builds
+  completely clean end to end and its own bundled `riscv-tests` ISA
+  compliance suite runs extensively (111 PASS observed) before the
+  harness's per-test wall-clock budget cuts the run short --
+  previously hard-blocked at the very first `pcmpeqb` in
+  `riscv_priv.c`'s include chain. Two RV32 float-compare subtests
+  (`rv32uf-p-fcmp` and `rv32ud-p-fcmp`, both failing at the same
+  subtest index 11) newly surfaced now that the suite runs this far --
+  not root-caused this session (RV32-specific FEQ/FLT/FLE soft-float
+  semantics inside rvvm's own interpreter, not obviously related to
+  this fix), out of scope; `test_rvvm` stays on `unfixed.txt` pending
+  that root-cause.
+
+- **`rcc -x c-header ...` (CMake's `PRECOMPILE_HEADERS` feature, e.g.
+  SDL3's generated `cmake_pch.h.gch` build step) was unconditionally
+  rejected**: `"rcc: error: unsupported -x c-header, only C is
+supported"`, hard-failing the whole build the first time CMake tried
+  to generate a precompiled header -- `src/main.c`'s `-x` dispatch only
+  ever recognized the `c`/`none` language names. rcc has no serialized-
+  PCH backend, but doesn't need one to satisfy this build step: `-include`
+  (also `src/main.c`) always source-includes the named header's text on
+  every translation unit, never consulting a sibling `.gch`/`.pch` file,
+  so compiling the header as an ordinary C translation unit (exactly
+  like `-x c`) and writing a normal (unused) object file to the
+  requested `.gch` path satisfies the Makefile dependency with zero risk
+  -- no different from what other PCH-less minimal compilers already do.
+  Fixed by accepting both `-x c-header` and `-xc-header` as synonyms for
+  `-x c`/`-xc`.
+
+  Found via SDL3's CMake build (`-x c-header -include cmake_pch.h -o
+cmake_pch.h.gch -c cmake_pch.h.c`, an empty wrapper TU forcing the
+  real header through `-include`). Regression test:
+  `test/test_x_c_header.c` (drives rcc as a subprocess with both `-x
+c-header` spellings, confirms a `.gch` file is produced, and confirms
+  a genuinely unsupported `-x fortran` is still rejected). With the fix,
+  SDL3's `cmake_pch.h.gch` step succeeds and the build proceeds to
+  compiling SDL3's own source tree (`SDL_systhread.c` and hundreds of
+  others observed compiling clean) before the harness's wall-clock
+  budget is reached -- previously hard-blocked at the very first CMake
+  target that needed a precompiled header.
+
+  Also triaged three more `unfixed.txt` entries this session and
+  confirmed each is NOT an rcc bug (root-caused, not just "unclear"):
+  `test_libopus`'s `tests/test_opus_api.c` references glibc's
+  `__malloc_hook`, removed from glibc's own `<malloc.h>` well before
+  this sandbox's glibc version -- reproduces identically with real
+  system `gcc`. `test_jq`'s `jq` binary SIGABRT'd in `jv_object_set`
+  because it dynamically links against this machine's pre-installed
+  system `libjq.so.1` (jq 1.8.1, from the `jq` RPM) instead of the
+  just-built `.libs/libjq.so.1` (jq 1.8.2) -- an ABI/version mismatch
+  from a missing rpath in the test's own build, not an rcc codegen bug
+  (confirmed via `ldd`). `test_tcl`'s `make test-tcl` fails to find its
+  own freshly-built `init.tcl` (`tclsh` runs from a directory where
+  Tcl's runtime library isn't installed) -- an environment/test-harness
+  packaging gap; `tcl`/`tclsh`/`libtcl9.0.so` themselves build and link
+  completely clean. `test_msgpack` (msgpack-c) and `test_nanomsg` (nng)
+  were also re-verified this session: both build completely clean and
+  their CTest suites pass extensively (5/5 and 70+/77 observed
+  respectively) with no rcc-attributable failure -- removed from
+  `unfixed.txt` as already-working, previously just unconfirmed.
+
+  `make check-all`: Unit tests 334/334 (incl. the two new regression
+  tests above), Torture 3605/3609 (100% of non-skipped, 354 skipped),
+  TCC 118/118, Compliance 15/15, C-testsuite 220/220, Dg-error 34/34 --
+  0 failed overall.
+
 ### Fixed (2026-08-25, \_\_int128/\_Decimal128 truthiness address-vs-value session)
 
 - **A bare `if (x)`/`while (x)`/`&&`/`||` operand, a value ternary

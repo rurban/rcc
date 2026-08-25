@@ -1,7 +1,8 @@
 /* MOVDQA/MOVDQU/MOVD/MOVQ (xmm forms) and the packed-integer arithmetic
  * family's (PADDD/PSUBD/PADDQ/PSUBQ/PADDW/PSUBW/PADDB/PSUBB/PAND/POR/
- * PCMPEQD/PCMPGTD) memory-operand form were both silently mis-encoded
- * in the raw-assembly-text dispatch, in three related ways:
+ * PCMPEQD/PCMPGTD/PCMPEQB/PCMPEQW/PCMPGTB/PCMPGTW) memory-operand form
+ * were silently mis-encoded in the raw-assembly-text dispatch, in three
+ * related ways:
  *
  * 1. MOVDQA/MOVDQU/MOVD/MOVQ had either no dispatch entry at all, or
  *    (movaps) an entry that was dead code: asm.c's generic "mov" prefix
@@ -128,6 +129,23 @@ int main(void)
         ".code64\n.text\n.globl f\nf:\npsubd (%rdi),%xmm0\nret\n", "660ffa07c3");
     ok &= compile_and_check_bytes(rcc, td, pid, "pand_mem",
         ".code64\n.text\n.globl f\nf:\npand (%rdi),%xmm0\nret\n", "660fdb07c3");
+    /* pcmpeqb/pcmpeqw/pcmpgtb/pcmpgtw had NO dispatch entry at all (only
+     * their dword siblings pcmpeqd/pcmpgtd were wired up) -- "unknown x86
+     * instruction: pcmpeqb" aborted the whole compile. Found via rvvm's
+     * util/bit_ops.h zero-byte-detection idiom (register-register form);
+     * the memory-operand form is exercised here too since the same
+     * silent-default bug documented above for paddd et al. would apply
+     * equally once the bare dispatch gap was fixed. */
+    ok &= compile_and_check_bytes(rcc, td, pid, "pcmpeqb_rr",
+        ".code64\n.text\n.globl f\nf:\npcmpeqb %xmm1,%xmm0\nret\n", "660f74c1c3");
+    ok &= compile_and_check_bytes(rcc, td, pid, "pcmpeqb_mem",
+        ".code64\n.text\n.globl f\nf:\npcmpeqb (%rdi),%xmm0\nret\n", "660f7407c3");
+    ok &= compile_and_check_bytes(rcc, td, pid, "pcmpeqw_rr",
+        ".code64\n.text\n.globl f\nf:\npcmpeqw %xmm1,%xmm0\nret\n", "660f75c1c3");
+    ok &= compile_and_check_bytes(rcc, td, pid, "pcmpgtb_mem",
+        ".code64\n.text\n.globl f\nf:\npcmpgtb (%rdi),%xmm0\nret\n", "660f6407c3");
+    ok &= compile_and_check_bytes(rcc, td, pid, "pcmpgtw_rr",
+        ".code64\n.text\n.globl f\nf:\npcmpgtw %xmm1,%xmm0\nret\n", "660f65c1c3");
 
     if (!ok) return 1;
     printf("OK MOVDQA/MOVDQU/MOVD/MOVQ and packed-integer memory-operand "

@@ -755,8 +755,17 @@ int main(int argc, char **argv) {
                 add_quote_include_path(path);
             else
                 add_include_path(path);
-        } else if (!strcmp(argv[i], "-xc") || (!strcmp(argv[i], "-x") && i + 1 < argc && !strcmp(argv[i + 1], "c"))) {
-            if (!strcmp(argv[i], "-x")) i++; // skip "c"
+        } else if (!strcmp(argv[i], "-xc") || !strcmp(argv[i], "-xc-header") ||
+                   (!strcmp(argv[i], "-x") && i + 1 < argc &&
+                    (!strcmp(argv[i + 1], "c") || !strcmp(argv[i + 1], "c-header")))) {
+            // "c-header" (CMake's PRECOMPILE_HEADERS support, e.g. SDL3's
+            // cmake_pch.h.gch) has no real PCH backend here -- rcc's own
+            // -include always source-includes the named header text, never
+            // consults a sibling ".gch"/".pch", so compiling the header as
+            // an ordinary C translation unit and writing a normal object
+            // file to the requested (unused) ".gch" path satisfies the
+            // build dependency without needing serialized PCH state.
+            if (!strcmp(argv[i], "-x")) i++; // skip "c"/"c-header"
         } else if (!strcmp(argv[i], "-x") && i + 1 < argc && !strcmp(argv[i + 1], "none")) {
             i++; // reset language
         } else if (!strcmp(argv[i], "-x") && i + 1 < argc) {

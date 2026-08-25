@@ -920,6 +920,18 @@ void x86_crc32(SecBuf *s, int dst_sz, int src_sz, X86Reg dst, X86Reg src) {
     emit3(s, 0x0f, 0x38, src_sz == 1 ? 0xf0 : 0xf1);
     emit1(s, modrm(3, dst, src));
 }
+// CRC32 r32/r64, m8/16/32/64 (F2 [66] 0F 38 F0/F1 /r): memory-source form of
+// x86_crc32() above — mirrors adx_op_rm/bop_rm's reg,mem shape. Needed for
+// inline-asm idioms like "crc32q (%%rdi), %%rax" (memcached's crc32c.c,
+// zlib-ng, etc.) that dereference a pointer operand instead of reading a
+// register's value directly.
+void x86_crc32_rm(SecBuf *s, int dst_sz, int src_sz, X86Reg dst, X86Mem src) {
+    if (src_sz == 2) emit1(s, 0x66);
+    emit1(s, 0xf2);
+    maybe_rex(s, dst_sz == 8, dst, src.index, src.base);
+    emit3(s, 0x0f, 0x38, src_sz == 1 ? 0xf0 : 0xf1);
+    emit_mem(s, src.base, src.index, src.scale, src.disp, src.seg, dst);
+}
 
 // INVPCID r64, m128 (64-bit mode): the register operand's width is fixed at
 // 64 bits by the mode itself, so unlike most instructions REX.W is neither
@@ -1533,6 +1545,10 @@ void x86_pand_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0xdb, d, m)
 void x86_por_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0xeb, d, m); }
 void x86_pcmpeqd_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0x76, d, m); }
 void x86_pcmpgtd_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0x66, d, m); }
+void x86_pcmpeqb_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0x74, d, m); }
+void x86_pcmpeqw_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0x75, d, m); }
+void x86_pcmpgtb_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0x64, d, m); }
+void x86_pcmpgtw_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0x65, d, m); }
 // movmskpd r32, xmm: 66 0F 50 /r (GP dst in the reg field; the index
 // trick matches movmskps — X86Reg and X86XmmReg share numbering)
 void x86_movmskpd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x50, d, sr); }
