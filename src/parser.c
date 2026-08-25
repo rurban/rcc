@@ -6837,8 +6837,15 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
     // Superfluous braces around scalar `{ expr }`, or C23 empty init `{}`.
     if (equalc(tok, "{")) {
         tok = skip(tok, "{");
-        if (!equalc(tok, "}")) // `{}` leaves the (already zeroed) storage as 0
+        if (!equalc(tok, "}")) { // `{}` leaves the (already zeroed) storage as 0
             tok = global_init_one(tok, var, ty, offset);
+            // C11 6.7.9p11's "single expression, optionally enclosed in
+            // braces" explicitly permits a trailing comma inside those
+            // braces -- e.g. a designated struct-member initializer like
+            // `.specs = { "refs/heads/master", }`.
+            if (equalc(tok, ","))
+                tok = tok->next;
+        }
         tok = skip(tok, "}");
         return tok;
     }
@@ -7470,6 +7477,13 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
             *cur = (*cur)->next = new_unary(ND_EXPR_STMT, assign_node, tok);
         } else {
             tok = local_init_one(tok, lhs, ty, cur);
+            // C11 6.7.9p11's "single expression, optionally enclosed in
+            // braces" explicitly permits a trailing comma inside those
+            // braces (6.7.9p19's general trailing-comma allowance is not
+            // array/struct-specific) -- e.g. util-linux's isosize.c:
+            // `char *specs = { "refs/heads/master", };`.
+            if (equalc(tok, ","))
+                tok = tok->next;
         }
         tok = skip(tok, "}");
         return tok;

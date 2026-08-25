@@ -38,6 +38,39 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-25, libgit2 -- braced scalar initializer trailing comma)
+
+- **A scalar initializer wrapped in "superfluous but legal" braces with
+  a trailing comma -- `T x = { expr, };` -- failed to parse ("expected
+  specific operator")** -- `src/parser.c`, `local_init_one()` and
+  `global_init_one()`. C11 6.7.9p11 explicitly permits enclosing a
+  scalar initializer in braces ("the initializer for a scalar shall be
+  a single expression, optionally enclosed in braces"); 6.7.9p19's
+  general trailing-comma allowance for a brace-enclosed initializer
+  list is not restricted to array/struct targets, so `{ expr, }` is
+  exactly as legal as `{ expr }` for a scalar. Both functions' "brace
+  around scalar" fallback recursively parsed the inner value, then
+  unconditionally called `skip(tok, "}")` -- without first consuming an
+  optional trailing comma, so `tok` was still sitting on the `,` and
+  `skip()` reported the parse error pointing at it. Fixed by consuming
+  an optional `,` between the recursive parse and the closing-brace
+  skip, in both the local (`local_init_one`) and nested-global
+  (`global_init_one`, reached for e.g. a designated struct-member
+  initializer) copies of this fallback.
+
+  Found via libgit2's `tests/libgit2/network/remote/remotes.c`:
+  `char *specs = { "refs/heads/master", };`.
+
+  Regression test: `test/test_braced_scalar_trailing_comma.c` (covers
+  local int, local pointer, top-level global pointer, and a nested
+  designated struct-member pointer -- all four sites fail identically
+  on the old code). libgit2's core `libgit2.so`/`git2` CLI already
+  built clean before this fix (the bug was test-suite-only); with the
+  fix, `libgit2_tests` also builds and links completely, and its
+  non-network test suite runs extensively clean (hundreds of suites
+  pass) with one PRE-EXISTING, unrelated issue newly surfaced now that
+  the suite actually runs to completion -- see "Needs fixing" below.
+
 ### Fixed (2026-08-25, util-linux -- &"string literal" codegen crash)
 
 - **`&"string literal"` (address-of a string literal) crashed the
@@ -5188,6 +5221,38 @@ LLONG_MAX, -1)`, a `long long` times `int` mix, corrupted both the
    invocation) mis-resolved every symbol DEFINED in the second or later
    linked object to the wrong address, silently miscompiling any
    multi-TU mingw executable.
+
+8. **libgit2's `grafts::parse::oid_with_parent`/`oid_with_parent_and_newline`/
+   `oid_with_multiple_parents`/`multiple_oids_with_multiple_parents`
+   fail at runtime** (`tests/libgit2/grafts/parse.c:56`,
+   `git_oid__fromstr(&oid, va_arg(ap, const char *), ...)` inside the
+   test's own `assert_graft_contains(git_grafts *, const char *, size_t
+n, ...)` helper) — "unable to parse OID - contains invalid
+   characters", only when `n >= 1` (at least one variadic `const char *`
+   OID argument follows). Surfaced by the "Fixed (2026-08-25, libgit2 --
+   braced scalar initializer trailing comma)" fix above, which let
+   `libgit2_tests` build/link for the first time — not a regression from
+   that fix (the OTHER ~380 non-`grafts` suites, including the exact
+   suite the originally-reported bug lived in,
+   `network::remote::remotes`, run clean). Two minimal standalone
+   repros matching the failing call's exact shape (`f(size_t n, ...)`
+   reading `const char*` via `va_arg`; `f(ptr, ptr, size_t n, ...)`
+   matching `assert_graft_contains`'s full signature) both print the
+   correct string with rcc — the bug does NOT reproduce in isolation,
+   so it's either specific to something in the real call site (a
+   `cl_git_pass()` macro wrapper, `git_grafts_parse`/`git_grafts_get`
+   themselves, or an interaction with the PRECEDING
+   `assert_parse_succeeds()` call in the same test) or an upstream
+   test-data/environment issue not yet distinguished from an rcc bug —
+   not root-caused this session; a gcc cross-check build of
+   `libgit2_tests` itself failed for an unrelated reason on this system
+   (`undefined reference to '__builtin_atomic_arith_add'` from
+   `src/util/thread.h`, matching item 4's `test_libgc`/`test_libjansson`
+   upstream-macro finding, not investigated further). Needs a dedicated
+   bisection session: reduce the real `git_grafts_parse()`/
+   `git_grafts_get()` call chain (not just the variadic-shape
+   micro-repro, which didn't reproduce it) to find the actual divergence
+   point.
 
 ---
 
