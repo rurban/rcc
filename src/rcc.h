@@ -461,6 +461,11 @@ Type *pointer_to(Type *base);
 Type *array_of(Type *base, int64_t len);
 Type *complex_type(Type *base);
 Type *bitint_type(int width, bool is_unsigned);
+// Return a copy of `ty` with `quals` TypeQual bits added, never
+// mutating a shared struct/union Type object (parser.c's qualify_struct_type()
+// handles the incomplete-struct qual-variant linking; see its comment).
+Type *qualify_type_copy(Type *ty, unsigned char quals);
+Type *decay_to_ptr(Type *arr_ty);
 extern bool parser_used_wide_bitint;
 extern bool parser_used_decimal; // _Decimal32/64/128 type or literal seen
 

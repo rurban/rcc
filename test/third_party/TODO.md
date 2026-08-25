@@ -38,6 +38,99 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-25, postgres -- nested compound literal wrongly forced through speculative const-fold, hard-erroring on plain runtime code)
+
+- **A struct/union compound literal used as an ordinary RUNTIME
+  expression (e.g. a function-call argument), with no constant-expression
+  context anywhere nearby, could still hard-fail to compile with
+  `"expected constant expression in initializer"`** if it happened to be
+  NESTED inside another compound literal whose own member value was, in
+  turn, a call taking that nested literal as an argument. Root cause was
+  two stacked issues in `src/parser.c`'s `unary()` compound-literal
+  handling: (1) after building the correct runtime AST for a struct/union
+  compound literal, a speculative "maybe this also happens to be
+  compile-time constant" optimization re-scans its member tokens and, if
+  they all _look_ constant, tries to ALSO fold it via
+  `global_initializer()` (so later constant-expression member reads can
+  fold too) -- but that token prescan blindly skips over any
+  PARENTHESIZED group without checking its contents (`if (equalc(t, "("))
+{ /* skip to matching ) */ }`), so `.member = (some_call(x))` looked
+  "all constant" even though it's a genuine runtime call; (2) the
+  resulting doomed fold attempt then hit `global_init_one()`'s "expected
+  constant expression" check, which had no notion of "this was only a
+  speculative, best-effort attempt" and unconditionally turned any
+  failure into a hard, fatal compile error -- even though the ALREADY-
+  built runtime AST was completely correct and this was purely a missed
+  optimization, not invalid code. Found via postgres's `pg_list.h`:
+
+  ```c
+  #define list_make_ptr_cell(v)  ((ListCell) {.ptr_value = (v)})
+  #define list_make1(x1) list_make1_impl(T_List, list_make_ptr_cell(x1))
+  ```
+
+  and `dependency.c`'s `context.rtables = list_make1(list_make1(&rte));`
+  (`rte` a local `RangeTblEntry`) -- completely valid C GCC accepts
+  without complaint, rejected outright by rcc. Fixed by adding an
+  `in_speculative_const_fold` flag that lets every "expected constant
+  expression"/"unsupported global initializer" check inside
+  `global_init_one()`/`global_initializer_impl()` fail QUIETLY instead of
+  fatally when only this speculative attempt is in flight, plus a
+  `speculative_fold_failed` flag so a PARTIAL failure (some members
+  folded correctly, one didn't) can't leave `var->has_init`/
+  `var->is_constexpr` set with a mix of real and garbage bytes for a
+  later constant-expression read to silently trust. New regression test:
+  `test/test_speculative_const_fold_nested_compound_literal.c` (fails
+  pre-fix with the same "expected constant expression" error; verified
+  for both compile success and correct runtime values against real GCC).
+
+  This, together with the array-decay qualifier fix above, gets
+  postgres's `src/backend/catalog/dependency.c` compiling; the build now
+  progresses substantially further before hitting its next, unrelated
+  blocker (`src/interfaces/ecpg/ecpglib/descriptor.c`, "expected specific
+  operator" around a `switch`/`case` block calling `get_int_item()`/
+  `va_end()` -- not yet root-caused, left for a future session).
+
+### Fixed (2026-08-25, postgres -- struct-member array-to-pointer decay lost const/volatile qualifier)
+
+- **A struct member of ARRAY type, accessed through a const- or
+  volatile-qualified struct/union pointer, silently lost the qualifier
+  the instant the array decayed to a pointer** (indexing `arr[i]`,
+  `&arr[i]`, plain `arr + i`, `_Generic` dispatch on the bare array, or
+  passing it as a K&R-style function parameter). `.`/`->` member-access
+  parsing correctly built a const/volatile-qualified copy of the
+  ARRAY's own `Type` per C11 6.5.2.3p3 (member access through a
+  qualified struct/union additionally qualifies the result, even when
+  the member's own declared type has no qualifier at all), but every
+  array-to-pointer decay site in `src/type.c` (`ND_ADD` both operand
+  orders, the null-pointer and composite-type branches of `?:`) and a
+  couple in `src/parser.c` (`_Generic`'s non-type-name controlling
+  expression, a K&R parameter path) then discarded that qualifier and
+  decayed straight from the array's element type, silently handing back
+  a plain, unqualified pointer. Found via postgres's
+  `src/timezone/localtime.c`:
+  ```c
+  static struct pg_tm *localsub(const struct state *sp, ...) {
+      ...
+      result->tm_zone = unconstify(char *, &sp->chars[ttisp->tt_desigidx]);
+  }
+  ```
+  where `unconstify(type, expr)` (from postgres's `src/include/c.h`)
+  expands to a `_Static_assert(__builtin_types_compatible_p(__typeof(expr),
+const type), ...)` that failed to compile (`"localtime.c:1337: error:
+wrong cast"`) because `&sp->chars[...]` was typed as plain `char *`
+  instead of `const char *`, making the assertion's premise false. Fixed
+  by: (1) extracting the existing dot/arrow-operator member-type logic
+  into a shared `member_access_type()` helper in `src/parser.c` that
+  qualifies the result with any const/volatile the base struct/union
+  carries but the member type doesn't; (2) a new `decay_to_ptr()` helper
+  in `src/type.c` that carries the ARRAY type's own qualifier onto the
+  decayed pointer's pointee, used at every array-to-pointer decay site
+  instead of a bare `pointer_to(arr->base)`. `src/timezone/localtime.c`
+  now compiles cleanly. New regression test:
+  `test/test_qualified_member_array_decay.c` (fails pre-fix with the
+  same "wrong cast" premise, passes post-fix; verified against real
+  GCC throughout).
+
 ### Fixed (2026-08-25, continued unfixed.txt sweep -- -s driver flag, nextafter family)
 
 - **`rcc -s` (link-time strip, universally accepted by every real GCC/

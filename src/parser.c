@@ -274,6 +274,33 @@ static int current_block_depth;
 // a[(int){x}]);` regressed when file-scope detection used
 // current_block_depth == 0 alone).
 static bool in_global_var_init;
+// Set for the duration of a BEST-EFFORT attempt to also compile-time-fold
+// a local (non-static) compound literal's value for later constexpr member
+// access (see the "all_const" prescan below global_initializer()'s call at
+// its speculative call site). That prescan only shallow-scans TOP-LEVEL
+// tokens and blindly skips over any parenthesized group without checking
+// its contents, so it cannot tell a genuinely constant parenthesized
+// subexpression from one hiding a function call or `&local_var` -- e.g.
+// postgres's `list_make1(list_make1(&rte))` (pg_list.h's list_make1/
+// list_make_ptr_cell macros), where `.ptr_value = (list_make1_impl(...))`
+// looks "all constant" to the shallow scan (the whole call is swallowed as
+// one opaque parenthesized group) but is a genuine runtime call. Since
+// this fold is opportunistic, a failure deep in global_init_one() (a
+// non-constant value on a var that in_global_var_init's OWN propagation
+// mis-marked as file-scope, or a plain unfoldable expression) must be
+// treated as "give up quietly", not a hard compile error.
+static bool in_speculative_const_fold;
+// Set alongside every error suppressed by in_speculative_const_fold, so
+// the speculative call site can tell "the whole thing folded cleanly" from
+// "some member silently failed to fold" -- without this, a partial fold
+// (some members written correctly, one left as un-set arena bytes) would
+// still get `var->has_init = true` (set unconditionally by the caller
+// before the fold attempt) and then be marked `is_constexpr = true`,
+// letting later constant-expression reads (e.g. inside
+// `_Static_assert(__builtin_types_compatible_p(...))`) silently pick up
+// garbage bytes for the unfolded member instead of correctly failing/using
+// the real runtime value.
+static bool speculative_fold_failed;
 static bool suppress_fn_scope_update;
 static bool fn_uses_vla;
 
@@ -718,8 +745,36 @@ static Type *qualify_struct_type(Type *ty, unsigned char quals) {
 
 // C23 constexpr object types: same qualified-copy semantics as
 // qualify_struct_type() (never mutate a shared struct/union type).
-static Type *qualify_type_copy(Type *ty, unsigned char quals) {
+Type *qualify_type_copy(Type *ty, unsigned char quals) {
     return qualify_struct_type(ty, quals);
+}
+
+// The type of a `.`/`->` member-access expression: the member's own
+// declared type, plus any const/volatile qualifier the BASE struct/union
+// expression carries but the member's own type doesn't (C11 6.5.2.3p3:
+// "the result has ... the type qualifiers of the specified member" --
+// but accessing a member through a qualified struct/union additionally
+// qualifies the result even when the member's own declared type has no
+// qualifier at all, e.g. a plain `char buf[N]` member read through a
+// `const struct S *`). `base_ty` is the struct/union's own type (already
+// dereferenced for `->`); a bitfield narrows/promotes to ty_int/ty_uint
+// first (matching real GCC: sizeof/printf-format select the promoted
+// width), then that result is qualified the same way.
+static Type *member_access_type(Type *base_ty, Member *mem) {
+    Type *ty;
+    if (mem->bit_width > 0) {
+        int bw = mem->bit_width;
+        if (bw < 32 || (bw == 32 && !mem->ty->is_unsigned))
+            ty = ty_int;
+        else if (bw == 32)
+            ty = ty_uint;
+        else
+            ty = mem->ty;
+    } else {
+        ty = mem->ty;
+    }
+    unsigned char inherit = base_ty->qual & (QUAL_CONST | QUAL_VOLATILE) & ~ty->qual;
+    return inherit ? qualify_type_copy(ty, inherit) : ty;
 }
 
 // C23 typeof_unqual: recursively strip all qualifiers from a type.
@@ -7051,11 +7106,10 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             }
             return tok;
         }
-        if (!var->is_local)
-            if (!var->is_local)
-                if (!var->is_local)
-                    if (!var->is_local)
-                        error_tok(tok, "expected constant expression in initializer");
+        if (!var->is_local && !in_speculative_const_fold)
+            error_tok(tok, "expected constant expression in initializer");
+        else if (in_speculative_const_fold)
+            speculative_fold_failed = true;
         return tok;
     }
     if (is_flonum(ty)) {
@@ -7069,11 +7123,10 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             }
             return tok;
         }
-        if (!var->is_local)
-            if (!var->is_local)
-                if (!var->is_local)
-                    if (!var->is_local)
-                        error_tok(tok, "expected constant expression in initializer");
+        if (!var->is_local && !in_speculative_const_fold)
+            error_tok(tok, "expected constant expression in initializer");
+        else if (in_speculative_const_fold)
+            speculative_fold_failed = true;
         return tok;
     }
     long long val = 0;
@@ -7124,11 +7177,10 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             return tok;
         }
     }
-    if (!var->is_local)
-        if (!var->is_local)
-            if (!var->is_local)
-                if (!var->is_local)
-                    error_tok(tok, "expected constant expression in initializer");
+    if (!var->is_local && !in_speculative_const_fold)
+        error_tok(tok, "expected constant expression in initializer");
+    else if (in_speculative_const_fold)
+        speculative_fold_failed = true;
     return tok;
 }
 
@@ -9566,7 +9618,7 @@ static Node *primary(Token **rest, Token *tok) {
             ctrl_ty = ctrl->ty;
             // Apply lvalue/array/function decay
             if (ctrl_ty->kind == TY_ARRAY)
-                ctrl_ty = pointer_to(ctrl_ty->base);
+                ctrl_ty = decay_to_ptr(ctrl_ty);
             else if (ctrl_ty->kind == TY_FUNC)
                 ctrl_ty = pointer_to(ctrl_ty);
             // Lvalue conversion strips top-level qualifiers
@@ -10092,17 +10144,7 @@ static Node *apply_postfix_ops(Node *node, Token **rest, Token *tok) {
                 error_tok(tok, "no such member");
             Node *mem_node = new_unary(ND_MEMBER, node, tok);
             mem_node->member = mem;
-            if (mem->bit_width > 0) {
-                int bw = mem->bit_width;
-                if (bw < 32 || (bw == 32 && !mem->ty->is_unsigned))
-                    mem_node->ty = ty_int;
-                else if (bw == 32)
-                    mem_node->ty = ty_uint;
-                else
-                    mem_node->ty = mem->ty;
-            } else {
-                mem_node->ty = mem->ty;
-            }
+            mem_node->ty = member_access_type(node->ty, mem);
             node = mem_node;
             tok = tok->next;
             continue;
@@ -10120,17 +10162,7 @@ static Node *apply_postfix_ops(Node *node, Token **rest, Token *tok) {
                 error_tok(tok, "no such member");
             Node *mem_node = new_unary(ND_MEMBER, node, tok);
             mem_node->member = mem;
-            if (mem->bit_width > 0) {
-                int bw = mem->bit_width;
-                if (bw < 32 || (bw == 32 && !mem->ty->is_unsigned))
-                    mem_node->ty = ty_int;
-                else if (bw == 32)
-                    mem_node->ty = ty_uint;
-                else
-                    mem_node->ty = mem->ty;
-            } else {
-                mem_node->ty = mem->ty;
-            }
+            mem_node->ty = member_access_type(node->ty, mem);
             node = mem_node;
             tok = tok->next;
             continue;
@@ -12761,9 +12793,18 @@ static Node *unary(Token **rest, Token *tok) {
                 if (all_const) {
                     Token *saved_here = tok;
                     tok = init_brace_tok;
+                    bool saved_speculative = in_speculative_const_fold;
+                    bool saved_fold_failed = speculative_fold_failed;
+                    in_speculative_const_fold = true;
+                    speculative_fold_failed = false;
                     global_initializer(&tok, tok, var);
-                    if (var->has_init)
+                    bool fold_ok = !speculative_fold_failed;
+                    in_speculative_const_fold = saved_speculative;
+                    speculative_fold_failed = saved_fold_failed;
+                    if (var->has_init && fold_ok)
                         var->is_constexpr = true;
+                    else
+                        var->has_init = false;
                     tok = saved_here;
                 }
             }
@@ -13144,7 +13185,7 @@ static LVar *parse_params(Token **rest, Token *tok, bool *is_variadic) {
         }
 
         if (ty->kind == TY_ARRAY)
-            ty = pointer_to(ty->base);
+            ty = decay_to_ptr(ty);
 
         LVar *var = new_var(name, ty, true);
         cur = cur->param_next = var;
@@ -13405,7 +13446,11 @@ static void global_initializer_impl(Token **rest, Token *tok, LVar *var) {
             *rest = tok;
             return;
         }
-        error_tok(tok, "unsupported global initializer");
+        if (!var->is_local && !in_speculative_const_fold)
+            error_tok(tok, "unsupported global initializer");
+        else if (in_speculative_const_fold)
+            speculative_fold_failed = true;
+        return;
     }
 
     if (var->ty->kind == TY_ARRAY && equalc(tok, "{")) {
@@ -13660,7 +13705,10 @@ static void global_initializer_impl(Token **rest, Token *tok, LVar *var) {
             }
         }
 
-        error_tok(tok, "unsupported global initializer");
+        if (!var->is_local && !in_speculative_const_fold)
+            error_tok(tok, "unsupported global initializer");
+        else if (in_speculative_const_fold)
+            speculative_fold_failed = true;
     }
 }
 

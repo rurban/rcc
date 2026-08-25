@@ -172,6 +172,25 @@ Type *array_of(Type *base, int64_t len) {
     return ty;
 }
 
+// Array-to-pointer decay (C11 6.3.2.1p3), preserving any const/volatile
+// qualifier rcc stores on the ARRAY type itself (see
+// parser.c's member_access_type()/qualify_type_copy() -- rcc represents
+// e.g. a struct member array read through a const struct pointer as a
+// qualified copy of the ARRAY type, not by qualifying its element type
+// in place) onto the decayed pointer's pointee. Without this, `arr + i`/
+// `arr[i]`/`&arr[i]` on such an array silently produced a plain,
+// unqualified `char *` instead of `const char *`, e.g. postgres's
+// `unconstify(char *, &sp->chars[i])` macro (sp: `const struct state *`)
+// asserting `__builtin_types_compatible_p(__typeof(&sp->chars[i]), const
+// char *)`, which real GCC accepts (sp->chars[i] is const through a
+// const struct pointer) but rcc's decay silently dropped.
+Type *decay_to_ptr(Type *arr_ty) {
+    Type *elem = arr_ty->base;
+    unsigned char missing = arr_ty->qual & (QUAL_CONST | QUAL_VOLATILE) & ~elem->qual;
+    if (missing) elem = qualify_type_copy(elem, missing);
+    return pointer_to(elem);
+}
+
 static Type *usual_arith_type(Type *lhs, Type *rhs);
 
 static Node *new_scale_mul(Node *rhs, int size) {
@@ -1034,7 +1053,7 @@ static void add_type_internal(Node *node) {
                 cast->tok = node->rhs->tok;
                 node->rhs = cast;
             }
-            node->ty = (lty->kind == TY_ARRAY || lty->kind == TY_VLA) ? pointer_to(lty->base) : lty;
+            node->ty = (lty->kind == TY_ARRAY || lty->kind == TY_VLA) ? decay_to_ptr(lty) : lty;
             return;
         }
         if (is_integer(lty) && rty->base) {
@@ -1066,7 +1085,7 @@ static void add_type_internal(Node *node) {
                 cast->tok = node->rhs->tok;
                 node->rhs = cast;
             }
-            node->ty = (rty->kind == TY_ARRAY || rty->kind == TY_VLA) ? pointer_to(rty->base) : rty;
+            node->ty = (rty->kind == TY_ARRAY || rty->kind == TY_VLA) ? decay_to_ptr(rty) : rty;
             return;
         }
         if (lty->base && rty->base) {
@@ -1263,11 +1282,11 @@ static void add_type_internal(Node *node) {
         bool then_null = is_null_pointer_constant(node->then);
         bool els_null = is_null_pointer_constant(node->els);
         if (then_null && ety && (ety->kind == TY_PTR || ety->kind == TY_ARRAY || ety->kind == TY_VLA)) {
-            node->ty = (ety->kind == TY_ARRAY || ety->kind == TY_VLA) ? pointer_to(ety->base) : ety;
+            node->ty = (ety->kind == TY_ARRAY || ety->kind == TY_VLA) ? decay_to_ptr(ety) : ety;
             return;
         }
         if (els_null && tty && (tty->kind == TY_PTR || tty->kind == TY_ARRAY || tty->kind == TY_VLA)) {
-            node->ty = (tty->kind == TY_ARRAY || tty->kind == TY_VLA) ? pointer_to(tty->base) : tty;
+            node->ty = (tty->kind == TY_ARRAY || tty->kind == TY_VLA) ? decay_to_ptr(tty) : tty;
             return;
         }
         // Both pointers: find composite type
@@ -1304,8 +1323,8 @@ static void add_type_internal(Node *node) {
             } else {
                 // Same base kind: prefer the complete side (for incomplete arrays),
                 // then combine qualifiers
-                Type *chosen_ptr = (tty->kind == TY_ARRAY || tty->kind == TY_VLA) ? pointer_to(tty->base) : tty;
-                Type *other_ptr = (ety->kind == TY_ARRAY || ety->kind == TY_VLA) ? pointer_to(ety->base) : ety;
+                Type *chosen_ptr = (tty->kind == TY_ARRAY || tty->kind == TY_VLA) ? decay_to_ptr(tty) : tty;
+                Type *other_ptr = (ety->kind == TY_ARRAY || ety->kind == TY_VLA) ? decay_to_ptr(ety) : ety;
                 // If then-base is an incomplete array and els-base is complete, use els
                 if (tbase->kind == TY_ARRAY && tbase->size == 0 &&
                     ebase->kind == TY_ARRAY && ebase->size > 0)
@@ -1545,24 +1564,43 @@ static void add_type_internal(Node *node) {
     case ND_STR:
         node->ty = pointer_to(ty_char);
         return;
-    case ND_MEMBER:
+    case ND_MEMBER: {
+        // A member accessed through a const- (or volatile-) qualified
+        // struct/union expression is itself qualified, even when the
+        // member's OWN declared type carries no qualifier at all (C11
+        // 6.5.2.3p3: "the result has ... the type qualifiers of the
+        // specified member") -- e.g. `const struct S *sp` with a plain
+        // `char chars[16]` member: `&sp->chars[0]` must be `const char *`,
+        // not `char *`. Previously this was entirely unpropagated: an
+        // access through a const struct pointer silently produced the
+        // member's bare, unqualified type, so a `const`-vs-unqualified
+        // __builtin_types_compatible_p() check on the result (postgres's
+        // own `unconstify()` macro asserting it) always disagreed with
+        // real GCC. `node->lhs` is the STRUCT/UNION VALUE being accessed
+        // (already dereferenced for `->`, see parser.c's `->` handling),
+        // so its own `->ty->qual` is exactly the qualifier set to inherit.
+        unsigned char inherit = node->lhs->ty ? (node->lhs->ty->qual & (QUAL_CONST | QUAL_VOLATILE)) : 0;
+        Type *base_ty;
         if (node->member->bit_width > 0) {
             int bw = node->member->bit_width;
             bool bf_unsigned = node->member->ty->is_unsigned;
             // 64-bit declared type (long long / unsigned long long): keep as-is
             // so that sizeof(s->field + 0) == 8 and %016llx format is selected
             if (node->member->ty->size >= 8)
-                node->ty = node->member->ty;
+                base_ty = node->member->ty;
             else if (bw < 32 || (bw == 32 && !bf_unsigned))
-                node->ty = ty_int;
+                base_ty = ty_int;
             else if (bw == 32)
-                node->ty = ty_uint;
+                base_ty = ty_uint;
             else
-                node->ty = node->member->ty;
+                base_ty = node->member->ty;
         } else {
-            node->ty = node->member->ty;
+            base_ty = node->member->ty;
         }
+        unsigned char missing = inherit & ~base_ty->qual;
+        node->ty = missing ? qualify_type_copy(base_ty, missing) : base_ty;
         return;
+    }
     case ND_STMT_EXPR: {
         if (node->stmt_expr_result) {
             add_type_internal(node->stmt_expr_result);
