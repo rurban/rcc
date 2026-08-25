@@ -87,6 +87,71 @@ rename-to-libm table had no entry to redirect it to the real
   own unit-test suites pass 82/84 (97.6%, up from a hard compile/link
   failure) -- the 2 remaining failures are unrelated, see below.
 
+- **`-fdata-sections`/`-ffunction-sections` (place each global/function
+  in its own ELF section for a later `ld --gc-sections` to drop unused
+  ones) hard-failed the same way under `-Werror`**: rcc's native linker
+  never garbage-collects sections at all (every emitted symbol is
+  always kept), so per-symbol section splitting has nothing to
+  implement -- accepted as a no-op, same rationale as `-s` above.
+  Found via micropython's `-Werror ... -fdata-sections
+-ffunction-sections` build, which hard-failed at the very first
+  preprocess step. Also removed a now-stale test-harness workaround
+  (`test/linux_thirdparty.bash`'s `test_micropython`): a commented-out
+  note there predates several sessions' worth of C99 inline-linkage
+  fixes and injected a fake `CFLAGS_EXTRA=-ffake-always-inline` flag
+  to paper over `py/misc.h`'s `inline MP_ALWAYSINLINE const
+MP_COMPRESSED_ROM_TEXT(...)` pattern -- verified this compiles and
+  links correctly on its own now, and the fake flag itself started
+  hard-failing once `-Werror` was already active (the same class of
+  bug as `-s`/`-fdata-sections`, just for a flag with no real GCC
+  meaning at all -- removed rather than "fixed").
+
+  Regression test: `test/test_no_op_flags_s_sections.c` (new) -- `-s`,
+  `-fdata-sections`, `-ffunction-sections`, and all three combined,
+  each fail under `-Werror` on the pre-fix compiler; a genuinely
+  unsupported flag is confirmed to still be rejected. With both fixes,
+  micropython's build progresses substantially further (past its
+  `qstr.i.last`/`qstrdefs` generation steps that hard-failed
+  immediately before) into `makeqstrdata.py`, where it now hits the
+  preprocessor-spacing bug documented immediately below.
+
+### Investigated, not fixed (2026-08-25, object-like macro expansion loses "no space before/after" adjacency in `-E` output)
+
+**micropython's `makeqstrdata.py` (parses rcc's own `-E` preprocessed
+output) crashes**: `ValueError: invalid literal for int() with base 10:
+'(1) '` -- rcc's `-E` output for `QCFG(BYTES_IN_LEN,
+MICROPY_QSTR_BYTES_IN_LEN)` (where `#define MICROPY_QSTR_BYTES_IN_LEN
+(1)`, from `py/mpconfig.h`/`py/qstrdefs.h`) is `QCFG(BYTES_IN_LEN, (1)
+)` -- an extra space before the closing `)` that real GCC's `-E` never
+emits (`QCFG(BYTES_IN_LEN, (1))`). `makeqstrdata.py`'s own regex-based
+parser strips a value's surrounding parens only when `value[-1] ==
+")"`; the trailing space defeats that check, and `int("(1) ")` then
+throws. Minimal, clean repro (no micropython involved):
+`#define M (1)` then `X(M)` in a second file -- rcc emits `X( (1) )`,
+GCC emits `X((1))` (confirmed via direct `diff`). Two independent
+spurious spaces, both around the boundary between an object-like
+macro's expansion and the tokens immediately surrounding its
+invocation in the source: one right after `X(`, one right before the
+final `)`.
+
+`src/preprocess.c` already has a purpose-built mechanism for exactly
+this ("tight against what follows" adjacency, `Frame.tight_after` /
+`Token.no_space_after`, set in `expand_token()`'s object-like-macro
+branch and consumed in `frame_pull()`) -- its own comments describe
+precisely this scenario (`TRACE_INCLUDE_PATH/system.h`-style
+adjacency) -- but by inspection the mechanism _should_ fire correctly
+for this exact case (the last-body-token / `tight_after` propagation
+path in `frame_pull()` looks structurally sound) and evidently
+doesn't; not root-caused to the exact failure point this session
+(needs runtime instrumentation of `frame_pull()`/`expand_token()` to
+see why `tight_after` isn't taking effect here, not further pursued
+given the risk of a blind edit to this exact, delicately-tuned,
+extremely widely-exercised piece of the preprocessor). The symmetric
+_leading_-space case (nothing currently propagates "no space before"
+from whatever precedes a macro invocation onto the first token of its
+expansion) looks entirely unhandled and would need separate treatment.
+`test_micropython` stays on `unfixed.txt` pending this fix.
+
 ### Investigated, not fixed (2026-08-25, static-archive PC32-relocation precision divergence)
 
 **jerryscript's `unittests-math` suite's `unit-test-math` fails 26/91

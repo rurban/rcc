@@ -534,7 +534,8 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i], "-fno-unroll") || !strcmp(argv[i], "-fno-unroll-loops")) {
             opt_funroll = false;
         } else if (!strcmp(argv[i], "-fno-builtin") || !strncmp(argv[i], "-fno-builtin-", 13) ||
-                   !strcmp(argv[i], "-fno-common") || !strcmp(argv[i], "-fcommon")) {
+                   !strcmp(argv[i], "-fno-common") || !strcmp(argv[i], "-fcommon") ||
+                   !strcmp(argv[i], "-fdata-sections") || !strcmp(argv[i], "-ffunction-sections")) {
             // -fno-builtin[-NAME]: disable recognizing NAME (or every
             // libc function) as a compiler builtin with known semantics.
             // rcc's own __builtin_* recognition is name-prefix-gated
@@ -548,6 +549,15 @@ int main(int argc, char **argv) {
             // rcc always emits plain BSS (see codegen.c/objfile.c), which
             // is -fno-common's own behavior, so -fcommon is accepted the
             // same way rather than rejected (found via test_mongoose).
+            // -fdata-sections/-ffunction-sections: place each global/
+            // function in its own ELF section so a later `ld --gc-
+            // sections` link can drop unreferenced ones. rcc's native
+            // linker never garbage-collects sections at all (every
+            // symbol it emits is always kept), so per-symbol section
+            // splitting has no effect to implement -- accepted as a
+            // no-op rather than rejected (found via micropython's
+            // `-Werror ... -fdata-sections -ffunction-sections` build,
+            // which hard-failed at the very first preprocess step).
         } else if (!strcmp(argv[i], "-W")) {
             opt_W = true;
         } else if (!strcmp(argv[i], "-Werror")) {

@@ -1064,10 +1064,12 @@ test_metalang99() {
 test_micropython() {
  github_clone micropython micropython v1.28.0
  use_stdbit "#include <stdbool.h>" py/misc.h
- # sed -i 's|inline MP_ALWAYSINLINE const|static inline const|g' py/misc.h ## if without CFLAGS_EXTRA=-ffake-always-inline
+ # inline MP_ALWAYSINLINE const in py/misc.h now compiles and links
+ # correctly (verified against rcc's improved C99 inline linkage) --
+ # no sed patch or CFLAGS_EXTRA workaround needed.
  replace_line "#if defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 8)" "#if 1" py/nlrx64.c
  sed -i 's|defined(LFS2_NO_INTRINSICS)|1|g' lib/littlefs/lfs2_util.h
- make -C ports/unix/ CC="$CC" CFLAGS_EXTRA=-ffake-always-inline V=1 VARIANT=standard MICROPY_PY_THREAD_GIL=1 test_full
+ make -C ports/unix/ CC="$CC" V=1 VARIANT=standard MICROPY_PY_THREAD_GIL=1 test_full
  cd tests
  MICROPY_CPYTHON3=python3 MICROPY_MICROPYTHON=../ports/unix/build-standard/micropython ./run-multitests.py multi_net/*.py
 }
