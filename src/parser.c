@@ -658,12 +658,12 @@ static Node *vla_alloc_size(Type *ty, Token *tok) {
         : new_node(ND_NUM, tok);
     if (ty->base->kind != TY_VLA) {
         base_sz->val = ty->base->size;
-        base_sz->ty = ty_ulong;
+        base_sz->ty = size_t_type();
     }
     Node *count = ty->vla_len_expr ? ty->vla_len_expr : new_node(ND_NUM, tok);
     if (!ty->vla_len_expr) {
         count->val = ty->array_len;
-        count->ty = ty_ulong;
+        count->ty = size_t_type();
     }
     return new_binary(ND_MUL, count, base_sz, tok);
 }
@@ -10168,7 +10168,14 @@ static Node *type_size_node(Type *ty, Token *tok) {
         check_type(result);
         return result;
     }
-    return new_num(ty->size, tok);
+    Node *n = new_num(ty->size, tok);
+    n->ty = size_t_type(); // sizeof/byte-size is always size_t (unsigned) -- new_num()'s
+    // suffix-sniffing reads tok's raw text looking for u/l, but
+    // `tok` here is never actually the numeric-literal token this
+    // value came from (it's whatever token followed the sizeof
+    // expression), so that heuristic can't determine the right
+    // type and must not be trusted for this call site.
+    return n;
 }
 
 // ---- Vector (__attribute__((vector_size))) element-wise lowering ----------
@@ -12103,9 +12110,14 @@ static Node *unary(Token **rest, Token *tok) {
                 error_tok(sty_tok, "invalid application of 'sizeof' to incomplete type");
             *rest = tok;
             if (ty->kind == TY_VLA) {
-                // Runtime sizeof for VLA: len * base_size
+                // Runtime sizeof for VLA: len * base_size. new_num()'s
+                // suffix-sniffing can't be trusted here either (see
+                // type_size_node's comment above) -- both operands, and
+                // thus the product, must be size_t (unsigned).
                 Node *len = ty->vla_len_expr ? ty->vla_len_expr : new_num(ty->array_len, tok);
+                if (!ty->vla_len_expr) len->ty = size_t_type();
                 Node *base_sz = new_num(ty->base->size, tok);
+                base_sz->ty = size_t_type();
                 Node *result = new_binary(ND_MUL, len, base_sz, tok);
                 check_type(result);
                 return result;
@@ -12115,7 +12127,11 @@ static Node *unary(Token **rest, Token *tok) {
                 check_type(ty->vla_len_expr);
                 return ty->vla_len_expr;
             }
-            return new_num(ty->size, tok);
+            {
+                Node *n = new_num(ty->size, tok);
+                n->ty = size_t_type(); // sizeof is always size_t (unsigned)
+                return n;
+            }
         }
     sizeof_expr:;
         Node *node = unary(&tok, tok->next);
@@ -12139,7 +12155,9 @@ static Node *unary(Token **rest, Token *tok) {
             // itself must also run for its side effects (e.g. sizeof(*p)
             // where p was advanced via a comma operator).
             Node *len = node->ty->vla_len_expr ? node->ty->vla_len_expr : new_num(node->ty->array_len, tok);
+            if (!node->ty->vla_len_expr) len->ty = size_t_type();
             Node *base_sz = new_num(node->ty->base->size, tok);
+            base_sz->ty = size_t_type();
             Node *result = new_binary(ND_MUL, len, base_sz, tok);
             check_type(result);
             Node *seq = new_binary(ND_COMMA, node, result, tok);
@@ -12150,7 +12168,11 @@ static Node *unary(Token **rest, Token *tok) {
             check_type(node->ty->vla_len_expr);
             return node->ty->vla_len_expr;
         }
-        return new_num(node->ty->size, tok);
+        {
+            Node *n = new_num(node->ty->size, tok);
+            n->ty = size_t_type(); // sizeof is always size_t (unsigned)
+            return n;
+        }
     }
     if (equalc(tok, "__real__") || equalc(tok, "__real")) {
         Node *node = new_unary(ND_REAL, unary(rest, tok->next), tok);
@@ -12178,7 +12200,7 @@ static Node *unary(Token **rest, Token *tok) {
                 warn_tok(aty_tok, "'_Alignof' applied to an incomplete type");
             *rest = tok;
             Node *n = new_num(ty->align, start);
-            n->ty = ty_ulong; // _Alignof returns size_t (unsigned)
+            n->ty = size_t_type(); // _Alignof returns size_t (unsigned)
             return n;
         }
         if (opt_pedantic && std_spelling)
@@ -12191,7 +12213,7 @@ static Node *unary(Token **rest, Token *tok) {
         if (node->ty->kind == TY_PTR && node->ty->base && node->ty->base->kind == TY_FUNC)
             al = node->ty->base->align;
         Node *n2 = new_num(al, start);
-        n2->ty = ty_ulong; // _Alignof returns size_t (unsigned)
+        n2->ty = size_t_type(); // _Alignof returns size_t (unsigned)
         return n2;
     }
     if (is_cast(tok)) {

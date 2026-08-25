@@ -409,6 +409,7 @@ extern Type *ty_decimal32;
 extern Type *ty_decimal64;
 extern Type *ty_decimal128;
 extern Type *ty_nullptr_t;
+Type *size_t_type(void);
 
 extern bool opt_O0;
 extern bool opt_O1;

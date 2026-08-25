@@ -1082,6 +1082,44 @@ VReg gen_ia32_builtin(Node *node) {
         free_reg(h);
         return R_NONE;
     }
+    if (!strcmp(n, "rdtsc")) {
+        // RDTSC writes the 64-bit timestamp counter split across
+        // EDX:EAX (each 32-bit write implicitly zero-extends to 64
+        // bits on x86-64); __builtin_ia32_rdtsc() returns it combined
+        // as a single `unsigned long long`.
+        x86_rdtsc(cg_sec);
+        VReg r = alloc_reg();
+        x86_mov_rr(cg_sec, 4, REG(r), X86_RDX); // mov edx, r (zero-extends)
+        x86_shl_ri(cg_sec, 8, REG(r), 32); // shl r, #32
+        VReg lo = alloc_reg();
+        x86_mov_rr(cg_sec, 4, REG(lo), X86_RAX); // mov eax, lo (zero-extends)
+        x86_or_rr(cg_sec, 8, REG(r), REG(lo)); // or lo, r
+        free_reg(lo);
+        return r;
+    }
+    if (!strcmp(n, "rdtscp")) {
+        // __builtin_ia32_rdtscp(unsigned int *aux): RDTSCP additionally
+        // writes the TSC_AUX MSR value to ECX; store that through the
+        // pointer argument, return the combined EDX:EAX counter exactly
+        // like plain rdtsc.
+        x86_rdtscp(cg_sec);
+        VReg r = alloc_reg();
+        x86_mov_rr(cg_sec, 4, REG(r), X86_RDX);
+        x86_shl_ri(cg_sec, 8, REG(r), 32);
+        VReg lo = alloc_reg();
+        x86_mov_rr(cg_sec, 4, REG(lo), X86_RAX);
+        x86_or_rr(cg_sec, 8, REG(r), REG(lo));
+        free_reg(lo);
+        if (a1) {
+            VReg p = gen(a1);
+            VReg aux = alloc_reg();
+            x86_mov_rr(cg_sec, 4, REG(aux), X86_RCX);
+            x86_mov_mr(cg_sec, 4, x86_mem(REG(p), 0), REG(aux));
+            free_reg(aux);
+            free_reg(p);
+        }
+        return r;
+    }
     if (!strcmp(n, "clflush")) {
         VReg p = gen(a1);
         x86_clflush(cg_sec, x86_mem(REG(p), 0));

@@ -38,6 +38,85 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-25, valkey -- sizeof unsigned type / int128 shift clobber / rdtsc)
+
+- **`sizeof(...)` (and `sizeof(type-name)`) produced the correct
+  MAGNITUDE but the WRONG TYPE -- signed `int`/`long`/`long long`
+  instead of the standard-mandated unsigned `size_t`** (C11 6.5.3.4p5).
+  `unary()`'s `sizeof` handling (parser.c) built its result via
+  `new_num(ty->size, tok)`, where `tok` is whatever token happened to
+  follow the `sizeof` expression -- NOT the numeric-literal token
+  `new_num()`'s own suffix-sniffing logic expects (it reads backwards
+  from `tok->ptr+tok->len` hunting for `u`/`l` characters, exactly like
+  it does for a real `123ULL` literal). Fed a non-literal token, that
+  heuristic never finds a suffix, so it silently fell through to
+  signed `int`/`long`/`long long` purely by the VALUE's magnitude --
+  e.g. `sizeof(char)` (value 1) came out plain signed `int`. This
+  corrupted any comparison/arithmetic relying on `sizeof`'s unsigned
+  usual-arithmetic-conversion semantics (`3 < sizeof(char) - 5` must be
+  TRUE via unsigned wraparound, per real gcc). Fixed by explicitly
+  using rcc's target `size_t` type at all sizeof-result construction
+  sites (`sizeof(type-name)`, `sizeof expr`, and their shared
+  VLA-runtime-size helpers), matching `_Alignof`'s handling below it.
+  A follow-up CI failure showed this must be target-specific on Windows
+  LLP64: `size_t` is `unsigned long long`, not `unsigned long`.
+
+  Found via valkey's `src/entry.c`:
+  `static_assert(FIELD_SDS_AUX_BIT_MAX < sizeof(char) - SDS_TYPE_BITS,
+"...")`, which needs the unsigned-wraparound reading to pass (real
+  gcc agrees) rather than the signed `-2` rcc used to compute.
+
+- **A `__int128 << expr` / `__int128 >> expr` whose shift-count `expr`
+  needed x86 unsigned/signed division (mandatorily routed through
+  `%rax`/`%rdx` by the ISA) silently clobbered the \_\_int128 operand's
+  own value** -- `src/codegen.c`, `gen_int128()`'s x86-64 SHL/SHR
+  codegen. It loaded the 128-bit operand into the PHYSICAL registers
+  `%rax`/`%rdx` (via `asm_mov_mem_rax`/`asm_mov_mem8_rdx`, bypassing
+  the VReg allocator's tracking entirely) BEFORE evaluating the
+  shift-count RHS via `gen(node->rhs)`. Nothing told the allocator
+  those two physical registers were "busy": a `div`/`idiv` instruction
+  needed anywhere inside the shift-count's own evaluation silently
+  overwrote the just-loaded 128-bit value before the shift instructions
+  ever consumed it. A plain `int` variable or literal shift count never
+  triggered it (no `gen()` call, or too simple to need rax/rdx), so
+  this stayed latent until the `sizeof` fix above made a real-world
+  `sizeof(...) * N / 2`-shaped shift count use x86 unsigned `div` for
+  the first time. Fixed on x86 by evaluating the shift-count RHS and
+  parking it in `%ecx` FIRST, before loading the 128-bit operand into
+  `%rax`/`%rdx`. A follow-up macOS CI failure showed the ARM64
+  variable-shift path also needed to stay inline instead of delegating
+  to runtime `__*ti3` helpers. Found via GCC torture's `pr85582-3.c`.
+
+- **`__builtin_ia32_rdtsc()`/`__builtin_ia32_rdtscp()` were unimplemented**
+  (`error: intrinsic not yet implemented`) -- `src/cg_vectors.c`,
+  `gen_ia32_builtin()`. The `RDTSC`/`RDTSCP` assembler encoders already
+  existed (`x86_rdtsc`/`x86_rdtscp` in x86_enc.c) but were never
+  dispatched from any builtin-call site. Added both, combining the
+  EDX:EAX halves RDTSC(P) writes into the single 64-bit result these
+  builtins return (each 32-bit register write already zero-extends to
+  64 bits on x86-64), plus RDTSCP's extra `TSC_AUX`-via-`%ecx` output
+  parameter. Found via valkey's `src/monotonic.c`
+  (`<x86intrin.h>`/`<ia32intrin.h>`'s `__rdtsc()` wrapper), used to pick
+  the TSC-based monotonic clock backend.
+
+  Regression tests: `test/test_sizeof_unsigned_type.c`,
+  `test/test_int128_shift_count_clobber.c`,
+  `test/test_int128_var_shift.c`. valkey (v9.1.0) now builds
+  completely clean with rcc end to end (previously hard-blocked at the
+  `static_assert` in `entry.c`, then at the missing `rdtsc` intrinsic);
+  `valkey-server` starts, logs `monotonic clock: X86 TSC @ ... ticks/us`
+  (confirming the rdtsc fix drives its real startup path), then hits a
+  SEPARATE, unrelated runtime issue (`Fatal glibc error:
+pthread_mutex_lock.c:88: assertion failed: mutex->__data.__owner ==
+0`) before it can serve requests -- not root-caused this session, see
+  "Needs fixing" below. Also newly found while investigating this
+  cluster (unrelated to any of the three fixes above, NOT yet fixed):
+  `assert(f())`/`if (f())`-style truthiness testing of a function whose
+  return type is `__int128`/`unsigned __int128` can abort/misbehave in
+  some but not all shapes (a bare `if (var)` and `if (f())` both work;
+  `assert(f(a, b))` where `f` takes two `__int128` PARAMETERS and
+  compares them internally does not) -- see "Needs fixing" below.
+
 ### Fixed (2026-08-25, libgit2 -- braced scalar initializer trailing comma)
 
 - **A scalar initializer wrapped in "superfluous but legal" braces with
@@ -5253,6 +5332,34 @@ n, ...)` helper) — "unable to parse OID - contains invalid
    `git_grafts_get()` call chain (not just the variadic-shape
    micro-repro, which didn't reproduce it) to find the actual divergence
    point.
+
+9. **valkey's `valkey-server` aborts on startup with a glibc pthread
+   assertion** (`Fatal glibc error: pthread_mutex_lock.c:88
+(___pthread_mutex_lock): assertion failed: mutex->__data.__owner ==
+0`), reached AFTER logging its TSC-based monotonic clock banner
+   (confirming the "Fixed (2026-08-25, valkey -- sizeof unsigned type /
+   int128 shift clobber / rdtsc)" fixes above are exercised correctly)
+   but before it can serve a single request. Surfaced now that valkey
+   builds at all; not root-caused this session -- needs bisection
+   against a real gcc-built valkey-server first to rule out an
+   upstream/environment mutex-attribute mismatch (e.g. a
+   `PTHREAD_MUTEX_ERRORCHECK` or robust-mutex attribute rcc's pthread
+   header/runtime handles differently) before assuming an rcc codegen
+   bug.
+
+10. **`__int128`/`unsigned __int128` truthiness testing inconsistently
+    aborts depending on the exact expression shape** -- `if (var)` and
+    `if (f())` (a bare call) both work correctly, but
+    `assert(f(a, b))` where `f` takes two `__int128` parameters and
+    internally compares them with `==` before returning the (int128)
+    boolean result crashes with no output at all (not even a
+    partially-buffered printf immediately before the `assert`, so the
+    crash is very early -- likely during argument marshaling or the
+    call itself, not the truthiness test). Found incidentally while
+    isolating item 9's `gen_int128` fix above; not related to that fix
+    (reproduces identically with or without it) and not root-caused
+    this session -- needs a dedicated minimal-repro bisection separate
+    from the shift-clobber investigation that found it.
 
 ---
 

@@ -26,6 +26,14 @@ Type *ty_llong   = &(Type){.kind=TY_LLONG,   .size=8,  .align=8};
 Type *ty_ullong  = &(Type){.kind=TY_LLONG,   .size=8,  .align=8,  .is_unsigned=true};
 Type *ty_int128  = &(Type){.kind=TY_INT128,  .size=16, .align=16};
 Type *ty_uint128 = &(Type){.kind=TY_INT128,  .size=16, .align=16, .is_unsigned=true};
+
+Type *size_t_type(void) {
+#ifdef _WIN32
+    return ty_ullong;
+#else
+    return ty_ulong;
+#endif
+}
 Type *ty_float   = &(Type){.kind=TY_FLOAT,   .size=4,  .align=4};
 Type *ty_double  = &(Type){.kind=TY_DOUBLE,  .size=8,  .align=8};
 // IEEE 754-2008 decimal floating point (BID encoding): 7/16/34 digits.
@@ -188,14 +196,14 @@ static Node *new_scale_mul(Node *rhs, int size) {
 }
 
 // Return a Node* computing the runtime size of a VLA type.
-// For non-VLA types, returns a compile-time ND_NUM with ty_ulong.
+// For non-VLA types, returns a compile-time ND_NUM with size_t type.
 // For VLA types, computes len * base_size recursively.
 static Node *vla_size_node(Type *ty) {
     if (ty->kind != TY_VLA) {
         Node *num = arena_alloc(sizeof(Node));
         num->kind = ND_NUM;
         num->val = ty->size;
-        num->ty = ty_ulong;
+        num->ty = size_t_type();
         return num;
     }
     Node *len;
@@ -205,14 +213,14 @@ static Node *vla_size_node(Type *ty) {
         len = arena_alloc(sizeof(Node));
         len->kind = ND_NUM;
         len->val = ty->array_len;
-        len->ty = ty_ulong;
+        len->ty = size_t_type();
     }
     Node *base = vla_size_node(ty->base);
     Node *node = arena_alloc(sizeof(Node));
     node->kind = ND_MUL;
     node->lhs = len;
     node->rhs = base;
-    node->ty = ty_ulong;
+    node->ty = size_t_type();
     return node;
 }
 

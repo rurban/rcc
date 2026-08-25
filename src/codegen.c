@@ -7540,29 +7540,76 @@ static VReg gen_int128(Node *node) {
             free_reg(t1);
             free_reg(t2);
         } else {
-            // Variable shift: call libgcc
-            char *fn = is_shl ? "__ashlti3" : (is_unsigned ? "__lshrti3" : "__ashrti3");
+            // Keep ARM64 variable shifts inline so Darwin and Linux use the
+            // same 0..127 count handling, independent of runtime __*ti3 helpers.
             int r_shift = gen(node->rhs);
-            arm64_ldr_uoff(cg_sec, 3, ARM64_X0, REG(lhs), 0); // ldr x0, [lhs]
-            arm64_ldr_uoff(cg_sec, 3, ARM64_X1, REG(lhs), 1); // ldr x1, [lhs, #8]
-            arm64_orr_reg(cg_sec, 1, ARM64_X2, ARM64_XZR, REG(r_shift), ARM64_LSL, 0); // mov x2, r_shift
-            free_reg(r_shift);
+            asm_and_imm(cg_sec, r_shift, 4, 127);
+            int t1 = alloc_reg(), t2 = alloc_reg(), t3 = alloc_reg(), t4 = alloc_reg();
+            arm64_ldr_uoff(cg_sec, 3, REG(t1), REG(lhs), 0); // lo
+            arm64_ldr_uoff(cg_sec, 3, REG(t2), REG(lhs), 1); // hi
             free_reg(lhs);
-            arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_SP, 32, 0); // sub sp, sp, #32
-            arm64_str_uoff(cg_sec, 3, REG(dst), ARM64_SP, 2); // str dst, [sp, #16]
-            emit_direct_call(fn, false); // bl fn
-            arm64_ldr_uoff(cg_sec, 3, ARM64_X9, ARM64_SP, 2); // ldr x9, [sp, #16]
-            arm64_str_uoff(cg_sec, 3, ARM64_X0, ARM64_X9, 0); // str x0, [x9]
-            arm64_str_uoff(cg_sec, 3, ARM64_X1, ARM64_X9, 1); // str x1, [x9, #8]
-            arm64_ldr_uoff(cg_sec, 3, REG(dst), ARM64_SP, 2); // ldr dst, [sp, #16]
-            arm64_add_imm(cg_sec, 1, ARM64_SP, ARM64_SP, 32, 0); // add sp, sp, #32
+
+            if (is_shl) {
+                arm64_lsl_reg(cg_sec, 1, REG(t3), REG(t2), REG(r_shift)); // hi << c
+                arm64_neg(cg_sec, 1, REG(t4), REG(r_shift));
+                arm64_lsr_reg(cg_sec, 1, REG(t4), REG(t1), REG(t4)); // lo >> (64-c)
+                asm_cmp_imm(cg_sec, r_shift, 4, 0);
+                arm64_csel(cg_sec, 1, REG(t4), ARM64_XZR, REG(t4), ARM64_EQ);
+                arm64_orr_reg(cg_sec, 1, REG(t3), REG(t3), REG(t4), ARM64_LSL, 0);
+                arm64_lsl_reg(cg_sec, 1, REG(t4), REG(t1), REG(r_shift)); // lo << c
+                arm64_ands_imm(cg_sec, 1, ARM64_XZR, REG(r_shift), 64);
+                arm64_csel(cg_sec, 1, REG(t2), REG(t4), REG(t3), ARM64_NE);
+                arm64_csel(cg_sec, 1, REG(t1), ARM64_XZR, REG(t4), ARM64_NE);
+            } else {
+                arm64_lsr_reg(cg_sec, 1, REG(t3), REG(t1), REG(r_shift)); // lo >> c
+                arm64_neg(cg_sec, 1, REG(t4), REG(r_shift));
+                arm64_lsl_reg(cg_sec, 1, REG(t4), REG(t2), REG(t4)); // hi << (64-c)
+                asm_cmp_imm(cg_sec, r_shift, 4, 0);
+                arm64_csel(cg_sec, 1, REG(t4), ARM64_XZR, REG(t4), ARM64_EQ);
+                arm64_orr_reg(cg_sec, 1, REG(t3), REG(t3), REG(t4), ARM64_LSL, 0);
+                if (is_unsigned)
+                    arm64_lsr_reg(cg_sec, 1, REG(t4), REG(t2), REG(r_shift));
+                else
+                    arm64_asr_reg(cg_sec, 1, REG(t4), REG(t2), REG(r_shift));
+                if (is_unsigned)
+                    asm_mov_xzr_phy(cg_sec, REG(t2));
+                else
+                    asm_sar_imm(cg_sec, t2, 8, 63);
+                arm64_ands_imm(cg_sec, 1, ARM64_XZR, REG(r_shift), 64);
+                arm64_csel(cg_sec, 1, REG(t1), REG(t4), REG(t3), ARM64_NE);
+                arm64_csel(cg_sec, 1, REG(t2), REG(t2), REG(t4), ARM64_NE);
+            }
+            free_reg(r_shift);
+            asm_str_reg_off(cg_sec, t1, dst, 8, 0);
+            asm_str_reg_off(cg_sec, t2, dst, 8, 8);
+            free_reg(t1);
+            free_reg(t2);
+            free_reg(t3);
+            free_reg(t4);
         }
 #else
-        // x86-64: rax=lo, rdx=hi; use shldq/shrdq
+        // x86-64: rax=lo, rdx=hi; use shldq/shrdq. The shift-count RHS
+        // must be evaluated and parked in %ecx BEFORE loading lhs into
+        // rax/rdx: gen(node->rhs) can itself need rax/rdx as scratch
+        // (e.g. an x86 `div`/`idiv` for an unsigned/signed division
+        // subexpression, which the ISA mandates run in edx:eax) --
+        // loading lhs first left no window where the allocator could
+        // know those two physical registers were "busy", so evaluating
+        // a register-hungry shift-count expression silently clobbered
+        // the already-loaded 128-bit value. The constant-shift fast
+        // path below never calls gen() for the count, so it is
+        // unaffected either way.
+        bool rhs_is_const = (node->rhs->kind == ND_NUM);
+        int r_shift = -1;
+        if (!rhs_is_const) {
+            r_shift = gen(node->rhs);
+            asm_mov_reg_ecx(cg_sec, r_shift); // movl %r_shift, %ecx
+            free_reg(r_shift);
+        }
         asm_mov_mem_rax(cg_sec, lhs); // movq (lhs), %%rax
         asm_mov_mem8_rdx(cg_sec, lhs); // movq 8(lhs), %%rdx
         free_reg(lhs);
-        if (node->rhs->kind == ND_NUM) {
+        if (rhs_is_const) {
             int shift = (int)node->rhs->val;
             if (shift == 0) {
                 // no-op
@@ -7609,9 +7656,6 @@ static VReg gen_int128(Node *node) {
                 }
             }
         } else {
-            int r_shift = gen(node->rhs);
-            asm_mov_reg_ecx(cg_sec, r_shift); // movl %r_shift, %ecx
-            free_reg(r_shift);
             if (is_shl) {
                 asm_shldq_cl(cg_sec); // shldq %%cl, %%rax, %%rdx
                 asm_shl_rax_cl(cg_sec); // shlq %%cl, %%rax
