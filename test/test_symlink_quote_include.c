@@ -45,8 +45,8 @@ int main(void) {
     (void)rcc; (void)td; (void)dir; (void)sub;
     return 0;
 #else
-    if (mkdir(dir, 0755) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
-    if (mkdir(sub, 0755) != 0) { printf("FAIL: mkdir %s\n", sub); return 1; }
+    if (test_mkdir(dir) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
+    if (test_mkdir(sub) != 0) { printf("FAIL: mkdir %s\n", sub); return 1; }
 
     char header[700], real_c[700], link_c[700];
     snprintf(header, sizeof(header), "%s/sym_header.h", dir);

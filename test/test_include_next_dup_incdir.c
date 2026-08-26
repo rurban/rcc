@@ -99,12 +99,12 @@ int main(void) {
     snprintf(src, sizeof(src), "%s/src.c", dir);
     snprintf(obj, sizeof(obj), "%s/src.o", dir);
 
-    if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+    if (test_mkdir(dir) != 0 && errno != EEXIST) {
         printf("FAIL: cannot create %s\n", dir);
         free(stdio_content);
         return 3;
     }
-    if (mkdir(inc_dir, 0755) != 0 && errno != EEXIST) {
+    if (test_mkdir(inc_dir) != 0 && errno != EEXIST) {
         printf("FAIL: cannot create %s\n", inc_dir);
         free(stdio_content);
         return 4;

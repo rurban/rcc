@@ -37,7 +37,7 @@ int main(void) {
     int pid = (int)getpid();
     char dir[600];
     snprintf(dir, sizeof(dir), "%s/test_glibc_next_%d.d", td, pid);
-    if (mkdir(dir, 0755) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
+    if (test_mkdir(dir) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
     char src[600], exe[600], cmd[2600];
     snprintf(src, sizeof(src), "%s/t.c", dir);
     snprintf(exe, sizeof(exe), "%s/t", dir);

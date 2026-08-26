@@ -46,7 +46,7 @@ int main(void) {
 #else
     snprintf(dir, sizeof(dir), "%s/test_link_space_%d dir", td, pid);
 #endif
-    if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+    if (test_mkdir(dir) != 0 && errno != EEXIST) {
         printf("FAIL: cannot create %s\n", dir);
         return 1;
     }

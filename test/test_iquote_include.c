@@ -17,7 +17,7 @@ int main(void)
     int pid = (int)getpid();
 
     snprintf(dir, sizeof(dir), "%s/test_iquote_%d.d", td, pid);
-    if (mkdir(dir, 0755) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
+    if (test_mkdir(dir) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
     snprintf(hdr, sizeof(hdr), "%s/iq_header.h", dir);
     snprintf(src, sizeof(src), "%s/test_iquote_%d.c", td, pid);
     snprintf(obj, sizeof(obj), "%s/test_iquote_%d.o", td, pid);

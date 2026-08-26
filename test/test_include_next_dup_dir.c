@@ -29,7 +29,7 @@ int main(void) {
     (void)rcc; (void)dir;
     return 0;
 #else
-    if (mkdir(dir, 0755) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
+    if (test_mkdir(dir) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
 
     /* wrapdir/wrap.h: a gnulib-style wrapper that chains onward via
      * #include_next -- reachable via a directory listed TWICE on the
@@ -37,8 +37,8 @@ int main(void) {
     char wrapdir[650], realdir[650];
     snprintf(wrapdir, sizeof(wrapdir), "%s/wrap", dir);
     snprintf(realdir, sizeof(realdir), "%s/real", dir);
-    if (mkdir(wrapdir, 0755) != 0) { printf("FAIL: mkdir wrapdir\n"); return 1; }
-    if (mkdir(realdir, 0755) != 0) { printf("FAIL: mkdir realdir\n"); return 1; }
+    if (test_mkdir(wrapdir) != 0) { printf("FAIL: mkdir wrapdir\n"); return 1; }
+    if (test_mkdir(realdir) != 0) { printf("FAIL: mkdir realdir\n"); return 1; }
 
     char wraphdr[700], realhdr[700], src[700];
     snprintf(wraphdr, sizeof(wraphdr), "%s/wrap.h", wrapdir);

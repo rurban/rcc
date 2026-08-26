@@ -21,7 +21,7 @@ int main(void) {
     int pid = (int)getpid();
     char dir[600];
     snprintf(dir, sizeof(dir), "%s/test_many_inputs_%d.d", td, pid);
-    if (mkdir(dir, 0755) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
+    if (test_mkdir(dir) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
 
     /* 70 small files defining f0()..f69() */
     for (int i = 0; i < NFILES; i++) {

@@ -31,7 +31,7 @@ int main(void) {
     int pid = (int)getpid();
 
     snprintf(dir, sizeof(dir), "%s/test_iquote_prec_%d.d", td, pid);
-    if (mkdir(dir, 0755) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
+    if (test_mkdir(dir) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
     /* "limits.h" collides with rcc's own bundled include/limits.h. */
     snprintf(hdr, sizeof(hdr), "%s/limits.h", dir);
     snprintf(src, sizeof(src), "%s/test_iquote_prec_%d.c", td, pid);

@@ -76,7 +76,7 @@ int main(void) {
     int pid = (int)getpid();
     char dir[600];
     snprintf(dir, sizeof(dir), "%s/test_angle_prec_%d.d", td, pid);
-    if (mkdir(dir, 0755) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
+    if (test_mkdir(dir) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
 
     static const struct { const char *name, *marker; } headers[] = {
         {"stddef.h", "ANGLE_STDDEF_OVERRIDE"},

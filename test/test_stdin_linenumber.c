@@ -22,7 +22,7 @@ int main(void) {
     (void)rcc; (void)dir;
     return 0;
 #else
-    if (mkdir(dir, 0755) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
+    if (test_mkdir(dir) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
 #endif
     char out[600], cmd[2600];
     snprintf(out, sizeof(out), "%s/out.i", dir);

@@ -18,7 +18,7 @@ int main(void) {
     int pid = (int)getpid();
     char dir[600];
     snprintf(dir, sizeof(dir), "%s/test_linemarker_%d.d", td, pid);
-    if (mkdir(dir, 0755) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
+    if (test_mkdir(dir) != 0) { printf("FAIL: mkdir %s\n", dir); return 1; }
     char hdr[600], src[600], out[600], cmd[2600];
     snprintf(hdr, sizeof(hdr), "%s/sigs.h", dir);
     snprintf(src, sizeof(src), "%s/t.c", dir);

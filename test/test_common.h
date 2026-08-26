@@ -8,6 +8,24 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <errno.h>
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
+
+// Portable directory creation.  POSIX mkdir takes a mode argument; the
+// Windows CRT only declares the 1-arg `_mkdir`.  Tests calling the
+// 2-arg form directly no longer compile under rcc's (correct, gcc-
+// matching) function-call argument-count check, so route every test
+// through this wrapper.
+static int test_mkdir(const char *path) {
+#ifdef _WIN32
+    return _mkdir(path);
+#else
+    return mkdir(path, 0755);
+#endif
+}
 
 static const char *get_tmpdir(void) {
 #ifdef _WIN32

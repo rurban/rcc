@@ -477,6 +477,23 @@ static void cast_funcall_args(Node *call) {
     }
     if (!fty || !fty->param_types)
         return;
+    // C11 6.5.2.2p6/p7: the number of arguments must match a prototyped
+    // (non-variadic) function's parameter list; a variadic function needs
+    // at least its named parameters.  Without this check a wrong-arity
+    // call like `pthread_setname_np ("a")` against glibc's two-parameter
+    // prototype compiled silently, so configure probes that rely on the
+    // compile error (Emacs's pthread_setname_np-1-arg test) misdetected
+    // the ABI and generated calls that crash at runtime.
+    if (!fty->is_oldstyle) {
+        int nparams = 0;
+        for (Type *p = fty->param_types; p; p = p->param_next)
+            nparams++;
+        int nargs = 0;
+        for (Node *a = call->args; a; a = a->next)
+            nargs++;
+        if (nargs < nparams || (!fty->is_variadic && nargs > nparams))
+            error_tok(call->tok, nargs < nparams ? "too few arguments to function" : "too many arguments to function");
+    }
     Type *pt = fty->param_types;
     for (Node **arg = &call->args; *arg && pt; arg = &(*arg)->next, pt = pt->param_next) {
         check_type(*arg);

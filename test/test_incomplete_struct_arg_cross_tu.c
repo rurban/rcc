@@ -40,7 +40,7 @@ int main(void) {
     int pid = (int)getpid();
     char dir[512], a[600], b[600], exe[600], cmd[2000];
     snprintf(dir, sizeof(dir), "%s/test_incomplete_struct_%d.d", td, pid);
-    if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+    if (test_mkdir(dir) != 0 && errno != EEXIST) {
         printf("FAIL: mkdir %s\n", dir);
         return 1;
     }

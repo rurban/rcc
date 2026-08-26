@@ -64,7 +64,7 @@ int main(void) {
     snprintf(src, sizeof(src), "%s/test_iconv_%d.c", td, pid);
     snprintf(obj, sizeof(obj), "%s/test_iconv_%d.o", td, pid);
 
-    if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+    if (test_mkdir(dir) != 0 && errno != EEXIST) {
         printf("FAIL: cannot create %s\n", dir);
         return 1;
     }
