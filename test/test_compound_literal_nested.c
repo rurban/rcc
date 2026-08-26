@@ -89,6 +89,33 @@ int main(void)
     if (c2.type != CBits) return 8;
     if (c2.bits.i != 24) return 9;
 
+    /* Nested designated compound literal must apply the usual arithmetic
+       conversions when a smaller constant is assigned to a wider member.
+       A missing check_type() on the inner ND_ASSIGN previously stored a
+       32-bit -1 into a long/long-long field without sign extension. */
+    struct outer3 {
+        union {
+            struct { long long a; long long b; } s;
+            int i;
+        } u;
+        int tag;
+    };
+    struct outer3 o3 = (struct outer3){ .u.s = { 1, -1 } };
+    if (o3.u.s.a != 1) return 10;
+    if (o3.u.s.b != -1) return 11;
+
+    struct outer4 {
+        union {
+            struct { long size; long size_byte; char *data; } s;
+            struct outer4 *next;
+        } u;
+        int tag;
+    };
+    char buf[64] = "hello";
+    struct outer4 o4 = (struct outer4){ .u.s = { 5, -1, buf } };
+    if (o4.u.s.size != 5) return 12;
+    if (o4.u.s.size_byte != -1) return 13;
+    if (__builtin_strcmp(o4.u.s.data, "hello") != 0) return 14;
 
     return 0;
 }

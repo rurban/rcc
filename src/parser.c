@@ -10614,7 +10614,7 @@ static Node *assign_nested_struct_init(Node *result, Node *base, Member *mem,
                     tok = skip(tok, "}");
                 }
                 Node *asgn = new_binary(ND_ASSIGN, inner_access, val, start);
-                asgn->ty = target->ty;
+                check_type(asgn);
                 result = new_binary(ND_COMMA, result, asgn, start);
             }
         }

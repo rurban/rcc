@@ -47,9 +47,23 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
   then failed at the first use. Fixed by adding the five suffixed
   `stdc_bit_width_{uc,us,ui,ul,ull}` helpers and the type-generic
   `stdc_bit_width` macro. New regression cases extend `test/test_bit.c`.
-  Targeted Emacs rebuild now links `src/temacs`; `test_emacs` remains in
-  `unfixed.txt` because the next failure is a runtime segfault while
-  generating `bootstrap-emacs.pdmp`, after the C compile/link phase.
+  Targeted Emacs rebuild now links `src/temacs`; `test_emacs` remained in
+  `unfixed.txt` because the next failure was a runtime segfault while
+  generating `bootstrap-emacs.pdmp` (see the compound-literal fix below).
+
+### Fixed (2026-08-26, emacs -- nested designated compound-literal conversions)
+
+- **`check_type()` was missing on scalar assignments inside nested
+  designated struct/union compound literals**, so assigning a smaller
+  constant (e.g. `int` `-1`) to a wider member (`long` or `long long`)
+  stored a truncated value without sign extension. In Emacs this corrupted
+  `Lisp_String.size_byte` (stored as `0xffffffff` instead of `-1`), causing
+  `malloc(bytes)` with a huge size and a SIGSEGV while dumping
+  `bootstrap-emacs.pdmp`. Fixed by calling `check_type(asgn)` in
+  `assign_nested_struct_init()` so the ND_ASSIGN typing rule inserts the
+  usual implicit conversion casts. Regression cases extend
+  `test/test_compound_literal_nested.c`. `test_emacs` now completes the
+  C compile/link phase and the pdmp dump successfully.
 
 ### Fixed (2026-08-26, unfixed.txt sweep -- alignas-in-nested-struct-typename, **STRICT_ANSI**, object-macro `-E` spacing)
 
