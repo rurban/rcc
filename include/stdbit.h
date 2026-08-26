@@ -68,6 +68,22 @@ static inline int __rcc_stdc_count_ones_ull(unsigned long long x) {
     return __builtin_popcountll(x);
 }
 
+static inline unsigned int __rcc_stdc_bit_width_uc(unsigned char x) {
+    return __rcc_uc_width - __rcc_stdc_leading_zeros_uc(x);
+}
+static inline unsigned int __rcc_stdc_bit_width_us(unsigned short x) {
+    return __rcc_us_width - __rcc_stdc_leading_zeros_us(x);
+}
+static inline unsigned int __rcc_stdc_bit_width_ui(unsigned int x) {
+    return __rcc_ui_width - __rcc_stdc_leading_zeros_ui(x);
+}
+static inline unsigned int __rcc_stdc_bit_width_ul(unsigned long x) {
+    return __rcc_ul_width - __rcc_stdc_leading_zeros_ul(x);
+}
+static inline unsigned int __rcc_stdc_bit_width_ull(unsigned long long x) {
+    return __rcc_ull_width - __rcc_stdc_leading_zeros_ull(x);
+}
+
 #define stdc_leading_zeros_uc(x)  __rcc_stdc_leading_zeros_uc(x)
 #define stdc_leading_zeros_us(x)  __rcc_stdc_leading_zeros_us(x)
 #define stdc_leading_zeros_ui(x)  __rcc_stdc_leading_zeros_ui(x)
@@ -86,6 +102,11 @@ static inline int __rcc_stdc_count_ones_ull(unsigned long long x) {
 #define stdc_count_ones_ul(x)  __rcc_stdc_count_ones_ul(x)
 #define stdc_count_ones_ull(x) __rcc_stdc_count_ones_ull(x)
 
+#define stdc_bit_width_uc(x)  __rcc_stdc_bit_width_uc(x)
+#define stdc_bit_width_us(x)  __rcc_stdc_bit_width_us(x)
+#define stdc_bit_width_ui(x)  __rcc_stdc_bit_width_ui(x)
+#define stdc_bit_width_ul(x)  __rcc_stdc_bit_width_ul(x)
+#define stdc_bit_width_ull(x) __rcc_stdc_bit_width_ull(x)
 #define stdc_leading_zeros(x) _Generic((x), \
     unsigned char:      __rcc_stdc_leading_zeros_uc, \
     unsigned short:     __rcc_stdc_leading_zeros_us, \
@@ -108,6 +129,14 @@ static inline int __rcc_stdc_count_ones_ull(unsigned long long x) {
     unsigned int:       __rcc_stdc_count_ones_ui, \
     unsigned long:      __rcc_stdc_count_ones_ul, \
     unsigned long long: __rcc_stdc_count_ones_ull \
+)(x)
+
+#define stdc_bit_width(x) _Generic((x), \
+    unsigned char:      __rcc_stdc_bit_width_uc, \
+    unsigned short:     __rcc_stdc_bit_width_us, \
+    unsigned int:       __rcc_stdc_bit_width_ui, \
+    unsigned long:      __rcc_stdc_bit_width_ul, \
+    unsigned long long: __rcc_stdc_bit_width_ull \
 )(x)
 
 #endif

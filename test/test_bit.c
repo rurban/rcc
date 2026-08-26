@@ -41,4 +41,24 @@ int main()
         if (!x)
             break;
     }
+
+    puts("bit width:");
+    printf("uc: %u %u %u\n",
+           stdc_bit_width_uc((unsigned char)0),
+           stdc_bit_width_uc((unsigned char)1),
+           stdc_bit_width_uc((unsigned char)0x80));
+    printf("us: %u %u\n",
+           stdc_bit_width_us((unsigned short)0x00ff),
+           stdc_bit_width_us((unsigned short)0x0100));
+    printf("ui: %u %u\n",
+           stdc_bit_width_ui(0u),
+           stdc_bit_width_ui(0x80000000u));
+    printf("ul: %u\n", stdc_bit_width_ul(~0ul));
+    printf("ull: %u %u\n",
+           stdc_bit_width_ull(0ull),
+           stdc_bit_width_ull(1ull << 63));
+    printf("generic: %u %u %u\n",
+           stdc_bit_width((uint8_t)0x10),
+           stdc_bit_width((uint16_t)0x0100),
+           stdc_bit_width((unsigned long long)9));
 }
