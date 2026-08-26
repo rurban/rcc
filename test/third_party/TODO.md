@@ -516,7 +516,7 @@ pthread_mutex_lock.c:88: assertion failed: mutex->__data.__owner ==
   a string literal's address, avoiding a separate named buffer for a
   short fixed byte sequence.
 
-  Regression test: `test/test_addr_string_literal.c` (fails on the old
+  Regression test: `test/test_string_literal.c` (fails on the old
   code with the exact reported error; also verifies the `char(*)[N]`
   type is correct, not just that it compiles). util-linux (v2.42.2) now
   builds completely clean with rcc -- every target links, including
@@ -2129,7 +2129,7 @@ verified clean. New regression tests:
 
 - \*\*A string literal missing its closing quote at end-of-line was a hard
 - \*\*Every `lex_error_at()`/`lex_warn_at()` diagnostic raised while
-  Regression test: `test/test_unclosed_string_warn.c` (new) — verifies
+  Regression test: `test/test_string_literal.c` (new) — verifies
 
 **test_gnutls** (https://gnupg.org/software/gnutls) now gets substantially
 further into its real `./configure && make` build (unblocking every
@@ -2144,7 +2144,7 @@ gnulib/glibc-version mismatch in this specific gnutls checkout's
 `src/gl/tests` module, not an rcc gap. `make check-all`: 0 failed on
 native x86-64 (Unit 4213/4213, Torture 3605/3609 — 0 failed, 354
 skipped, 4 todo — Dg-error 34/34, Link 8/8); ARM64 and mingw cross-builds
-verified clean. New regression test: `test/test_unclosed_string_warn.c`.
+verified clean. New regression test: `test/test_string_literal.c`.
 
 ### Fixed (2026-08-15, bundled-header **GLIBC** feature-macro visibility session)
 
@@ -3289,8 +3289,8 @@ two-TU link test instead).
 
 New regression tests: `test/test_err_unclosed_paren.c`,
 `test/test_crlf_line_continuation.c` (genuine CRLF file),
-`test/test_mode_ti_attribute.c`, `test/test_builtin_cpu_init.c`,
-`test/test_ptr_array_strlit_size.c`, `test/test_stdint_int64_glibc_abi.c`,
+  `test/test_mode_ti_attribute.c`, `test/test_builtin_cpu_init.c`,
+  `test/test_string_literal.c`, `test/test_stdint_int64_glibc_abi.c`,
 plus `test/test-link.sh` case 7 (gnu*inline needs real two-TU linking,
 which the single-file `test/test*\*.c` harness can't express).
 
@@ -3336,7 +3336,7 @@ configure-time checks; not re-triaged further this session.)
 
 - \*\*A local (function-scope, non-static, non-constexpr) char/wide-char
 
-New regression test: `test/test_local_char_array_brace_strlit.c` —
+New regression test: `test/test_string_literal.c` —
 the exact NUL-prefixed-string shape from the bug, plus a plain local
 char array, a trailing comma inside the brace, a wide-string local,
 and a regression guard for the sibling "one-pointer-array-of-`char*`"
@@ -3344,7 +3344,7 @@ case (`const char *arr[] = {"vec_"}`, TY_PTR-excluded, must keep
 assigning the address rather than being treated as a char array).
 Full suite verified: Torture 3605/3609 (100% of non-skipped), Dg-error
 34/34, Link 6/6, 0 failed overall (native Linux x86-64); confirmed
-clean (both the new test and `test_ptr_array_strlit_size` PASS) on
+ clean (both the new test and `test_string_literal` PASS) on
 the mingw cross target.
 
 ### Fixed (2026-08-09, continued — wide string literal alignment: 3 stacked bugs)
@@ -3409,7 +3409,7 @@ the mingw cross target.
      10 originally-failing non-fuzz tests; the other 6 are an unrelated
      PPMd-codec issue, not yet triaged).
 
-New regression tests: `test/test_wide_string_alignment.c` (all four
+New regression tests: `test/test_string_literal.c` (all four
 fixed code paths: local pointer, global array with embedded NUL,
 struct-field pointer, `&L"literal"`); `test/test-link.sh` case 8
 (2-TU link, deliberately misaligning the second object's `.rodata` via

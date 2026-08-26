@@ -1086,10 +1086,21 @@ Token *lex_one(char **pp, int *plineno) {
             // length, so map it back to how many bytes p was advanced.
             char *start = p - (prefix ? (prefix == '8' ? 2 : 1) : 0);
             p++;
-            char *buf = arena_alloc(2048); // Pre-allocate scratch buffer
+            // Growable scratch buffer: a string literal longer than the
+            // initial 2048 bytes (e.g. glib's gconstructor_as_data.h, a
+            // ~4KB hex-escaped `const char gconstructor_code[] =
+            // "\x2f\x2a..."`) used to overflow the fixed arena bump and
+            // come back truncated with a stray byte -- corrupting the
+            // generated test_resources.c and failing the build.
+            char *buf = malloc(2048);
+            int cap = 2048;
             int len = 0;
 
             while (*p && *p != '"' && *p != '\n') {
+                if (len + 4 > cap) { // room for the widest escape (4 UTF-8 bytes)
+                    cap *= 2;
+                    buf = realloc(buf, cap);
+                }
                 if (*p == '\\') {
                     p++;
                     uint32_t val = 0;
@@ -1185,6 +1196,7 @@ Token *lex_one(char **pp, int *plineno) {
             cur->len = len;
             cur->val = (int64_t)(p - start);
             cur->string_literal_prefix = prefix;
+            free(buf);
             continue;
         }
 
