@@ -4238,7 +4238,9 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
     if (!strncmp(mnem, "xchg", 4)) {
-        x86_xchg_rr(buf, sz, R(0), R(1));
+        if (is_mem(1)) x86_xchg_mr(buf, sz, R(0), M(1));
+        else
+            x86_xchg_rr(buf, sz, R(0), R(1));
         return true;
     }
 

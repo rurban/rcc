@@ -827,6 +827,22 @@ void x86_xchg_rr(SecBuf *s, int sz, X86Reg a, X86Reg b) {
     emit1(s, rex(sz == 8, a > X86_RDI, 0, b > X86_RDI));
     emit2(s, opsize(0x86, sz), modrm(3, a, b));
 }
+// XCHG r/m, r (0x86/0x87 /r) with a memory operand -- e.g. postgres's/the
+// Linux kernel's spinlock TAS primitive ("lock; xchgb %0,%1" with
+// "+m"(*lock) as the memory operand). Mirrors x86_xchg_rr's register-pair
+// form; without this, asm.c's xchg dispatch unconditionally called
+// x86_xchg_rr even when operand 1 is memory, encoding a bogus
+// register-register exchange against whatever register happened to be
+// live instead of the actual lock word -- corrupting the spinlock and
+// (via the register it picked up instead) crashing with SIGILL on the
+// next real instruction that register's garbage value got used as.
+void x86_xchg_mr(SecBuf *s, int sz, X86Reg reg, X86Mem mem) {
+    size16_pfx(s, sz);
+    int w = sz == 8;
+    emit1(s, rex(w, reg > X86_RDI, mem.index > X86_RDI, mem.base > X86_RDI));
+    emit1(s, opsize(0x86, sz));
+    emit_mem(s, mem.base, mem.index, mem.scale, mem.disp, mem.seg, reg);
+}
 void x86_lock_prefix(SecBuf *s) { emit1(s, 0xf0); }
 void x86_rep_prefix(SecBuf *s) { emit1(s, 0xf3); }
 void x86_repne_prefix(SecBuf *s) { emit1(s, 0xf2); }

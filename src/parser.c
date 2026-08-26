@@ -7811,6 +7811,20 @@ static Node *declaration(Token **rest, Token *tok) {
             gvar->is_static = true;
             gvar->next = globals;
             globals = gvar;
+            // Register in the name hash table too: read_global_label_initializer()'s
+            // chained "&identifier[N][M].member..." address-constant continuation
+            // (used when ANOTHER static's initializer references this static's
+            // address, e.g. `static char buf[8][8]; static char *p = buf[0];` or
+            // ecpg's `static struct variable v[2] = { {names[0], ...}, ... }`)
+            // looks the label back up via find_global_name(), which is a pure
+            // hash-table lookup with no linked-list fallback -- without this,
+            // that lookup always misses for a local static (never registered
+            // here before), silently skipping the "[N]"/".member" chain and
+            // leaving those tokens unconsumed for the caller to choke on
+            // ("expected specific operator"). Plain identifier resolution
+            // elsewhere (via the `locals` list `lvar` entry below) was
+            // unaffected, so ordinary local-static usage never hit this.
+            global_htab_add(gvar);
             // Local entry for name lookup
             LVar *lvar = arena_alloc(sizeof(LVar));
             lvar->name = name;

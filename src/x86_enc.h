@@ -266,6 +266,7 @@ void x86_int(SecBuf *s, uint8_t imm8);
 
 // Misc
 void x86_xchg_rr(SecBuf *s, int size, X86Reg a, X86Reg b);
+void x86_xchg_mr(SecBuf *s, int size, X86Reg reg, X86Mem mem);
 void x86_lock_prefix(SecBuf *s);
 void x86_rep_prefix(SecBuf *s);
 void x86_repne_prefix(SecBuf *s);

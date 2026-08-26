@@ -38,6 +38,86 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-26, postgres -- local-static array-element relocation + inline-asm xchg memory operand)
+
+- **A function-local `static` variable's array-element address used to
+  initialize ANOTHER static/global object's pointer field silently
+  under-consumed tokens and desynced the parser** ("expected specific
+  operator" and cascading nonsense errors several tokens later), even
+  though the C is completely valid and GCC accepts it without
+  complaint. `read_global_label_initializer()` resolves a bare
+  identifier to its storage label, then walks a trailing
+  `[N][M].member...` chain by looking that label back up via
+  `find_global_name()` -- a pure hash-table lookup with no linked-list
+  fallback. Every OTHER path that creates a global-storage `LVar` (the
+  ordinary `new_var()` helper) registers it in that hash table via
+  `global_htab_add()`, but the block-scope-`static` declaration path
+  built its global-storage `LVar` by hand and never called
+  `global_htab_add()` at all -- so the label lookup always missed, the
+  `[N][M].member...` chain-walk never started, and the caller returned
+  with the cursor sitting right before the still-unconsumed `"[0]"`.
+  Found via postgres's `src/interfaces/ecpg/preproc/descriptor.c`:
+
+  ```c
+  static char descriptor_names[2][MAX_DESCRIPTOR_NAMELEN];
+  static struct variable varspace[2] = {
+      {descriptor_names[0], &descriptor_type, 0, NULL},
+      {descriptor_names[1], &descriptor_type, 0, NULL}
+  };
+  ```
+
+  Fixed by calling `global_htab_add()` when creating a block-scope
+  static's global-storage entry, exactly like every other global. New
+  regression test: `test/test_local_static_array_element_reloc.c`.
+
+- **rcc's inline-asm `xchg` dispatch unconditionally encoded the
+  register-register form even when the second operand is memory**,
+  silently substituting whatever register happened to occupy that
+  operand slot instead of referencing the actual memory location --
+  corrupting the exchanged value and, via the register it picked up
+  instead, crashing with SIGILL wherever that garbage register value
+  next got used as an instruction/address. `xchg` was the only member
+  of the `bts`/`btr`/`btc`/`bt`/`xadd`/`cmpxchg` family in `src/asm.c`
+  missing the `is_mem(1)` check its siblings all have. Found via
+  postgres's own spinlock TEST-AND-SET primitive
+  (`src/include/storage/s_lock.h`'s `tas()`: `"lock; xchgb %0,%1"` with
+  `"+m"(*lock)`) -- `initdb`'s very first bootstrap step crashed with
+  `SIGILL` (`lock xchg dil,r11b` instead of `lock xchg BYTE PTR
+[rlock],r11b`, confirmed via `coredumpctl`/gdb backtrace landing
+  inside `tas()` -> `ShmemAllocRaw` -> `CreateLWLocks` ->
+  `CreateSharedMemoryAndSemaphores` -> `BootstrapModeMain`). Fixed by
+  adding `x86_xchg_mr()` (`src/x86_enc.c`) and dispatching to it when
+  the r/m operand is memory. New regression test:
+  `test/test_asm_xchg_mem.c` (byte/word/dword/qword forms, checked
+  against real GCC).
+
+  Together with the earlier array-decay-qualifier and
+  speculative-const-fold fixes below, postgres now builds, links, AND
+  bootstraps a working cluster (`initdb` completes end to end) --
+  `make check`'s regression SUITE then runs but every `psql`-driven test
+  fails identically with `fe_utils/print.c`'s own overflow guard:
+  `"Cannot print table contents: number of cells N is equal to or
+exceeds maximum 0."` (`SIZE_MAX / sizeof(*content->cells)` folding to
+  `0` instead of `2305843009213693951`). Root-caused as far as: only
+  reproduces when `print.c` is compiled as part of the FULL
+  `run_batch.sh` postgres build (100% reproducible there, confirmed
+  across repeated full rebuilds); every standalone isolation attempt
+  gave the CORRECT result and never reproduced it -- exact command-line
+  replication (direct exec, via `sh -c`, repeated x5), parallel
+  concurrent invocation (x8), under `valgrind --track-origins=yes` (no
+  uninitialized-read reported), and with ASLR disabled (`setarch -R`).
+  `eval_const_expr()`'s `ND_DIV` case (`src/parser.c`) already handles
+  unsigned division correctly when reached (verified directly via a
+  forced `_Static_assert`/array-size compile-time probe on the exact
+  `SIZE_MAX / sizeof(*content->cells)` shape, both standalone and
+  through the same build path) -- so the fold logic itself isn't
+  wrong; something about the _real_ build's environment/memory layout
+  reaches a different, incorrect code path or corrupts a value before
+  reaching it. Left for a focused follow-up session with the batch
+  build as the only known-reliable repro vector (e.g. instrument the
+  `rcc` binary invoked mid-`run_batch.sh`, or bisect by progressively
+  approximating the exact recursive-`make`-driven build environment).
+
 ### Fixed (2026-08-25, postgres -- nested compound literal wrongly forced through speculative const-fold, hard-erroring on plain runtime code)
 
 - **A struct/union compound literal used as an ordinary RUNTIME
