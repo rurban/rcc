@@ -4013,7 +4013,11 @@ Token *preprocess(char *filename, char *p) {
     out_append(eof);
 
     lex_pp_mode = false;
-    Token *result = concat_strings(xout_head);
+    // Phase 6 string-literal concatenation must NOT happen during -E:
+    // real cpp preserves each literal as a separate token so downstream
+    // line-oriented consumers (micropython's makeqstrdata.py regex, etc.)
+    // still see one item per source line. Do it only for actual compilation.
+    Token *result = opt_E ? xout_head : concat_strings(xout_head);
     if (opt_dM) return NULL;
     return result;
 }

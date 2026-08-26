@@ -4597,6 +4597,24 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             if (!v) error_tok(st, "%s", msg);
             continue;
         }
+        // The preprocessor normalizes #pragma pack push/pop to
+        // `# pragma pack (N)` with no stack semantics. GCC ignores such
+        // directives when they appear inside a struct/union body (they
+        // cannot change the layout of the enclosing type after parsing has
+        // begun); rcc previously treated the leading `#` as a member
+        // declaration and errored. Treat them as no-ops here.
+        if (equalc(tok, "#") && equalc(tok->next, "pragma") &&
+            (equalc(tok->next->next, "pack") || equalc(tok->next->next, "fenv"))) {
+            tok = tok->next->next->next;
+            if (equalc(tok, "(")) {
+                tok = tok->next;
+                if (tok->kind == TK_NUM)
+                    tok = tok->next;
+                if (equalc(tok, ")"))
+                    tok = tok->next;
+            }
+            continue;
+        }
         // C11 6.7.2.1p2: empty declaration (bare semicolon) is valid.
         // Kernels commonly produce these from empty __VA_ARGS__ in macros.
         if (equalc(tok, ";")) {
