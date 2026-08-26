@@ -617,8 +617,10 @@ void emit_mov_imm64(Arm64Reg reg, uint64_t val);
 // sites elsewhere in this file (comparisons/arithmetic operating directly
 // on a still-outstanding spill's backing memory) -- those never push or
 // pop. Only alloc_reg()'s spill-victim selection (push_spill_slot, a
-// FRESH slot every call) and free_reg()/materialize_reg()'s restore
-// (pop_spill_slot, consuming the current top) touch stack depth.
+// FRESH slot every call), free_reg()/materialize_reg()'s restore
+// (pop_spill_slot, consuming the current top) and the fold sites
+// (pop_spill_slot after folding the spilled value into the op) touch
+// stack depth.
 #define MAX_SPILL_DEPTH 32
 static int spill_slot[NUM_REGS][MAX_SPILL_DEPTH];
 static int spill_depth[NUM_REGS];
@@ -6922,6 +6924,7 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
             if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
                 asm_cmp_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));
                 spilled_regs &= ~(1 << r_lhs);
+                pop_spill_slot(r_lhs); // consumed by the cmp; pop the slot
             } else
 #endif
                 asm_cmp_reg_reg(cg_sec, r_lhs, r_rhs, sz); // cmp rr_rhs, rr_lhs
@@ -11304,6 +11307,7 @@ VReg gen(Node *node) {
 #ifdef ARCH_ARM64
                 asm_ldur_fp_phy(cg_sec, ARM64_X16, spill_offset(idx)); // ldr x16, [x29, #-spill]
                 spilled_regs &= ~(1 << idx);
+                pop_spill_slot(idx); // consumed below; depth must track
                 arm64_add_reg(cg_sec, 1, REG(base), REG(base), ARM64_X16, ARM64_LSL, 0); // add base, base, x16
                 emit_load(node->ty, base, base, 0);
                 return base;
@@ -11312,6 +11316,7 @@ VReg gen(Node *node) {
                 // add idx's spilled value directly from the spill slot.
                 asm_add_spill_reg(cg_sec, idx, 8, spill_offset(idx)); // add spill, reg
                 spilled_regs &= ~(1 << idx);
+                pop_spill_slot(idx); // the spilled idx value is consumed; pop keeps depth honest
                 emit_load(node->ty, base, base, 0);
                 return base;
 #endif
@@ -15586,6 +15591,7 @@ VReg gen(Node *node) {
             asm_ldur_fp(cg_sec, r_lhs, spill_offset(r_lhs)); // ldr x{r_lhs}, [x29, #-spill_offset]
             spilled_regs &= ~(1 << r_lhs);
             rhs_in_x16 = true;
+            pop_spill_slot(r_lhs); // spilled lhs consumed into the register; pop the slot
         }
         asm_fmov_i2f(cg_sec, 0, r_lhs, 1); // fmov d0, x{r_lhs}
         if (rhs_in_x16)
@@ -15646,6 +15652,7 @@ VReg gen(Node *node) {
             asm_ldur_fp(cg_sec, r_lhs, spill_offset(r_lhs)); // ldr x{r_lhs}, [x29, #-spill_offset]
             spilled_regs &= ~(1 << r_lhs);
             rhs_in_x16 = true;
+            pop_spill_slot(r_lhs); // spilled lhs consumed into the register; pop the slot
         }
         asm_fmov_i2f(cg_sec, 0, r_lhs, 1); // fmov d0, x{r_lhs}
         if (rhs_in_x16)
@@ -15790,6 +15797,7 @@ VReg gen(Node *node) {
             if (spilled_lhs) {
                 asm_mov_rbp_reg(cg_sec, r_lhs, 8, spill_offset(r_lhs));
                 spilled_regs &= ~(1 << r_lhs);
+                pop_spill_slot(r_lhs); // spilled lhs reloaded; pop the slot
             }
             if (node->kind == ND_SHL)
                 asm_shl_cl(cg_sec, r_lhs, sz, r_rhs); // shl cl, rr_lhs
@@ -15971,6 +15979,7 @@ VReg gen(Node *node) {
                     if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
                         asm_ldur_fp_phy(cg_sec, ARM64_X16, spill_offset(r_lhs));
                         spilled_regs &= ~(1 << r_lhs);
+                        pop_spill_slot(r_lhs); // consumed by the add below
                         arm64_add_reg(cg_sec, sz == 8 ? 1 : 0, REG(r_lhs), REG(r_lhs), ARM64_X16, ARM64_LSL, 0);
                     } else {
                         asm_add_reg_reg(cg_sec, r_lhs, r_rhs, sz);
@@ -16016,6 +16025,7 @@ VReg gen(Node *node) {
                 if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
                     asm_add_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));
                     spilled_regs &= ~(1 << r_lhs);
+                    pop_spill_slot(r_lhs); // spilled lhs folded in; pop the slot
                 } else {
                     asm_add_reg_reg(cg_sec, r_lhs, r_rhs, sz);
                 }
@@ -16026,6 +16036,7 @@ VReg gen(Node *node) {
                     asm_sub_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));
                     asm_neg(cg_sec, r_lhs, sz);
                     spilled_regs &= ~(1 << r_lhs);
+                    pop_spill_slot(r_lhs); // consumed by the sub+neg; pop the slot
                 } else {
                     asm_sub_reg_reg(cg_sec, r_lhs, r_rhs, sz);
                 }
@@ -16037,6 +16048,7 @@ VReg gen(Node *node) {
                                x86_mem(X86_RBP, -spill_offset(r_lhs))); // mov -off(%rbp), %rax
                     x86_imul_rr(cg_sec, sz, REG(r_lhs), X86_RAX); // imul %rax, reg
                     spilled_regs &= ~(1 << r_lhs);
+                    pop_spill_slot(r_lhs); // consumed by the imul; pop the slot
                 } else {
                     asm_mul_reg_reg(cg_sec, r_lhs, r_rhs, sz);
                 }
@@ -16044,6 +16056,7 @@ VReg gen(Node *node) {
                 if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
                     asm_and_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));
                     spilled_regs &= ~(1 << r_lhs);
+                    pop_spill_slot(r_lhs); // consumed by the and; pop the slot
                 } else {
                     asm_and_reg_reg(cg_sec, r_lhs, r_rhs, sz);
                 }
@@ -16051,6 +16064,7 @@ VReg gen(Node *node) {
                 if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
                     asm_xor_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));
                     spilled_regs &= ~(1 << r_lhs);
+                    pop_spill_slot(r_lhs); // consumed by the xor; pop the slot
                 } else {
                     asm_eor_reg_reg(cg_sec, r_lhs, r_rhs, sz);
                 }
@@ -16058,6 +16072,7 @@ VReg gen(Node *node) {
                 if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
                     asm_or_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));
                     spilled_regs &= ~(1 << r_lhs);
+                    pop_spill_slot(r_lhs); // consumed by the or; pop the slot
                 } else {
                     asm_or_reg_reg(cg_sec, r_lhs, r_rhs, sz);
                 }
@@ -16065,6 +16080,7 @@ VReg gen(Node *node) {
                 if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
                     asm_cmp_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));
                     spilled_regs &= ~(1 << r_lhs);
+                    pop_spill_slot(r_lhs); // consumed by the cmp; pop the slot
                 } else {
                     asm_cmp_reg_reg(cg_sec, r_lhs, r_rhs, sz);
                 }

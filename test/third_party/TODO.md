@@ -53,6 +53,28 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 - \*\*`cast_funcall_args()` checked argument types but never the argument
   Regression cases in `test/test_funcall_argcount.c`. With `config.h`
 
+### Fixed (2026-08-26, emacs -- secure-hash sha384/sha512, per-register spill-slot depth overflow)
+
+- \*\*gnulib's `lib/sha512.c` was miscompiled: `(secure-hash 'sha384
+"foobar")` / `'sha512` returned wrong digests while md5/sha1/sha224/
+  sha256 were correct. The 64-bit primitives (rotates, adds, the 80-entry
+  K table, the M schedule) all worked in isolation; the multi-round
+  compression function diverged only past ~27 rounds -- a position-
+  dependent codegen bug (round 26 was wrong in a 28-round function but
+  right in a 27-round one). Root cause: every "fold the spilled value
+  into the operation" site in codegen.c (shared idx/base array deref,
+  binary-op chains add/sub/and/xor/or/cmp/imul, shifts, float ops and
+  comparisons) read `spill_offset(r)` and cleared the `spilled_regs` bit
+  WITHOUT popping the per-register spill-stack entry. Each fold leaked
+  one depth level; after MAX_SPILL_DEPTH (32) leaked levels
+  `push_spill_slot()` could no longer record the fresh slot, so the
+  store landed at a new offset while `spill_offset(r)` still returned
+  the stale top -- a silent read of the wrong slot. Fixed by popping the
+  consumed slot at all 13 fold sites. Regression:
+  `test/test_spill_slot_depth.c` (28 sha512 compression rounds; fails on
+  the pre-fix compiler with an assert, passes on gcc and fixed rcc).
+  `test_emacs`'s `test-secure-hash` now passes.
+
 ### Fixed (2026-08-26, unfixed.txt sweep -- alignas-in-nested-struct-typename, **STRICT_ANSI**, object-macro `-E` spacing)
 
 - \*\*`alignas`/`_Alignas` on a struct/union MEMBER declaration was wrongly
@@ -3289,8 +3311,8 @@ two-TU link test instead).
 
 New regression tests: `test/test_err_unclosed_paren.c`,
 `test/test_crlf_line_continuation.c` (genuine CRLF file),
-  `test/test_mode_ti_attribute.c`, `test/test_builtin_cpu_init.c`,
-  `test/test_string_literal.c`, `test/test_stdint_int64_glibc_abi.c`,
+`test/test_mode_ti_attribute.c`, `test/test_builtin_cpu_init.c`,
+`test/test_string_literal.c`, `test/test_stdint_int64_glibc_abi.c`,
 plus `test/test-link.sh` case 7 (gnu*inline needs real two-TU linking,
 which the single-file `test/test*\*.c` harness can't express).
 
@@ -3344,7 +3366,7 @@ case (`const char *arr[] = {"vec_"}`, TY_PTR-excluded, must keep
 assigning the address rather than being treated as a char array).
 Full suite verified: Torture 3605/3609 (100% of non-skipped), Dg-error
 34/34, Link 6/6, 0 failed overall (native Linux x86-64); confirmed
- clean (both the new test and `test_string_literal` PASS) on
+clean (both the new test and `test_string_literal` PASS) on
 the mingw cross target.
 
 ### Fixed (2026-08-09, continued — wide string literal alignment: 3 stacked bugs)
