@@ -5908,6 +5908,8 @@ static bool extract_reloc(Node *node, char **label, int *addend) {
         *addend = 0;
         return true;
     case ND_NUM:
+        if (node->val != (long long)(int)node->val)
+            return false; // int addend overflow: fall back to the full-width scalar eval
         *label = NULL;
         *addend = (int)node->val;
         return true;
@@ -5975,6 +5977,8 @@ static bool extract_reloc(Node *node, char **label, int *addend) {
     case ND_BITNOT: {
         long long v;
         if (eval_const_expr(node, &v)) {
+            if (v != (long long)(int)v)
+                return false; // int addend overflow: fall back to the full-width scalar eval
             *label = NULL;
             *addend = (int)v;
             return true;
@@ -13561,6 +13565,18 @@ static void global_initializer_impl(Token **rest, Token *tok, LVar *var) {
             *rest = tok;
             return;
         }
+        // Full-width constant scalar (e.g. `(void*)0xdeadbeef`, a value that
+        // overflows extract_reloc()'s int addend): fall back to the 64-bit
+        // const-expr evaluator so the value isn't truncated/sign-extended.
+        {
+            long long v = 0;
+            if (eval_const_expr(node, &v)) {
+                var->has_init = true;
+                var->init_val = v;
+                *rest = tok;
+                return;
+            }
+        }
         if (!var->is_local && !in_speculative_const_fold)
             error_tok(tok, "unsupported global initializer");
         else if (in_speculative_const_fold)
@@ -14565,8 +14581,10 @@ Program *parse(Token *tok) {
                     fn->stack_size = align_to(stack_offset, 16);
                     fn->is_variadic = is_variadic;
                     fn->dealloc_vla = fn_uses_vla;
-                    fn->is_constructor = pending_constructor;
-                    fn->is_destructor = pending_destructor;
+                    fn->is_constructor = pending_constructor ||
+                        (fn_sym2 && fn_sym2->is_constructor);
+                    fn->is_destructor = pending_destructor ||
+                        (fn_sym2 && fn_sym2->is_destructor);
                     fn->is_inline = attr.is_inline;
                     fn->is_gnu_inline = attr.is_gnu_inline;
                     fn->is_always_inline = attr.is_always_inline;
@@ -14668,11 +14686,35 @@ Program *parse(Token *tok) {
                     current_block_depth = 0;
                     suppress_fn_scope_update = false;
                     parser_current_fn = NULL;
+                    // A prototype-only declaration consumed the pending
+                    // constructor/destructor attributes: record them on the
+                    // symbol so the later definition inherits them, and clear
+                    // the pending globals so the NEXT declaration (e.g. a
+                    // destructor right after a constructor) can't stack both
+                    // flags onto one function.
+                    if (pending_constructor || pending_destructor) {
+                        LVar *fn_sym = find_global_name(name);
+                        if (fn_sym) {
+                            if (pending_constructor) fn_sym->is_constructor = true;
+                            if (pending_destructor) fn_sym->is_destructor = true;
+                        }
+                    }
+                    pending_constructor = false;
+                    pending_destructor = false;
                     break;
                 }
                 if (equalc(tok, ",")) {
                     enum_scope_restore(top_enum_log_cp);
                     enum_consts = top_enum_consts_cp;
+                    if (pending_constructor || pending_destructor) {
+                        LVar *fn_sym = find_global_name(name);
+                        if (fn_sym) {
+                            if (pending_constructor) fn_sym->is_constructor = true;
+                            if (pending_destructor) fn_sym->is_destructor = true;
+                        }
+                    }
+                    pending_constructor = false;
+                    pending_destructor = false;
                     tok = tok->next;
                     continue;
                 }
@@ -14691,6 +14733,15 @@ Program *parse(Token *tok) {
                         tok = tok->next;
                 }
                 if (equalc(tok, ";") || equalc(tok, "{") || equalc(tok, ",")) {
+                    if (pending_constructor || pending_destructor) {
+                        LVar *fn_sym = find_global_name(name);
+                        if (fn_sym) {
+                            if (pending_constructor) fn_sym->is_constructor = true;
+                            if (pending_destructor) fn_sym->is_destructor = true;
+                        }
+                    }
+                    pending_constructor = false;
+                    pending_destructor = false;
                     enum_scope_restore(top_enum_log_cp);
                     enum_consts = top_enum_consts_cp;
                     break;

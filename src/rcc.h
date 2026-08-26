@@ -563,6 +563,8 @@ struct LVar {
     char *deprecated_msg; // C23 [[deprecated("reason")]]
     bool is_nodiscard; // C23 [[nodiscard]]
     char *nodiscard_msg; // C23 [[nodiscard("reason")]]
+    bool is_constructor; // __attribute__((constructor)) seen on a decl
+    bool is_destructor; // __attribute__((destructor)) seen on a decl
     bool is_reproducible; // C23 [[reproducible]]
     bool is_unsequenced; // C23 [[unsequenced]]
     char *diag_warning; // __attribute__((warning("msg")))
