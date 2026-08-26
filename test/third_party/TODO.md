@@ -38,6 +38,54 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-26, postgres -- 64-bit same-width mixed-signedness `__builtin_{add,sub}_overflow`)
+
+- **Same-width mixed-SIGNEDNESS add/sub overflow builtins at 64-bit
+  width (`long`/`long long`/`uint64_t`) used the same unsound native-
+  hardware-flag fast path already fixed for 32-bit width in the prior
+  entry below** -- `src/cg_builtins.c`, `gen_builtin_call()`. The 32-bit
+  fix widened the operation to the next-larger native size (64-bit) to
+  get an exact result before range-checking, but 64-bit operands have no
+  next-larger native GP register to widen into, so that fix's `sz_op < 8`
+  guard left 64-bit mixed-signedness pairs on the broken same-width path.
+  `SELECT '-9223372036854775808'::int8` (exactly `INT64_MIN`) wrongly
+  raised "value ... is out of range for type bigint" via postgres's
+  `pg_neg_u64_overflow()` (`src/include/common/int.h`, used by `int8in`'s
+  string-to-integer parser for every negative bigint literal), the exact
+  64-bit analog of the already-fixed 32-bit `int4in` bug. Fixed by
+  computing a genuine 128-bit exact result: sign/zero-extend each operand
+  (per its own signedness) into a second register pair, chain the
+  low-64-bit add/sub with `adc`/`sbb` for the high 64 bits, then
+  range-check the full 128-bit value against the real destination width
+  (signed 64-bit destination: high 64 bits must equal the sign-extension
+  of the low 64 bits; unsigned: high 64 bits must be exactly zero).
+  New regression test cases (55-68 continue the existing family file's
+  numbering) in `test/test_builtin_overflow_family.c`; verified
+  byte-identical against a real GCC-built baseline. postgres's own
+  `int8.out` regression file (previously the only remaining diff besides
+  the still-open `int4`/`int2` binary/octal-literal parsing issue noted
+  below) now matches exactly: 163 of 231 regression tests still fail
+  (down from 164), the boundary-value binary/octal integer literal
+  parsing gap documented in the entry below remains the next distinct
+  failure class to investigate.
+
+- **ARM64 had the identical same-width mixed-signedness gap at 64-bit
+  width** -- `src/cg_builtins.c`'s ARM64 codegen branch. Its existing
+  fix for the <8-byte case (force `sz` to 8 and reuse the wider-op
+  range-check path) had the same `sz < 8` guard as x86-64's `sz_op`
+  fix, leaving `sz == 8` mixed-signedness pairs on the same unsound
+  `adds`/`subs`-flag-read fast path. Caught by CI's macOS (Apple
+  Silicon) job failing `test_builtin_overflow_family` after the x86-64
+  fix above shipped without its ARM64 counterpart. Fixed with the
+  identical 128-bit-exact-result strategy, using ARM64's `adcs`/`sbcs`
+  (add/subtract-with-carry, set-flags) instead of x86's `adc`/`sbb`.
+  Verified via `qemu-aarch64-static` running the ARM64 cross-compiled
+  `rcc-arm64` binary directly (not the local sandbox's `run_tests_arm64`
+  default in-process mode, which silently falls back to compiling with
+  the native x86-64 `rcc_lib.so` when invoked without an explicit
+  `./rcc-arm64` argument -- a harness footgun worth remembering, not an
+  rcc bug).
+
 ### Fixed (2026-08-26, postgres -- constant-fold unsigned division + narrow-destination `__builtin_*_overflow`)
 
 - **A SEPARATE, independent constant-folding pass in `src/opt.c`

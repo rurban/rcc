@@ -71,9 +71,52 @@
  * the exact same add/sub-overflow codegen already used by the two-arg
  * overflow-detect + store form, just without the store to the (unused,
  * type-only) third argument.
+ *
+ * Separately again: same-width mixed-SIGNEDNESS add/sub operands (one
+ * signed, one unsigned, both the same byte size as the destination --
+ * e.g. `__builtin_sub_overflow(0, a, result)` where the literal `0` is
+ * `int` and `a` is `uint32_t`) used a native-width `add`/`sub`
+ * instruction and read ITS hardware flag (CF for an unsigned
+ * destination, OF for signed) directly. But GCC's overflow builtins
+ * promote EACH operand to its own mathematically exact value (sign-
+ * extending the signed operand, zero-extending the unsigned one) and
+ * range-check the exact result against the destination type -- NOT the
+ * C "usual arithmetic conversions" result of first coercing the signed
+ * operand to unsigned, which is what a same-width instruction's
+ * hardware flags actually reflect. `0 - (uint32_t)0x80000000` sets
+ * BOTH the unsigned-borrow flag (0 < 0x80000000) and the signed-
+ * overflow flag (0 - INT32_MIN doesn't fit signed int32) on real
+ * hardware, but the true mathematical result (0 - 2147483648 =
+ * -2147483648) is exactly `INT32_MIN` and fits `int32_t` with no
+ * overflow at all. Found via postgres's `pg_neg_u32_overflow()`
+ * (`src/include/common/int.h`, used by `int4in`/`int8in`'s string-to-
+ * integer parsers for every negative literal, including hex/octal/
+ * binary forms): `SELECT int4 '-0b10000000000000000000000000000000'`
+ * (exactly `INT32_MIN` in binary) wrongly raised "value ... is out of
+ * range for type integer" instead of returning it. Fixed by forcing a
+ * wider (64-bit) computation whenever add/sub operands have mismatched
+ * signedness at the destination's own width, routing through the
+ * already-correct widen-then-range-check path instead of the unsound
+ * same-width hardware-flag fast path.
+ *
+ * Separately again: the exact same same-width mixed-signedness unsound-
+ * hardware-flag bug also existed at 64-bit width (`long`/`long long`/
+ * `uint64_t`), but couldn't be fixed the same way -- 8 bytes is already
+ * the widest native GP register, so there's no wider native op to widen
+ * into. Found via postgres's `pg_neg_u64_overflow()` (used by `int8in`'s
+ * string-to-integer parser for every negative bigint literal):
+ * `SELECT '-9223372036854775808'::int8` (exactly INT64_MIN) wrongly
+ * raised "value ... is out of range for type bigint" instead of
+ * returning it. Fixed by computing a genuine 128-bit exact result via
+ * sign/zero-extending each operand into a second register (per its own
+ * signedness) and chaining add/sub with adc/sbb, then range-checking the
+ * full 128-bit value against the real destination width (for a signed
+ * 64-bit destination: high 64 bits must equal the sign-extension of the
+ * low 64 bits; for unsigned: high 64 bits must be exactly zero).
  */
 
 #include <limits.h>
+#include <stdint.h>
 
 int main(void)
 {
@@ -208,6 +251,42 @@ int main(void)
      * alongside the two new siblings. */
     if (__builtin_mul_overflow_p(100000, 100000, (int)0) != 1) return 53;
     if (__builtin_mul_overflow_p(3, 5, (int)0) != 0) return 54;
+
+    /* Same-width mixed-signedness add/sub: postgres's
+     * pg_neg_u32_overflow() shape, __builtin_sub_overflow(0, a, r)
+     * where 0 is signed int and a is uint32_t. */
+    { int32_t r; uint32_t a = 2147483648U; /* exactly -INT32_MIN */
+      if (__builtin_sub_overflow(0, a, &r) || r != INT32_MIN) return 55; }
+    { int32_t r; uint32_t a = 2147483649U; /* one past -INT32_MIN */
+      if (!__builtin_sub_overflow(0, a, &r)) return 56; }
+    { int32_t r; uint32_t a = 1U;
+      if (__builtin_sub_overflow(0, a, &r) || r != -1) return 57; }
+    { int32_t r; uint32_t a = 3000000000U; int b = -1000000000;
+      if (__builtin_add_overflow(a, b, &r) || r != 2000000000) return 58; }
+    { int32_t r; uint32_t a = 4000000000U; int b = -1;
+      if (!__builtin_add_overflow(a, b, &r)) return 59; }
+    { uint32_t r; int a = -1; unsigned b = 5;
+      if (__builtin_add_overflow(a, b, &r) || r != 4) return 60; }
+    { uint32_t r; int a = -10; unsigned b = 5;
+      if (!__builtin_add_overflow(a, b, &r)) return 61; }
+
+    /* Same-width mixed-signedness add/sub at 64-bit width: postgres's
+     * pg_neg_u64_overflow() shape, __builtin_sub_overflow(0, a, r)
+     * where 0 is signed int (widened to int64_t) and a is uint64_t. */
+    { int64_t r; uint64_t a = 9223372036854775808ULL; /* exactly -INT64_MIN */
+      if (__builtin_sub_overflow(0, a, &r) || r != INT64_MIN) return 62; }
+    { int64_t r; uint64_t a = 9223372036854775809ULL; /* one past -INT64_MIN */
+      if (!__builtin_sub_overflow(0, a, &r)) return 63; }
+    { int64_t r; uint64_t a = 1ULL;
+      if (__builtin_sub_overflow(0, a, &r) || r != -1) return 64; }
+    { int64_t r; uint64_t a = 3000000000000000000ULL; int64_t b = -1000000000000000000LL;
+      if (__builtin_add_overflow(a, b, &r) || r != 2000000000000000000LL) return 65; }
+    { int64_t r; uint64_t a = 18000000000000000000ULL; int64_t b = -1;
+      if (!__builtin_add_overflow(a, b, &r)) return 66; }
+    { uint64_t r; int64_t a = -1; uint64_t b = 5;
+      if (__builtin_add_overflow(a, b, &r) || r != 4) return 67; }
+    { uint64_t r; int64_t a = -10; uint64_t b = 5;
+      if (!__builtin_add_overflow(a, b, &r)) return 68; }
 
     return 0;
 }

@@ -911,6 +911,40 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
         int sz_a = arga && arga->ty && arga->ty->size > 4 ? 8 : 4;
         int sz_b = argb && argb->ty && argb->ty->size > 4 ? 8 : 4;
         int sz = sz_a > sz_b ? sz_a : sz_b;
+        // Mixed-signedness ADD/SUB operands at the same native width
+        // (e.g. postgres's pg_neg_u32_overflow():
+        // __builtin_sub_overflow(0, a, result) where the literal `0` is
+        // signed int and `a` is uint32_t) cannot safely read the
+        // same-width `adds`/`subs` hardware flag (CS/CC/VS) below: GCC's
+        // overflow builtins promote EACH operand to its own
+        // mathematically exact value (sign-extending a signed operand,
+        // zero-extending an unsigned one) and range-check the exact
+        // result against the destination -- NOT the flags a same-width
+        // instruction produces, which reflect the C "usual arithmetic
+        // conversions" result of first coercing the signed operand to
+        // unsigned. `0 - (uint32_t)0x80000000` sets both CC (unsigned
+        // borrow) and VS (signed overflow) on real hardware, but the
+        // true mathematical result (0 - 2147483648 = -2147483648) is
+        // exactly INT32_MIN and fits `int32_t` with no overflow at all.
+        // Force a wider (8-byte) computation so the existing, already-
+        // correct narrowing range-check path below (`res_sz < sz`) is
+        // used instead of the unsound same-width hardware-flag fast
+        // path -- mirrors the identical x86-64 fix (`sz_op`) below.
+        if ((is_add_overflow || is_sub_overflow || is_add_overflow_p || is_sub_overflow_p) &&
+            arga && arga->ty && argb && argb->ty &&
+            arga->ty->is_unsigned != argb->ty->is_unsigned && sz < 8)
+            sz = 8;
+        // Same-width (8-byte) mixed-signedness ADD/SUB: unlike the <8-byte
+        // case above, there's no wider native register to force-widen
+        // into. Compute a genuine 128-bit exact result instead (mirrors
+        // the identical x86-64 ADC/SBB fix below): sign/zero-extend each
+        // operand per its own signedness into a second register, chain
+        // the low-64-bit add/sub with adcs/sbcs for the high 64 bits,
+        // then range-check the full 128-bit value against the real
+        // destination width.
+        bool mixed_sign_64 = (is_add_overflow || is_sub_overflow || is_add_overflow_p || is_sub_overflow_p) &&
+            arga && arga->ty && argb && argb->ty &&
+            arga->ty->is_unsigned != argb->ty->is_unsigned && sz == 8;
         // Widen whichever operand is narrower than `sz` per its own
         // signedness -- a 32-bit ARM64 register write also zeroes the
         // upper 32 bits of the Xn register (not sign-extends), so a
@@ -958,7 +992,50 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
         }
         int r_result = alloc_reg();
         if (is_add_overflow || is_add_overflow_p) {
-            if (res_sz == sz) {
+            if (mixed_sign_64) {
+                int high_a = alloc_reg();
+                int high_b = alloc_reg();
+                if (arga->ty->is_unsigned)
+                    asm_mov_imm(cg_sec, high_a, 8, 0);
+                else
+                    asm_asr_rd_rn_imm(cg_sec, high_a, ra, 8, 63);
+                if (argb->ty->is_unsigned)
+                    asm_mov_imm(cg_sec, high_b, 8, 0);
+                else
+                    asm_asr_rd_rn_imm(cg_sec, high_b, rb, 8, 63);
+                asm_adds(cg_sec, ra, rb, 8); // adds ra, ra, rb
+                arm64_adcs(cg_sec, 1, REG(high_a), REG(high_a), REG(high_b)); // adcs high_a, high_a, high_b
+                int rt = alloc_reg();
+                asm_asr_rd_rn_imm(cg_sec, rt, ra, 8, 63);
+                asm_cmp_reg_reg(cg_sec, rt, high_a, 8); // cmp rt, high_a
+                asm_cset(cg_sec, r_result, ARM64_NE); // cset r_result, ne
+                free_reg(rt);
+                if (res_sz >= 8 && res_unsigned) {
+                    asm_cmp_zero(cg_sec, high_a, 8);
+                    asm_cset(cg_sec, r_result, ARM64_NE);
+                } else if (res_sz < 8) {
+                    int rt2 = alloc_reg();
+                    if (res_unsigned)
+                        asm_lsr_rd_rn_imm(cg_sec, rt2, ra, 8, (uint8_t)(res_sz * 8));
+                    else if (res_sz == 2)
+                        arm64_sxth(cg_sec, 0, REG(rt2), REG(ra));
+                    else if (res_sz == 1)
+                        arm64_sxtb(cg_sec, 0, REG(rt2), REG(ra));
+                    else
+                        asm_sxtw(cg_sec, REG(rt2), REG(ra));
+                    if (res_unsigned)
+                        asm_cmp_zero(cg_sec, rt2, 8);
+                    else
+                        asm_cmp_reg_reg(cg_sec, rt2, ra, 8);
+                    int rt3 = alloc_reg();
+                    asm_cset(cg_sec, rt3, ARM64_NE);
+                    asm_or_reg_reg(cg_sec, r_result, rt3, 1);
+                    free_reg(rt3);
+                    free_reg(rt2);
+                }
+                free_reg(high_a);
+                free_reg(high_b);
+            } else if (res_sz == sz) {
                 asm_adds(cg_sec, ra, rb, sz); // adds ra, ra, rb
                 asm_cset(cg_sec, r_result, res_unsigned ? ARM64_CS : ARM64_VS); // cset r_result, cs/vs
             } else if (res_sz < sz) {
@@ -979,9 +1056,16 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
                     }
                 } else {
                     int rt = alloc_reg();
+                    // res_sz is 1/2/4 here (never >4): the mixed-
+                    // signedness widening above can force `sz` to 8
+                    // even when the DESTINATION is a plain 4-byte
+                    // `int`/`unsigned` (res_sz==4), not just a genuine
+                    // int8_t/int16_t -- sxtw handles that width.
                     if (res_sz == 2) arm64_sxth(cg_sec, 0, REG(rt), REG(ra)); // sxth w{rt}, w{ra}
-                    else
+                    else if (res_sz == 1)
                         arm64_sxtb(cg_sec, 0, REG(rt), REG(ra)); // sxtb w{rt}, w{ra}
+                    else
+                        asm_sxtw(cg_sec, REG(rt), REG(ra)); // sxtw x{rt}, w{ra}
                     asm_cmp_reg_reg(cg_sec, rt, ra, sz); // cmp rt, ra
                     asm_cset(cg_sec, r_result, ARM64_NE); // cset r_result, ne
                     free_reg(rt);
@@ -1005,7 +1089,50 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
                 }
             }
         } else if (is_sub_overflow || is_sub_overflow_p) {
-            if (res_sz == sz) {
+            if (mixed_sign_64) {
+                int high_a = alloc_reg();
+                int high_b = alloc_reg();
+                if (arga->ty->is_unsigned)
+                    asm_mov_imm(cg_sec, high_a, 8, 0);
+                else
+                    asm_asr_rd_rn_imm(cg_sec, high_a, ra, 8, 63);
+                if (argb->ty->is_unsigned)
+                    asm_mov_imm(cg_sec, high_b, 8, 0);
+                else
+                    asm_asr_rd_rn_imm(cg_sec, high_b, rb, 8, 63);
+                asm_subs(cg_sec, ra, rb, 8); // subs ra, ra, rb
+                arm64_sbcs(cg_sec, 1, REG(high_a), REG(high_a), REG(high_b)); // sbcs high_a, high_a, high_b
+                int rt = alloc_reg();
+                asm_asr_rd_rn_imm(cg_sec, rt, ra, 8, 63);
+                asm_cmp_reg_reg(cg_sec, rt, high_a, 8); // cmp rt, high_a
+                asm_cset(cg_sec, r_result, ARM64_NE); // cset r_result, ne
+                free_reg(rt);
+                if (res_sz >= 8 && res_unsigned) {
+                    asm_cmp_zero(cg_sec, high_a, 8);
+                    asm_cset(cg_sec, r_result, ARM64_NE);
+                } else if (res_sz < 8) {
+                    int rt2 = alloc_reg();
+                    if (res_unsigned)
+                        asm_lsr_rd_rn_imm(cg_sec, rt2, ra, 8, (uint8_t)(res_sz * 8));
+                    else if (res_sz == 2)
+                        arm64_sxth(cg_sec, 0, REG(rt2), REG(ra));
+                    else if (res_sz == 1)
+                        arm64_sxtb(cg_sec, 0, REG(rt2), REG(ra));
+                    else
+                        asm_sxtw(cg_sec, REG(rt2), REG(ra));
+                    if (res_unsigned)
+                        asm_cmp_zero(cg_sec, rt2, 8);
+                    else
+                        asm_cmp_reg_reg(cg_sec, rt2, ra, 8);
+                    int rt3 = alloc_reg();
+                    asm_cset(cg_sec, rt3, ARM64_NE);
+                    asm_or_reg_reg(cg_sec, r_result, rt3, 1);
+                    free_reg(rt3);
+                    free_reg(rt2);
+                }
+                free_reg(high_a);
+                free_reg(high_b);
+            } else if (res_sz == sz) {
                 asm_subs(cg_sec, ra, rb, sz); // subs ra, ra, rb
                 asm_cset(cg_sec, r_result, res_unsigned ? ARM64_CC : ARM64_VS); // cset r_result, cc/vs
             } else if (res_sz < sz) {
@@ -1027,8 +1154,10 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
                 } else {
                     int rt = alloc_reg();
                     if (res_sz == 2) arm64_sxth(cg_sec, 0, REG(rt), REG(ra)); // sxth w{rt}, w{ra}
-                    else
+                    else if (res_sz == 1)
                         arm64_sxtb(cg_sec, 0, REG(rt), REG(ra)); // sxtb w{rt}, w{ra}
+                    else
+                        asm_sxtw(cg_sec, REG(rt), REG(ra)); // sxtw x{rt}, w{ra}
                     asm_cmp_reg_reg(cg_sec, rt, ra, sz); // cmp rt, ra
                     asm_cset(cg_sec, r_result, ARM64_NE);
                     free_reg(rt);
@@ -1218,6 +1347,29 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
         bool store_to_int128 = argres && argres->ty && argres->ty->kind == TY_PTR &&
             argres->ty->base && argres->ty->base->kind == TY_INT128;
         int sz_op = sz > sz_store ? sz : sz_store; // compute in larger size
+        // Mixed-signedness ADD/SUB operands (e.g. postgres's
+        // pg_neg_u32_overflow(): __builtin_sub_overflow(0, a, result)
+        // where the literal `0` is signed int and `a` is uint32_t)
+        // cannot safely use the same-width hardware flag (CF/OF).
+        // GCC's overflow builtins promote EACH operand to its own
+        // mathematically exact value (sign-extending a signed operand,
+        // zero-extending an unsigned one) and range-check the exact
+        // result against the destination -- NOT the C "usual
+        // arithmetic conversions" result of first coercing the signed
+        // operand to unsigned (which is what a plain same-width `add`/
+        // `sub` instruction's CF/OF flags reflect). Force a wider
+        // computation here so the existing, already-correct
+        // widen-then-range-check path below (sz_op > sz) is used
+        // instead of the same-width fast path, which picked CF or OF
+        // purely off the DESTINATION's signedness -- wrong whenever
+        // the two OPERANDS disagree with each other (0 - (uint32_t)
+        // 0x80000000 sets both CF and OF on real hardware, but the
+        // mathematically exact result, 0 - 2147483648 = -2147483648,
+        // is exactly INT32_MIN and fits `int32_t` with no overflow at
+        // all).
+        if ((is_add_overflow || is_sub_overflow || is_add_overflow_p || is_sub_overflow_p) &&
+            ra_unsigned != rb_unsigned && sz_op == sz && sz_op < 8)
+            sz_op = 8;
         // Widen each operand INDEPENDENTLY to sz_op bits per its own
         // natural size and signedness -- narrower-than-sz_op is possible
         // for either operand alone (mixed-width arithmetic), not just
@@ -1234,13 +1386,86 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
             else
                 asm_movsx(cg_sec, rb, rb, 8, 4);
         }
+        // Same-width (8-byte) mixed-signedness ADD/SUB operands (e.g.
+        // postgres's pg_neg_u64_overflow(): __builtin_sub_overflow(0,
+        // a, result) where `0` is signed int (widened to int64_t) and
+        // `a` is uint64_t) can't be fixed by widening `sz_op` further
+        // -- 8 bytes is already the widest native register. Instead,
+        // extend BOTH operands to a genuine 128-bit value (sign-fill
+        // for the signed operand, zero-fill for the unsigned one) using
+        // a second register pair and ADD+ADC / SUB+SBB, then check that
+        // the 128-bit exact result actually fits back in sz_store_real:
+        // for a signed destination, the high 64 bits must equal the
+        // sign-extension of the low 64 bits; for unsigned, the high 64
+        // bits must be exactly zero. `0 - (uint64_t)0x8000000000000000`
+        // sets the same misleading CF/OF flags a plain 64-bit `sub`
+        // would give (matching the identical, already-fixed 32-bit
+        // case above), but the true result is exactly INT64_MIN and
+        // fits `int64_t` with no overflow at all.
+        bool mixed_sign_64 = (is_add_overflow || is_sub_overflow || is_add_overflow_p || is_sub_overflow_p) &&
+            ra_unsigned != rb_unsigned && sz == 8;
         if (is_add_overflow || is_sub_overflow || is_add_overflow_p || is_sub_overflow_p) {
-            if (is_add_overflow || is_add_overflow_p)
+            if (mixed_sign_64) {
+                int high_a = alloc_reg();
+                int high_b = alloc_reg();
+                if (ra_unsigned)
+                    x86_mov_ri(cg_sec, 8, REG(high_a), 0);
+                else {
+                    x86_mov_rr(cg_sec, 8, REG(high_a), REG(ra));
+                    x86_sar_ri(cg_sec, 8, REG(high_a), 63);
+                }
+                if (rb_unsigned)
+                    x86_mov_ri(cg_sec, 8, REG(high_b), 0);
+                else {
+                    x86_mov_rr(cg_sec, 8, REG(high_b), REG(rb));
+                    x86_sar_ri(cg_sec, 8, REG(high_b), 63);
+                }
+                if (is_add_overflow || is_add_overflow_p) {
+                    asm_add_reg_reg(cg_sec, ra, rb, 8); // add ra, rb (sets CF)
+                    x86_adc_rr(cg_sec, 8, REG(high_a), REG(high_b)); // adc high_a, high_b
+                } else {
+                    asm_sub_reg_reg(cg_sec, ra, rb, 8); // sub ra, rb (sets CF as borrow)
+                    x86_sbb_rr(cg_sec, 8, REG(high_a), REG(high_b)); // sbb high_a, high_b
+                }
+                // ra now holds the exact low 64 bits; high_a the exact
+                // high 64 bits of the true (unbounded) mathematical
+                // result.
+                if (sz_store_real >= 8 && is_unsigned_store) {
+                    x86_test_rr(cg_sec, 8, REG(high_a), REG(high_a));
+                    asm_setcc(cg_sec, X86_RAX, X86_NE);
+                } else if (sz_store_real >= 8) {
+                    x86_mov_rr(cg_sec, 8, X86_RCX, REG(ra));
+                    x86_sar_ri(cg_sec, 8, X86_RCX, 63);
+                    x86_cmp_rr(cg_sec, 8, X86_RCX, REG(high_a));
+                    asm_setcc(cg_sec, X86_RAX, X86_NE);
+                } else {
+                    // Narrower-than-64-bit destination with 8-byte mixed
+                    // operands (unusual): must fit within 64 bits AT ALL
+                    // (high bits consistent with low's sign) AND within
+                    // the narrower destination's own range.
+                    x86_mov_rr(cg_sec, 8, X86_RCX, REG(ra));
+                    x86_sar_ri(cg_sec, 8, X86_RCX, 63);
+                    x86_cmp_rr(cg_sec, 8, X86_RCX, REG(high_a));
+                    asm_setcc(cg_sec, X86_RAX, X86_NE);
+                    x86_mov_rr(cg_sec, sz_store_real, X86_RDX, REG(ra));
+                    if (is_unsigned_store)
+                        x86_movzx(cg_sec, 8, sz_store_real, X86_RDX, X86_RDX);
+                    else
+                        x86_movsx(cg_sec, 8, sz_store_real, X86_RDX, X86_RDX);
+                    x86_cmp_rr(cg_sec, 8, X86_RDX, REG(ra));
+                    asm_setcc(cg_sec, X86_RDX, X86_NE);
+                    x86_or_rr(cg_sec, 1, X86_RAX, X86_RDX);
+                }
+                free_reg(high_a);
+                free_reg(high_b);
+            } else if (is_add_overflow || is_add_overflow_p)
                 asm_add_reg_reg(cg_sec, ra, rb, sz_op); // add rb, ra
             else
                 asm_sub_reg_reg(cg_sec, ra, rb, sz_op); // sub rb, ra
             // Detect overflow into sz_store_real bits.
-            if (sz_store_real < 4) {
+            if (mixed_sign_64) {
+                // Handled above.
+            } else if (sz_store_real < 4) {
                 // True destination narrower than int (int8_t/int16_t):
                 // the add/sub above always computed at >=32-bit width
                 // without itself overflowing (both operands were
