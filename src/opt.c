@@ -1182,11 +1182,33 @@ static Node *optimize_node(Program *prog, Node *node) {
             if (node->kind == ND_MUL) fold->val = node->lhs->val * node->rhs->val;
             if (node->kind == ND_DIV) {
                 if (node->rhs->val == 0) return node; // avoid div by zero
-                fold->val = node->lhs->val / node->rhs->val;
+                // Unsigned division must use the UNSIGNED bit pattern, not
+                // plain signed C division: a huge unsigned constant like
+                // SIZE_MAX/UINT64_MAX stores its all-1s bit pattern in
+                // this `long long` field, reading as -1 when signed. Plain
+                // signed `lhs / rhs` (e.g. -1 / 8) truncates to 0 instead
+                // of the correct 0x1FFFFFFFFFFFFFFF -- silently corrupting
+                // any `UINT64_MAX / sizeof(x)`-style overflow-guard divisor
+                // computed at -O1+ (postgres's fe_utils/print.c: "Cannot
+                // print table contents ... maximum 0" instead of the real
+                // limit). Mirrors parser.c's eval_const_expr_impl.
+                if (node->lhs->ty && node->lhs->ty->is_unsigned) {
+                    unsigned long long ul = (unsigned long long)node->lhs->val;
+                    unsigned long long ur = (unsigned long long)node->rhs->val;
+                    fold->val = (long long)(ul / ur);
+                } else {
+                    fold->val = node->rhs->val == -1 ? -node->lhs->val : node->lhs->val / node->rhs->val;
+                }
             }
             if (node->kind == ND_MOD) {
                 if (node->rhs->val == 0) return node;
-                fold->val = node->lhs->val % node->rhs->val;
+                if (node->lhs->ty && node->lhs->ty->is_unsigned) {
+                    unsigned long long ul = (unsigned long long)node->lhs->val;
+                    unsigned long long ur = (unsigned long long)node->rhs->val;
+                    fold->val = (long long)(ul % ur);
+                } else {
+                    fold->val = node->rhs->val == -1 ? 0 : node->lhs->val % node->rhs->val;
+                }
             }
             fold->ty = node->ty;
             return fold;

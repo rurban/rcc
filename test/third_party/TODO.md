@@ -38,6 +38,86 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-26, postgres -- constant-fold unsigned division + narrow-destination `__builtin_*_overflow`)
+
+- **A SEPARATE, independent constant-folding pass in `src/opt.c`
+  (`optimize_node()`, applied to already-parsed `ND_NUM` operands during
+  -O1+ AST optimization -- distinct from `src/parser.c`'s
+  `eval_const_expr_impl()`, which already handled this correctly) did
+  PLAIN SIGNED C division/modulo on the operands' `long long .val`
+  fields, with no unsigned check at all.** A huge unsigned constant
+  like `SIZE_MAX`/`UINT64_MAX` (18446744073709551615, all-1s bit
+  pattern) stores as `-1` when that `long long` field is read as
+  signed; plain signed `-1 / 8` truncates toward zero to `0` (C's
+  signed-division rule) instead of the correct unsigned result
+  `0x1FFFFFFFFFFFFFFF` -- silently corrupting any `SIZE_MAX /
+sizeof(x)`-style overflow-guard divisor computed at -O1 or higher
+  (never reproduces at -O0, where the division is a genuine runtime
+  `div` instruction instead of a compile-time fold -- this took
+  extensive isolation to pin down: direct exec, `sh -c`, parallel
+  invocation, `valgrind --track-origins=yes`, and ASLR-disabled all
+  gave the CORRECT answer since none of those isolated repros passed
+  `-O1`/`-O2`; only adding the optimization flag reproduced it
+  instantly and deterministically). Found via postgres's
+  `fe_utils/print.c`:
+
+  ```c
+  uint64 total_cells = (uint64) ncolumns * nrows;
+  if (total_cells >= SIZE_MAX / sizeof(*content->cells))
+      ... "Cannot print table contents ... maximum 0" ...
+  ```
+
+  which made literally every `psql`-driven regression test in
+  postgres's own suite fail identically the moment the build itself
+  got far enough to bootstrap. Fixed by mirroring
+  `eval_const_expr_impl`'s unsigned handling in `opt.c`'s fold. New
+  regression test: `test/test_opt_const_fold_unsigned_div.c`.
+
+- **`__builtin_{add,sub,mul}_overflow` with a destination NARROWER than
+  `int` (`int8_t`/`int16_t`/`uint8_t`/`uint16_t *result`) had two
+  stacked x86-64 codegen bugs in `src/cg_builtins.c`, plus a dormant
+  copy of the first on ARM64.** The result pointer's pointee size was
+  clamped to a minimum of 4 bytes, so (a) a narrow destination got
+  range-checked against 32-bit bounds instead of its own 8/16-bit range
+  -- overflow into a genuinely narrow type went undetected whenever the
+  mathematically exact result still fit in 32 bits (e.g. `int16_t`:
+  32767*2 = 65534, which overflows int16 but not int32) -- and (b) the
+  SAME clamped size was then also used as the MEMORY STORE WIDTH, so
+  storing into a genuine `int8_t`/`int16_t *`wrote 4 bytes instead of
+1/2, corrupting whatever memory followed the narrow destination.
+ARM64's codegen already had explicit, correctly-written`res_sz ==
+  1`/`res_sz == 2`range-check paths (and its store helper already
+supported 1/2-byte widths) -- they were simply unreachable dead code
+because of the identical upstream clamp. Found via postgres's`int2mul`/`int2pl`/`int2mi` (`src/backend/utils/adt/int.c`), which
+rely on `pg_mul_s16_overflow`/`pg_add_s16_overflow`/
+`pg_sub_s16_overflow` (`src/include/common/int.h`) wrapping exactly
+these builtins to implement SQL smallint arithmetic overflow
+detection ("smallint out of range") -- every `SELECT ... \* int2 '2'
+  ...`-style overflow test in postgres's own regression suite silently
+produced a wrapped-around result instead of the expected error.
+Fixed by tracking the TRUE, unclamped destination byte size
+separately from the clamped operand-computation width on both
+architectures, using it for both the final range check and the
+memory store. New regression cases merged into the existing
+`test/test_builtin_overflow_family.c`(also consolidated`test_builtin_overflow_mixed_width.c`/`test_builtin_overflow_p.c`
+  into the same file).
+
+  With all six fixes from this postgres investigation (array-decay
+  qualifier, speculative const-fold, local-static hash registration,
+  inline-asm `xchg` memory operand, unsigned constant-fold division,
+  narrow-destination overflow builtins), postgres now builds, links,
+  bootstraps a working cluster, AND makes substantial further progress
+  through its own `make check` regression suite (220/231 -> 176/231 ->
+  166/231 failing tests across this round; the "Cannot print table
+  contents" crash that previously took down literally every
+  `psql`-driven test identically is gone, and `int2.out`'s
+  `smallint out of range`-detection failures -- the exact bug the
+  narrow-destination `__builtin_mul_overflow` fix targeted -- now
+  passes completely). The remaining 166 failing regression files span
+  many still-uninvestigated, likely-unrelated issues (e.g. `int4.out`'s
+  boundary-value binary/octal integer-literal parsing at exactly
+  INT32_MIN); left for a future session.
+
 ### Fixed (2026-08-26, postgres -- local-static array-element relocation + inline-asm xchg memory operand)
 
 - **A function-local `static` variable's array-element address used to

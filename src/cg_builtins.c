@@ -932,8 +932,29 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
         int res_sz = sz;
         bool res_unsigned = arga && arga->ty && arga->ty->is_unsigned;
         if (argres && argres->ty && argres->ty->kind == TY_PTR && argres->ty->base) {
-            res_sz = argres->ty->base->size > 4 ? 8 : 4;
-            res_unsigned = argres->ty->base->is_unsigned;
+            if (argres->ty->base->kind == TY_INT128) {
+                // Treat as 8-byte for computation; the 128-bit store
+                // (sign-extend + store both halves) is special-cased
+                // separately below regardless of res_sz.
+                res_sz = 8;
+                res_unsigned = argres->ty->base->is_unsigned;
+            } else {
+                // True destination byte size (1/2/4/8) -- NOT clamped to
+                // a minimum of 4. This function already has explicit
+                // `res_sz == 1`/`res_sz == 2` range-check paths below
+                // (and asm_str_reg_off() below already supports 1/2-byte
+                // stores), written for exactly this case; clamping here
+                // made them permanently dead code, silently missing
+                // every overflow into an int8_t/int16_t destination
+                // whose full-precision result still happened to fit in
+                // 32 bits, AND corrupting whatever memory followed the
+                // narrow destination on store (writing 4 bytes into a
+                // 1/2-byte slot). See the matching x86-64 branch below
+                // (`sz_store_real`) for the identical bug found via
+                // postgres's `int2mul`/`int2pl`/`int2mi`.
+                res_sz = argres->ty->base->size;
+                res_unsigned = argres->ty->base->is_unsigned;
+            }
         }
         int r_result = alloc_reg();
         if (is_add_overflow || is_add_overflow_p) {
@@ -1175,6 +1196,25 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
                 is_unsigned_store = argres->ty->base->is_unsigned;
             }
         }
+        // True destination byte size (1/2/4/8), NOT clamped to a minimum
+        // of 4 like `sz_store` above -- `sz_store` exists purely to pick
+        // the operand COMPUTATION width (x86 has no narrower-than-32-bit
+        // add/sub/imul-with-overflow-flag anyway, so int8_t/int16_t
+        // destinations still compute at >=32 bits). Used for (a) the
+        // final memory store width and (b) range-checking the computed
+        // result down to the REAL destination width -- using the
+        // clamped `sz_store` for either wrongly widened both to >=4,
+        // silently corrupting adjacent memory on the store (writing 4
+        // bytes into a 1/2-byte slot) and, separately, silently missing
+        // every overflow into a narrower-than-int destination (e.g.
+        // postgres's `int2mul`: `int16 * int16 -> int16` via
+        // `__builtin_mul_overflow`, where 32767*2 fits fine in the
+        // wrongly-widened 32-bit check but overflows the real int16
+        // range -- "smallint out of range" never raised).
+        int sz_store_real = sz_store;
+        if (argres && argres->ty && argres->ty->kind == TY_PTR && argres->ty->base &&
+            argres->ty->base->kind != TY_INT128)
+            sz_store_real = argres->ty->base->size;
         bool store_to_int128 = argres && argres->ty && argres->ty->kind == TY_PTR &&
             argres->ty->base && argres->ty->base->kind == TY_INT128;
         int sz_op = sz > sz_store ? sz : sz_store; // compute in larger size
@@ -1199,8 +1239,22 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
                 asm_add_reg_reg(cg_sec, ra, rb, sz_op); // add rb, ra
             else
                 asm_sub_reg_reg(cg_sec, ra, rb, sz_op); // sub rb, ra
-            // Detect overflow into sz_store bits.
-            if (sz_op == sz_store && sz_op == sz) {
+            // Detect overflow into sz_store_real bits.
+            if (sz_store_real < 4) {
+                // True destination narrower than int (int8_t/int16_t):
+                // the add/sub above always computed at >=32-bit width
+                // without itself overflowing (both operands were
+                // widened up from <=32-bit sources), so range-check the
+                // full-precision result against the REAL narrow
+                // destination width via truncate + re-extend + compare.
+                x86_mov_rr(cg_sec, sz_store_real, X86_RCX, REG(ra)); // truncate
+                if (is_unsigned_store)
+                    x86_movzx(cg_sec, sz_op, sz_store_real, X86_RCX, X86_RCX);
+                else
+                    x86_movsx(cg_sec, sz_op, sz_store_real, X86_RCX, X86_RCX);
+                x86_cmp_rr(cg_sec, sz_op, X86_RCX, REG(ra));
+                asm_setcc(cg_sec, X86_RAX, X86_NE);
+            } else if (sz_op == sz_store && sz_op == sz) {
                 // Same-size, same-type: use hardware flag directly.
                 asm_setcc(cg_sec, X86_RAX, is_unsigned_store ? X86_C : X86_O); // setc/seto %al
             } else if (sz_op == sz_store && sz_op > sz) {
@@ -1240,7 +1294,7 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
                     x86_sar_ri(cg_sec, 8, X86_RAX, 63); // sarq $63, %rax
                     x86_mov_mr(cg_sec, 8, x86_mem(REG(rr), 8), X86_RAX); // movq %rax, 8(rr)
                 } else {
-                    x86_mov_mr(cg_sec, sz_store, x86_mem(REG(rr), 0), REG(ra)); // mov ra, (rr)
+                    x86_mov_mr(cg_sec, sz_store_real, x86_mem(REG(rr), 0), REG(ra)); // mov ra, (rr)
                 }
                 free_reg(rr);
             }
@@ -1255,6 +1309,18 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
                     x86_mov_rr(cg_sec, 8, REG(r2), X86_RDX); // movq %rdx, r2
                     x86_test_rr(cg_sec, 8, X86_RDX, X86_RDX); // testq %rdx, %rdx
                     asm_setcc(cg_sec, X86_RAX, X86_NE);
+                    if (sz_store_real < 4) {
+                        // Also range-check the low 64 bits against the REAL
+                        // narrow destination width (only meaningful when
+                        // the 64-bit multiply itself didn't already
+                        // overflow, but computing it unconditionally and
+                        // OR-ing in is simpler and gives the same result).
+                        x86_mov_rr(cg_sec, sz_store_real, X86_RCX, X86_RAX);
+                        x86_movzx(cg_sec, 8, sz_store_real, X86_RCX, X86_RCX);
+                        x86_cmp_rr(cg_sec, 8, X86_RCX, X86_RAX);
+                        asm_setcc(cg_sec, X86_RDX, X86_NE);
+                        x86_or_rr(cg_sec, 1, X86_RAX, X86_RDX);
+                    }
                 } else {
                     // Signed 64-bit (including sign-extended small operands):
                     // imulq gives rdx:rax; overflow if rdx != sign_ext(rax)
@@ -1270,6 +1336,16 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
                         x86_test_rr(cg_sec, 8, REG(ra), REG(ra)); // testq ra, ra
                         asm_setcc(cg_sec, X86_RCX, X86_S); // sets %cl
                         x86_or_rr(cg_sec, 1, X86_RAX, X86_RCX); // orb %cl, %al
+                    }
+                    if (sz_store_real < 4) {
+                        x86_mov_rr(cg_sec, sz_store_real, X86_RCX, REG(ra));
+                        if (is_unsigned_store)
+                            x86_movzx(cg_sec, 8, sz_store_real, X86_RCX, X86_RCX);
+                        else
+                            x86_movsx(cg_sec, 8, sz_store_real, X86_RCX, X86_RCX);
+                        x86_cmp_rr(cg_sec, 8, X86_RCX, REG(ra));
+                        asm_setcc(cg_sec, X86_RDX, X86_NE);
+                        x86_or_rr(cg_sec, 1, X86_RAX, X86_RDX);
                     }
                 }
             } else {
@@ -1294,7 +1370,21 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
                         x86_movsx(cg_sec, 8, 4, X86_RCX, REG(rb)); // movslq rb, %rcx
                     x86_imul_rr(cg_sec, 8, X86_RAX, X86_RCX); // imulq %rcx, %rax
                     x86_mov_rr(cg_sec, 4, REG(ra), X86_RAX); // movl %eax, ra
-                    if (is_unsigned_store && sz_store == 8) {
+                    if (sz_store_real < 4) {
+                        // True destination narrower than int (int8_t/
+                        // int16_t): the 32-bit-operand imulq above computed
+                        // the exact mathematical product in the full 64-bit
+                        // %rax (small inputs can't overflow a 64-bit
+                        // multiply), so range-check THAT full-precision
+                        // value against the REAL narrow destination width.
+                        x86_mov_rr(cg_sec, sz_store_real, X86_RCX, X86_RAX); // truncate
+                        if (is_unsigned_store)
+                            x86_movzx(cg_sec, 8, sz_store_real, X86_RCX, X86_RCX);
+                        else
+                            x86_movsx(cg_sec, 8, sz_store_real, X86_RCX, X86_RCX);
+                        x86_cmp_rr(cg_sec, 8, X86_RCX, X86_RAX); // cmpq %rax, %rcx
+                        asm_setcc(cg_sec, X86_RAX, X86_NE);
+                    } else if (is_unsigned_store && sz_store == 8) {
                         // Negative result doesn't fit in unsigned 64-bit
                         x86_test_rr(cg_sec, 8, X86_RAX, X86_RAX); // testq %rax, %rax
                         asm_setcc(cg_sec, X86_RAX, X86_S); // sets %al
@@ -1320,7 +1410,7 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
                     x86_sar_ri(cg_sec, 8, X86_RAX, 63); // sarq $63, %rax
                     x86_mov_mr(cg_sec, 8, x86_mem(REG(rr), 8), X86_RAX); // movq %rax, 8(rr)
                 } else {
-                    x86_mov_mr(cg_sec, sz_store, x86_mem(REG(rr), 0), REG(ra)); // mov ra, (rr)
+                    x86_mov_mr(cg_sec, sz_store_real, x86_mem(REG(rr), 0), REG(ra)); // mov ra, (rr)
                 }
                 free_reg(rr);
             }
