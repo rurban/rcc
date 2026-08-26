@@ -38,6 +38,93 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-26, unfixed.txt sweep -- alignas-in-nested-struct-typename, **STRICT_ANSI**, object-macro `-E` spacing)
+
+- **`alignas`/`_Alignas` on a struct/union MEMBER declaration was wrongly
+  rejected whenever that struct/union body was itself written inline as
+  the type-name operand of `sizeof`/`alignof`/`_Alignof`** (e.g.
+  `_Alignof(union { alignas(16) int i; })`) -- `src/parser.c`. C11 6.7.5's
+  "no alignment-specifier on a type-name" restriction applies to the
+  type-name's own OUTER declarator syntax, never to ordinary member
+  declarations nested inside a struct/union specifier that happens to be
+  used AS a type-name -- each member declaration is a full declaration in
+  its own right, where `alignas` is always legal. The parser's
+  `in_type_name` flag stayed set for the ENTIRE duration of parsing a
+  type-name, including any nested struct/union body, so `alignas` on a
+  perfectly legal member wrongly hit the same "alignment specified for
+  type name" rejection meant only for a bare `alignas(N) int`-style
+  type-name. Found via GNU Emacs's `src/alloc.c`:
+
+  ```c
+  enum { LISP_ALIGNMENT = alignof (union { union emacs_align_type x;
+                                            char alignas (GCALIGNMENT) gcaligned; }) };
+  ```
+
+  which failed to parse and cascaded into "undeclared variable" for
+  every later use of the enum constant, aborting the whole build at the
+  very first source file. Fixed by suspending `in_type_name` for the
+  whole struct/union body when entering `{`, restoring it after the
+  matching `}`. New regression test:
+  `test/test_alignas_nested_struct_typename.c`.
+
+- **rcc never predefined `__STRICT_ANSI__` for an explicit strict (non-
+  gnu) `-std=cNN`/`-std=iso9899:*` request** -- `src/main.c`,
+  `src/preprocess.c`. Real GCC/Clang define this macro in exactly that
+  case (never for the GNU-dialect default with no `-std=` at all, nor for
+  `-std=gnuNN`); portable library headers gate GNU-only extensions behind
+  `#if !defined(__STRICT_ANSI__)`, expecting a strict build to fall
+  through to a portable fallback instead. Found via CPython's
+  `Include/pymacro.h`:
+
+  ```c
+  #if (defined(__GNUC__) && !defined(__STRICT_ANSI__) && ...)
+  #define Py_ARRAY_LENGTH(array) (sizeof(array) / sizeof((array)[0]) + \
+      Py_BUILD_ASSERT_EXPR(!__builtin_types_compatible_p(typeof(array), \
+                                                          typeof(&(array)[0]))))
+  #else
+  #define Py_ARRAY_LENGTH(array) (sizeof(array) / sizeof((array)[0]))
+  #endif
+  ```
+
+  compiled with CPython's own real `-std=c11` build flag: with
+  `__STRICT_ANSI__` never defined, rcc always entered the `typeof`
+  branch the header itself believed it had excluded under strict mode --
+  and since rcc (correctly matching real GCC's own strict-mode behavior)
+  also rejects bare `typeof` outside GNU/C23 mode, `Objects/call.c`'s
+  `Py_ARRAY_LENGTH(stack)` use failed to parse ("expected specific
+  operator"), cascading into dozens of follow-on errors and aborting the
+  whole Python build. Fixed by adding an `opt_strict_ansi` flag (set only
+  by an explicit strict `-std=cNN`, mirroring the existing `opt_gnu_mode`
+  convention for `-std=gnuNN`) and predefining `__STRICT_ANSI__` from it.
+  New regression test: `test/test_strict_ansi_typeof.c` (checks all
+  three `-std=` cases directly via `-E`, plus an end-to-end compile of
+  CPython's exact `Py_ARRAY_LENGTH` gate).
+
+- **An object-like macro invoked bare at file/top scope, immediately
+  followed (no source whitespace) by a literal token, lost that
+  tightness in `-E` output** -- `src/preprocess.c`,
+  `expand_token()`. `MACRO)"` with `MACRO` expanding to `"(1)"` rendered
+  as `"(1) )"` (spurious space) instead of GCC's `"(1))"`. Root cause:
+  the tightness check compared the invocation token `t` against
+  `t->next` via `str_needs_space()`, but `t->next` is only ever populated
+  for tokens already living in a pre-built list (a macro body or a
+  collected argument list) -- a macro invoked at the top level is read
+  ONE TOKEN AT A TIME straight from the file, so its sibling hasn't even
+  been lexed yet when `expand_token()` runs, and the check silently
+  defaulted to "needs a space". Found via micropython's
+  `py/qstrdefs.h`: `QCFG(BYTES_IN_LEN, MICROPY_QSTR_BYTES_IN_LEN)` where
+  `MICROPY_QSTR_BYTES_IN_LEN` expands to `(1)` (`QCFG` itself is plain
+  text parsed by `makeqstrdata.py`, not a C macro, so the whole
+  invocation sits at top scope) -- the spurious space made
+  `makeqstrdata.py`'s `^QCFG\((.+), (.+)\)` regex capture `"(1) "`
+  (trailing space) instead of `"(1)"`, so its paren-stripping check
+  failed and `int("(1) ")` threw, aborting the whole micropython build.
+  Fixed by adding `tok_tight_after()`, a direct source-buffer check (is
+  the byte immediately following the token's own spelling non-
+  whitespace?) that needs no `->next` link at all, replacing the
+  `t->next`-based check in the object-like-macro branch. New regression
+  test: `test/test_pp_object_macro_tight_adjacency.c`.
+
 ### Fixed (2026-08-26, postgres -- 64-bit same-width mixed-signedness `__builtin_{add,sub}_overflow`)
 
 - **Same-width mixed-SIGNEDNESS add/sub overflow builtins at 64-bit

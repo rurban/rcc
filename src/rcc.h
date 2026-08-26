@@ -420,6 +420,7 @@ extern bool opt_v;
  * NULL means do not define it (C90/C89, which has no __STDC_VERSION__). */
 extern const char *opt_std_version;
 extern bool opt_gnu_mode;
+extern bool opt_strict_ansi;
 extern const char *opt_exec_charset;
 extern bool opt_W;
 extern bool opt_Werror;

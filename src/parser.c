@@ -4471,6 +4471,17 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     TypeKind ms_prev_kind = TY_FUNC;
     int ms_prev_bit_width = 0;
 
+    // C11 6.7.5's alignas-not-in-type-name restriction applies to the
+    // OUTER type-name's own declarator syntax, not to member
+    // declarations nested inside a struct/union body written as that
+    // type-name's specifier (e.g. `_Alignof(union { alignas(16) int
+    // i; })`): each member declaration is an ordinary declaration in
+    // its own right, where alignas is always allowed. Suspend
+    // in_type_name for the whole body so nested declspec()/alignas
+    // parsing isn't wrongly rejected just because the enclosing
+    // struct/union specifier is itself being parsed as a type-name.
+    bool _saved_in_type_name_su = in_type_name;
+    in_type_name = false;
     while (!equalc(tok, "}")) {
         // A trailing _Pragma(...)/__attribute__/[[...]] with nothing but
         // the closing brace after it (e.g. glib's own
@@ -4946,6 +4957,7 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     }
 
     tok = skip(tok, "}");
+    in_type_name = _saved_in_type_name_su;
     if (type_cleanup)
         ty->cleanup_func = type_cleanup;
     ty->members = head.next;

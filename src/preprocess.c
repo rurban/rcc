@@ -1896,6 +1896,24 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
 // exceeding a fixed cap even though the macro itself takes "any number of
 // args".
 #define INITIAL_CALL_ARGS 64
+// True when no whitespace/EOF separates the end of `t`'s own spelling from
+// whatever byte comes immediately next in ITS OWN source buffer. Unlike
+// str_needs_space(t, t->next), this needs no populated `->next` link, so it
+// also works for a raw top-level token pulled one-at-a-time via
+// pp_next_raw() (its sibling hasn't even been lexed yet when this runs) --
+// not just tokens that already live in a pre-built list (macro body/
+// argument tokens). Found via micropython's `QCFG(NAME, (1))`-style object-
+// like macro used bare at file scope: the invocation's own tightness
+// against the immediately-following literal `)` was invisible to the
+// `t->next`-based check, so the expansion always fell back to "needs
+// space", emitting "(1) )" instead of GCC's "(1))".
+static bool tok_tight_after(Token *t) {
+    if (!t || !t->ptr) return false;
+    int al;
+    tok_spelling(t, &al);
+    char c = t->ptr[al];
+    return c && c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != '\v' && c != '\f';
+}
 static void expand_token(Token *t) {
     if (!t || t->kind != TK_IDENT) {
         out_append(t);
@@ -2033,8 +2051,13 @@ static void expand_token(Token *t) {
         // Stringizing the expansion result must see that same tightness
         // between the *replacement* and that following token, not fall
         // back to "needs space" just because the replacement's tokens live
-        // in the #define line's own buffer (see frame_pull()).
-        if (t->no_space_after || (t->next && t->next->kind != TK_EOF && !str_needs_space(t, t->next)))
+        // in the #define line's own buffer (see frame_pull()). Checked via
+        // the source buffer directly (tok_tight_after), not `t->next`: a
+        // raw top-level token pulled one-at-a-time via pp_next_raw() (the
+        // overwhelmingly common case -- any bare macro invocation outside
+        // another macro's body/argument list) never has `->next` populated
+        // at this point, since its sibling hasn't been lexed yet.
+        if (t->no_space_after || tok_tight_after(t))
             frames->tight_after = true;
         return;
     }
@@ -3651,6 +3674,15 @@ Token *preprocess(char *filename, char *p) {
             define_pre("__STDC_VERSION__", (char *)opt_std_version);
         else
             add_undef("__STDC_VERSION__");
+        // __STRICT_ANSI__: real GCC/Clang predefine this only for an
+        // EXPLICIT strict (non-gnu) -std=cNN/-std=iso9899:* request, never
+        // for the GNU-dialect default (no -std= at all) nor -std=gnuNN.
+        // Portable library headers gate GNU-only extensions behind
+        // `#if !defined(__STRICT_ANSI__)` (e.g. CPython's pymacro.h
+        // Py_ARRAY_LENGTH, which otherwise takes a bare-`typeof` branch
+        // rcc -- matching real GCC -- rejects under strict -std=c11).
+        if (opt_strict_ansi)
+            define_pre("__STRICT_ANSI__", "1");
         if (!find_macro("__STDC_FENV_ACCESS__")) define_pre("__STDC_FENV_ACCESS__", "1");
         if (opt_std_version && strcmp(opt_std_version, "202311L") == 0) {
             if (!find_macro("bool")) define_pre("bool", "_Bool");

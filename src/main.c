@@ -290,6 +290,13 @@ bool opt_finline = false; // -finline / enabled at -O2+
 bool opt_funroll = false; // -funroll / enabled at -O2+
 const char *opt_std_version = "202311L"; /* rcc defaults to C23 */
 bool opt_gnu_mode = false; // -std=gnu* enables GNU extensions like typeof, ({})
+// Set only by an EXPLICIT strict (non-gnu) -std=cNN/-std=iso9899:*: real
+// GCC/Clang predefine __STRICT_ANSI__ in exactly that case (never for the
+// GNU-dialect default when no -std= is given at all, nor for -std=gnuNN).
+// Library headers gate GNU-only content behind `#if !defined(__STRICT_ANSI__)`
+// (e.g. CPython's Py_ARRAY_LENGTH bare `typeof` branch) expecting a strict
+// -std=c11 build to fall through to the portable fallback definition instead.
+bool opt_strict_ansi = false;
 const char *opt_exec_charset = NULL; /* -fexec-charset=NAME (e.g. IBM1047) */
 // -funsigned-char / -fsigned-char: override plain `char`'s default
 // signedness (ARM64 ABI default unsigned, x86-64 default signed).
@@ -788,20 +795,25 @@ int main(int argc, char **argv) {
              * headers expose the right version-gated content. */
             if (!strcmp(std, "c23") || !strcmp(std, "gnu23") || !strcmp(std, "iso9899:2023")) {
                 opt_std_version = "202311L";
-                if (!strncmp(std, "gnu", 3)) opt_gnu_mode = true;
+                opt_gnu_mode = !strncmp(std, "gnu", 3);
+                opt_strict_ansi = !opt_gnu_mode;
             } else if (!strcmp(std, "c17") || !strcmp(std, "gnu17") || !strcmp(std, "iso9899:2017")) {
                 opt_std_version = "201710L";
-                if (!strncmp(std, "gnu", 3)) opt_gnu_mode = true;
+                opt_gnu_mode = !strncmp(std, "gnu", 3);
+                opt_strict_ansi = !opt_gnu_mode;
             } else if (!strcmp(std, "c11") || !strcmp(std, "gnu11") || !strcmp(std, "iso9899:2011")) {
                 opt_std_version = "201112L";
-                if (!strncmp(std, "gnu", 3)) opt_gnu_mode = true;
+                opt_gnu_mode = !strncmp(std, "gnu", 3);
+                opt_strict_ansi = !opt_gnu_mode;
             } else if (!strcmp(std, "c99") || !strcmp(std, "gnu99") || !strcmp(std, "iso9899:1999")) {
                 opt_std_version = "199901L";
-                if (!strncmp(std, "gnu", 3)) opt_gnu_mode = true;
+                opt_gnu_mode = !strncmp(std, "gnu", 3);
+                opt_strict_ansi = !opt_gnu_mode;
             } else if (!strcmp(std, "c90") || !strcmp(std, "c89") || !strcmp(std, "gnu90") ||
                        !strcmp(std, "gnu89") || !strcmp(std, "iso9899:1990")) {
                 opt_std_version = NULL;
-                if (!strncmp(std, "gnu", 3)) opt_gnu_mode = true;
+                opt_gnu_mode = !strncmp(std, "gnu", 3);
+                opt_strict_ansi = !opt_gnu_mode;
             } /* C90 has no __STDC_VERSION__ */
             else
                 fprintf(stderr, "rcc: warning: unsupported -std=%s, using C23\n", std);
