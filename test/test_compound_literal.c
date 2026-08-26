@@ -2,21 +2,10 @@
  * test_compound_literal_{array,float,nested}.c, test_complit_designator_chain.c,
  * test_cast_addr_compound_literal.c and test_filescope_cl_static.c:
  *
- * - Nested struct/union brace-initializers and designator chains
- *   (incl. through named/anonymous union members and array-index steps),
- *   with the ND_ASSIGN typing rule applied so smaller constants convert
- *   to wider/float members (check_type() was missing on the nested
- *   designated path: int -1 stored truncated into a long).
- * - Array compound literals: element assignments convert (sign-extend),
- *   ".member[idx].submember = val" chains parse, braced struct elements
- *   at designated indices work, undesignated elements stay zero.
- * - Compound-literal initializers from *integer* constants convert to
- *   float members and vector elements (C11 6.7.9p11 / 6.5.2.5).
- * - A cast wrapping "&(compound literal)" in a global initializer
- *   (njs's "(void*) &(njs_value_t){...}") folds to a static object.
- * - File-scope compound literals have static storage duration
- *   (C11 6.5.2.5p10): "(uintptr_t) &(T){...}" in a global initializer
- *   must fold to a real link-time address, not 0.
+ * - A parenthesized string literal — `("...")`, e.g. gettext's N_()
+ *   — initializing a char-array member of a struct inside an array of
+ *   such structs copies the literal's bytes, like the bare form
+ *   (C11 6.7.9p14); it must not fall into the flat-array element path.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -354,11 +343,42 @@ static int test_filescope(void) {
     return 0;
 }
 
+/* ---- parenthesized string literals in struct members (was
+ *      test_paren_strlit_struct_member.c) ---- */
+
+#define N_(x) (x)
+
+struct Format { unsigned long long factor; char string[9]; };
+
+const struct Format formats[4][6] = {
+  { { 1000ULL, N_("%.1f kB") }, { 1000000ULL, N_("%.1f MB") }, { 1000000000ULL, N_("%.1f GB") }, { 1000000000000ULL, N_("%.1f TB") }, { 1000000000000000ULL, N_("%.1f PB") }, { 1000000000000000000ULL, N_("%.1f EB") } },
+  { { 1024ULL, N_("%.1f KiB") }, { 1048576ULL, N_("%.1f MiB") }, { 1073741824ULL, N_("%.1f GiB") }, { 1099511627776ULL, N_("%.1f TiB") }, { 1125899906842624ULL, N_("%.1f PiB") }, { 1152921504606846976ULL, N_("%.1f EiB") } },
+  { { 1000ULL, N_("%.1f kb") }, { 1000000ULL, N_("%.1f Mb") }, { 1000000000ULL, N_("%.1f Gb") }, { 1000000000000ULL, N_("%.1f Tb") }, { 1000000000000000ULL, N_("%.1f Pb") }, { 1000000000000000000ULL, N_("%.1f Eb") } },
+  { { 1024ULL, N_("%.1f Kib") }, { 1048576ULL, N_("%.1f Mib") }, { 1073741824ULL, N_("%.1f Gib") }, { 1099511627776ULL, N_("%.1f Tib") }, { 1125899906842624ULL, N_("%.1f Pib") }, { 1152921504606846976ULL, N_("%.1f Eib") } },
+};
+
+struct Row { char a[4]; char b[4]; };
+struct Row rows[2][2] = { { { ("r0a"), ("r0b") }, { ("r0c"), ("r0d") } }, { { ("r1a"), ("r1b") }, { ("r1c"), ("r1d") } } };
+
+static void test_paren_strlit(void) {
+    CHECK(__builtin_strcmp(formats[0][0].string, "%.1f kB") == 0);
+    CHECK(__builtin_strcmp(formats[0][5].string, "%.1f EB") == 0);
+    CHECK(__builtin_strcmp(formats[1][1].string, "%.1f MiB") == 0);
+    CHECK(__builtin_strcmp(formats[3][4].string, "%.1f Pib") == 0);
+    CHECK(formats[0][0].factor == 1000ULL);
+    CHECK(formats[3][5].factor == 1152921504606846976ULL);
+    CHECK(__builtin_strcmp(rows[0][0].a, "r0a") == 0);
+    CHECK(__builtin_strcmp(rows[0][1].b, "r0d") == 0);
+    CHECK(__builtin_strcmp(rows[1][0].a, "r1a") == 0);
+    CHECK(__builtin_strcmp(rows[1][1].b, "r1d") == 0);
+}
+
 int main(void) {
     int rc;
     test_float();
     test_nested();
     test_array();
+    test_paren_strlit();
     if ((rc = test_designator_chain())) return rc;
     if ((rc = test_cast_addr())) return rc;
     if ((rc = test_filescope())) return rc;

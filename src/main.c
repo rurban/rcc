@@ -2,7 +2,9 @@
 // Derived from chibicc by Rui Ueyama.
 #include "rcc.h"
 #include "asm.h"
+#include "obj.h" // STV_* visibility constants
 #include "codegen_asm.h"
+uint8_t rcc_default_visibility = STV_DEFAULT; // -fvisibility=... default
 #include "link.h"
 #include "bitint_rt.h"
 #include <stdarg.h>
@@ -945,6 +947,29 @@ int main(int argc, char **argv) {
                             "no cross-compilation to a different word width in one binary\n",
                     argv[i]);
             return 1;
+        } else if (!strncmp(argv[i], "-fvisibility", 12)) {
+            // -fvisibility=hidden|default|internal|protected (also the
+            // two-argv "-fvisibility hidden" form). Real ELF shared
+            // libraries like glib build with -fvisibility=hidden plus
+            // explicit visibility("default")/("hidden") attributes
+            // (_GLIB_EXTERN/G_GNUC_INTERNAL); without honoring it, rcc
+            // exports every internal symbol and glib's check-abis.sh
+            // fails on the leaked G_GNUC_INTERNAL ones.
+            const char *v = argv[i] + 12;
+            if (*v == '=')
+                v++;
+            else if (i + 1 < argc)
+                v = argv[++i];
+            if (!strcmp(v, "hidden"))
+                rcc_default_visibility = STV_HIDDEN;
+            else if (!strcmp(v, "default"))
+                rcc_default_visibility = STV_DEFAULT;
+            else if (!strcmp(v, "internal"))
+                rcc_default_visibility = STV_INTERNAL;
+            else if (!strcmp(v, "protected"))
+                rcc_default_visibility = STV_PROTECTED;
+            else
+                fprintf(stderr, "rcc: warning: ignored unknown visibility '%s'\n", v);
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
             // Real GCC/clang always hard-error on an unrecognized
             // non-warning flag (-f.../-m.../etc.), with or without

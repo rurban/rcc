@@ -59,6 +59,8 @@
 #define STT_FILE 4
 #define STT_TLS 6
 #define STV_DEFAULT 0
+#define STV_INTERNAL 1
+#define STV_HIDDEN 2
 #define SHN_UNDEF 0
 #define SHN_ABS 0xfff1
 #define SHN_COMMON 0xfff2
@@ -542,6 +544,16 @@ static int elf_load_object(LinkState *s, const char *path) {
                     elf_close(&ef);
                     return -1;
                 }
+                // Carry the object symbol's ELF visibility (st_other low
+                // bits) into the merged LinkSym so -shared .dynsym can
+                // honor -fvisibility=hidden / visibility("hidden")
+                // (glib's check-abis.sh leaks G_GNUC_INTERNAL symbols
+                // otherwise). Only a definition sets it: a plain
+                // undefined *reference* to a symbol (typically
+                // st_other=0) must not clobber the defining object's
+                // visibility.
+                if (out_sec >= 0)
+                    s->syms[sym_idx].visibility = other & 3;
                 sym_map[k] = sym_idx;
             }
         }
@@ -1677,7 +1689,12 @@ int link_elf(LinkState *s) {
     if (s->opt_shared || s->opt_export_dynamic) {
         for (int i = 0; i < s->n_syms; i++) {
             LinkSym *sym = &s->syms[i];
-            if (sym->sec >= 0 && sym->bind != STB_LOCAL && sym->name && sym->name[0]) {
+            // STV_HIDDEN/STV_INTERNAL (from -fvisibility=hidden or an
+            // explicit visibility("hidden") attribute) are never exported
+            // into .dynsym — real ld drops them too, so a dlopen()
+            // caller (or glib's check-abis.sh) never sees them.
+            if (sym->sec >= 0 && sym->bind != STB_LOCAL && sym->name && sym->name[0] &&
+                sym->visibility != STV_HIDDEN && sym->visibility != STV_INTERNAL) {
                 if (n_exp == cap_exp) {
                     cap_exp = cap_exp ? cap_exp * 2 : 16;
                     {
@@ -2074,7 +2091,7 @@ int link_elf(LinkState *s) {
             w32le_m(ent, (uint32_t)off);
             ent[4] = (uint8_t)(((sym->bind == 2 ? STB_WEAK : STB_GLOBAL) << 4) |
                                (sym->type == 2 ? STT_FUNC : (sym->type == 1 ? STT_OBJECT : STT_NOTYPE)));
-            ent[5] = STV_DEFAULT;
+            ent[5] = (uint8_t)sym->visibility; // STV_DEFAULT unless hidden/internal (filtered above)
             w16le_m(ent + 6, 1);
             w64le_m(ent + 8, 0); // st_value: patched after layout
             w64le_m(ent + 16, sym->size);

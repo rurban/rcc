@@ -164,6 +164,17 @@ static void cg_weak_label(const char *name) {
     if (cg_dry_run) return;
     objfile_add_sym(cg_obj, name, SEC_TEXT, cg_sec->len, 0, SB_WEAK, ST_FUNC);
 }
+// Apply ELF symbol visibility (st_other) to an already-emitted symbol:
+// explicit __attribute__((visibility(...))) wins, otherwise the
+// -fvisibility=... default (STV_DEFAULT unless -fvisibility=hidden).
+// Without this, glib's G_GNUC_INTERNAL symbols leak into .dynsym and its
+// check-abis.sh fails.
+static void cg_apply_sym_visibility(const char *name, bool has_visibility, uint8_t visibility) {
+    if (cg_dry_run) return;
+    int idx = objfile_find_sym(cg_obj, name);
+    if (idx >= 0)
+        cg_obj->syms[idx].visibility = has_visibility ? visibility : rcc_default_visibility;
+}
 
 // cg_def_fn_label: the static/non-exported-function counterpart to
 // cg_global_label/cg_weak_label above — a REAL function entry point (unlike
@@ -16468,9 +16479,12 @@ struct ObjFile *codegen(Program *prog) {
                 // it as a no-op too), so is_static still wins.
                 SymBind bss_bind = var->is_static ? SB_LOCAL : (var->is_weak ? SB_WEAK : SB_GLOBAL);
                 objfile_add_sym(cg_obj, sym_name_str, var->is_tls ? SEC_TDATA : SEC_BSS, off, var->ty->size, bss_bind, var->is_tls ? ST_TLS : ST_OBJECT);
+                cg_apply_sym_visibility(sym_name_str, var->has_visibility, var->visibility);
                 cg_label_ht_add(sym_name_str, off);
-                if (reserved)
+                if (reserved) {
                     objfile_add_sym(cg_obj, asm_sym_name(sym_name(label)), var->is_tls ? SEC_TDATA : SEC_BSS, off, var->ty->size, bss_bind, var->is_tls ? ST_TLS : ST_OBJECT); // .globl %s
+                    cg_apply_sym_visibility(asm_sym_name(sym_name(label)), var->has_visibility, var->visibility);
+                }
                 cg_obj->bss_size += var->ty->size;
             } else {
                 cg_set_section(data_sec);
@@ -16515,9 +16529,12 @@ struct ObjFile *codegen(Program *prog) {
                     // Same STB_WEAK rationale as the .bss branch above.
                     SymBind data_bind = var->is_static ? SB_LOCAL : (var->is_weak ? SB_WEAK : SB_GLOBAL);
                     objfile_add_sym(cg_obj, sym_name_str, data_sec, off, var->ty->size, data_bind, var->is_tls ? ST_TLS : ST_OBJECT);
+                    cg_apply_sym_visibility(sym_name_str, var->has_visibility, var->visibility);
                     cg_label_ht_add(sym_name_str, off);
-                    if (reserved)
+                    if (reserved) {
                         objfile_add_sym(cg_obj, asm_sym_name(sym_name(label)), data_sec, off, var->ty->size, data_bind, var->is_tls ? ST_TLS : ST_OBJECT); // %s:
+                        cg_apply_sym_visibility(asm_sym_name(sym_name(label)), var->has_visibility, var->visibility);
+                    }
                 }
                 if (var->is_tls && !var->has_init && !var->init_data && !var->relocs) {
                     for (int _zi = 0; _zi < var->ty->size; _zi++) secbuf_emit8(cg_sec, 0);
@@ -17441,6 +17458,7 @@ struct ObjFile *codegen(Program *prog) {
             // (cg_def_fn_label, unlike cg_weak_label) instead of forcing
             // every call through a real relocation.
             cg_def_fn_label(fn_sym_name);
+        cg_apply_sym_visibility(fn_sym_name, fn->has_visibility, fn->visibility);
 
         // Stack frame: stp fp,lr; mov fp,sp; sub sp,sp,#frame_size
         asm_stp_fp_lr(cg_sec); // stp x29, x30, [sp, #-16]!
@@ -17921,6 +17939,7 @@ struct ObjFile *codegen(Program *prog) {
             // same-TU calls on the fast label-hashtable direct branch.
             cg_def_fn_label(fn_sym_name);
         }
+        cg_apply_sym_visibility(fn_sym_name, fn->has_visibility, fn->visibility);
 #ifdef _WIN32
         uw_begin(); // .seh_proc
 #endif

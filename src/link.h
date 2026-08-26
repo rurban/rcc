@@ -76,6 +76,7 @@ struct LinkSym {
     uint64_t size; // symbol size
     int bind; // 0 local, 1 global, 2 weak
     int type; // 0 notype, 1 object, 2 func
+    int visibility; // ELF st_other low bits: STV_DEFAULT/HIDDEN/...
     int src_obj; // source object index (for diagnostics)
     int hash_next; // next symbol in hash bucket (internal use)
     bool resolved; // true if this symbol has a final value

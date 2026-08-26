@@ -2,6 +2,7 @@
 #include <ctype.h>
 // Derived from chibicc by Rui Ueyama.
 #include "rcc.h"
+#include "obj.h" // STV_* visibility constants
 
 // Decimal-literal folding: these come from the bundled libdfp.a (libbid
 // core, LGPL-2.1, see lib/libdfp/), which rcc itself links so it can fold
@@ -33,6 +34,8 @@ struct VarAttr {
     bool is_weak;
     bool is_used; // __attribute__((used)) / __attribute__((__used__))
     bool is_tls;
+    bool has_visibility; // __attribute__((visibility("..."))) seen
+    uint8_t visibility; // STV_* when has_visibility
     bool has_type;
     bool is_packed;
     bool is_constexpr;
@@ -251,6 +254,8 @@ static bool pending_transparent_union;
 // Set by declarator(), consumed by both the function-definition handler
 // and the plain global-variable declaration path.
 static bool pending_weak;
+static bool pending_visibility_set; // trailing __attribute__((visibility(...)))
+static uint8_t pending_visibility; // STV_* when pending_visibility_set
 // VLA-containing struct: emit size-capture code before the next statement
 static Node *pending_vla_struct_capture;
 
@@ -2002,6 +2007,36 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                         tok = tok->next;
                     continue;
                 }
+                // __attribute__((visibility("hidden|default|internal|protected")))
+                // — glib's G_GNUC_INTERNAL and _GLIB_EXTERN rely on it, and
+                // rcc would otherwise export every internal symbol (its
+                // check-abis.sh flags exactly those leaks).
+                if (equalc(tok, "visibility") || equalc(tok, "__visibility__")) {
+                    tok = tok->next;
+                    tok = skip(tok, "(");
+                    if (attr && (tok->kind == TK_STR || tok->kind == TK_IDENT)) {
+                        const char *val = tok->kind == TK_STR ? tok->str : tok->name;
+                        int vlen = tok->len;
+                        if (tok->kind == TK_STR && vlen >= 2 &&
+                            (tok->str[0] == '"' || tok->str[0] == '\'')) {
+                            val = tok->str + 1;
+                            vlen -= 2;
+                        }
+                        attr->has_visibility = true;
+                        if ((vlen == 6 && !memcmp(val, "hidden", 6)) ||
+                            (vlen == 8 && !memcmp(val, "internal", 8)))
+                            attr->visibility = STV_HIDDEN;
+                        else if (vlen == 9 && !memcmp(val, "protected", 9))
+                            attr->visibility = STV_PROTECTED;
+                        else
+                            attr->visibility = STV_DEFAULT; // "default" (or unknown)
+                    }
+                    tok = tok->next;
+                    tok = skip(tok, ")");
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
                 // __common__: GCC attribute for tentative definitions to emit
                 // as COMMON symbols. rcc emits weak (STB_WEAK) which achieves
                 // the same linker-level merging behavior. Found via redis's
@@ -3721,6 +3756,10 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name, VarAttr
         tok = read_type_attrs(tok, &decl_align, &ptr_attr);
         if (ptr_attr.is_weak)
             pending_weak = true;
+        if (ptr_attr.has_visibility) {
+            pending_visibility_set = true;
+            pending_visibility = ptr_attr.visibility;
+        }
         // GNU allows function attributes after a pointer star in the
         // declarator (`extern __inline void * __attribute__((__gnu_inline__))
         // fn(void)` — gcc's lwpintrin.h). Merge the function-relevant ones
@@ -3846,6 +3885,10 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name, VarAttr
     // declare weak linkage.
     if (trail_attr.is_weak)
         pending_weak = true;
+    if (trail_attr.has_visibility) {
+        pending_visibility_set = true;
+        pending_visibility = trail_attr.visibility;
+    }
     // Propagate a trailing __attribute__((packed)) (e.g. busybox's own
     // `uint32_t crc32 __attribute__((packed));` idiom, tightening one
     // field's alignment without packing the whole struct) back to the
@@ -6420,7 +6463,12 @@ static Token *global_init_member(Token *tok, LVar *var, Member *mem, int base_of
         }
         return tok;
     }
-    if (mem->ty->kind == TY_ARRAY && !equalc(tok, "{") && tok->kind != TK_STR) {
+    // A parenthesized string literal ("...") — e.g. glib's N_("%.1f kB")
+    // — is still a string literal (C11 6.7.9p14) for a char-array member;
+    // let global_init_one's paren-unwrap handle it instead of the
+    // element-wise flat-array path (which wrote the literal index byte).
+    if (mem->ty->kind == TY_ARRAY && !equalc(tok, "{") && tok->kind != TK_STR &&
+        !(equalc(tok, "(") && tok->next && tok->next->kind == TK_STR)) {
         return global_init_flat_array(tok, var, mem->ty, base_offset + mem->offset);
     }
     return global_init_one(tok, var, mem->ty, base_offset + mem->offset);
@@ -7244,7 +7292,9 @@ static Token *local_init_member(Token *tok, Node *lhs, Member *mem, Node **cur) 
     Node *mem_node = new_unary(ND_MEMBER, lhs, tok);
     mem_node->member = mem;
     check_type(mem_node);
-    if (mem->ty->kind == TY_ARRAY && !equalc(tok, "{") && tok->kind != TK_STR) {
+    // Same parenthesized-string-literal exception as global_init_member.
+    if (mem->ty->kind == TY_ARRAY && !equalc(tok, "{") && tok->kind != TK_STR &&
+        !(equalc(tok, "(") && tok->next && tok->next->kind == TK_STR)) {
         return local_init_flat_array(tok, mem_node, mem->ty, cur);
     }
     return local_init_one(tok, mem_node, mem->ty, cur);
@@ -7750,6 +7800,8 @@ static Node *declaration(Token **rest, Token *tok) {
                 fn_sym->is_extern = true;
                 fn_sym->is_function = true;
                 fn_sym->is_weak = attr.is_weak;
+                fn_sym->has_visibility = attr.has_visibility;
+                fn_sym->visibility = attr.visibility;
                 fn_sym->is_reproducible = attr.is_reproducible;
                 fn_sym->is_unsequenced = attr.is_unsequenced;
             } else {
@@ -7767,6 +7819,8 @@ static Node *declaration(Token **rest, Token *tok) {
             lvar->is_extern = true;
             lvar->is_function = true;
             lvar->is_weak = attr.is_weak;
+            lvar->has_visibility = attr.has_visibility;
+            lvar->visibility = attr.visibility;
             if (pending_asm_name)
                 lvar->asm_name = pending_asm_name;
             lvar->next = locals;
@@ -13954,6 +14008,7 @@ Program *parse(Token *tok) {
         pending_vector_size = 0;
         pending_transparent_union = false;
         pending_weak = false;
+        pending_visibility_set = false;
         pending_target_attr = NULL;
         if (pending_target_clones) {
             free(pending_target_clones);
@@ -14332,6 +14387,8 @@ Program *parse(Token *tok) {
                         fn_lvar->is_function = true;
                         fn_lvar->is_inline = attr.is_inline;
                         fn_lvar->is_weak = attr.is_weak;
+                        fn_lvar->has_visibility = attr.has_visibility;
+                        fn_lvar->visibility = attr.visibility;
                         fn_lvar->is_reproducible = attr.is_reproducible;
                         fn_lvar->is_unsequenced = attr.is_unsequenced;
                         fn_lvar->is_static = attr.is_static;
@@ -14501,10 +14558,16 @@ Program *parse(Token *tok) {
                     // declaration seen (has_init flag).
                     fn->is_extern = attr.is_extern || (fn_sym2 && fn_sym2->has_init);
                     fn->is_weak = attr.is_weak || pending_weak || (fn_sym2 && fn_sym2->is_weak);
+                    fn->has_visibility = attr.has_visibility || pending_visibility_set ||
+                        (fn_sym2 && fn_sym2->has_visibility);
+                    fn->visibility = attr.has_visibility ? attr.visibility
+                                                         : (pending_visibility_set ? pending_visibility
+                                                                                   : (fn_sym2 ? fn_sym2->visibility : STV_DEFAULT));
                     fn->is_used = attr.is_used || (fn_sym2 && fn_sym2->is_used);
                     pending_constructor = false;
                     pending_destructor = false;
                     pending_weak = false;
+                    pending_visibility_set = false;
                     pending_asm_name = NULL;
                     pending_alias_target = NULL;
                     pending_section_name = NULL;
@@ -14698,8 +14761,13 @@ Program *parse(Token *tok) {
                         // the Plan9/Go-toolchain AUTOLIB() idiom
                         // `int __p9l_autolib_x __attribute__((weak));`).
                         var->is_weak = attr.is_weak || pending_weak;
+                        if (attr.has_visibility || pending_visibility_set) {
+                            var->has_visibility = true;
+                            var->visibility = attr.has_visibility ? attr.visibility : pending_visibility;
+                        }
                     }
                     pending_weak = false;
+                    pending_visibility_set = false;
                     if (attr.is_register && pending_asm_name && !var->has_init &&
                         ty->size > 0 && ty->size <= 8 &&
                         ty->kind != TY_STRUCT && ty->kind != TY_UNION && ty->kind != TY_ARRAY) {

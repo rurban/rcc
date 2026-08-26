@@ -152,6 +152,10 @@ void add_undef(char *name);
 void remove_cmdline_define(const char *name);
 void add_include_path(const char *path);
 void add_quote_include_path(const char *path); // -iquote: quote-form ("...") includes only
+// Default ELF symbol visibility applied to globals/functions without an
+// explicit __attribute__((visibility(...))). Set by -fvisibility=hidden
+// etc.; STV_DEFAULT unless overridden. (obj.h's STV_* values.)
+extern uint8_t rcc_default_visibility;
 // -nostdinc: skip system include paths
 extern bool opt_nostdinc;
 // Make dependency generation (-Wp,-MMD, / -MD / -MMD / -MF / -MT / -MQ / -MP
@@ -515,6 +519,8 @@ struct LVar {
     bool is_weak;
     bool is_used; // __attribute__((used)) — see Function.is_used
     bool has_init;
+    bool has_visibility; // __attribute__((visibility("..."))) seen
+    uint8_t visibility; // STV_* (obj.h) when has_visibility
     // True when append_reloc() (parser.c) records a relocation whose
     // target names this LVar and this LVar is_function: some global
     // variable's initializer takes this function's address (`&fn`,
@@ -841,6 +847,8 @@ struct Function {
     bool is_extern;
     bool is_weak;
     bool is_used; // __attribute__((used)): exempts from
+    bool has_visibility; // __attribute__((visibility("..."))) seen
+    uint8_t visibility; // STV_* (obj.h) when has_visibility
     // eliminate_unused_static_inline()'s omission of a never-called
     // `static inline` function, matching real GCC (verified: without
     // `used`, GCC omits an uncalled `static inline` function's body at
