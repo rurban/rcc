@@ -7228,29 +7228,6 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             speculative_fold_failed = true;
         return tok;
     }
-    long long val = 0;
-    if (eval_const_expr(node, &val)) {
-        write_scalar_bytes(var, offset, ty->size, (int64_t)val);
-        return tok;
-    }
-    // Label-address DIFFERENCE (GCC's `&&label_a - &&label_b` computed-goto
-    // jump-table idiom, e.g. torture/pr70460.c's `static int b[] = { &&lab1
-    // - &&lab0, &&lab2 - &&lab0 };`). Applies at any integer size (unlike
-    // the >=8-byte-only single-address case below): neither label's byte
-    // offset is knowable yet — labels live in .text, defined only once the
-    // enclosing function's body is generated, strictly after every static
-    // initializer in this early pass — so it can never fold via
-    // eval_const_expr(); defer it to codegen.c as a label-diff reloc,
-    // resolved as a same-object byte patch (there is no ELF/Mach-O
-    // relocation kind for "symbol A minus symbol B") once the enclosing
-    // function's body has been generated.
-    {
-        char *label_hi = NULL, *label_lo = NULL;
-        if (extract_label_diff(node, &label_hi, &label_lo)) {
-            append_label_diff_reloc(var, offset, label_hi, label_lo, ty->size);
-            return tok;
-        }
-    }
     // A relocatable address stored in an integer-typed (not pointer-typed)
     // struct member — e.g. arch/x86/include/asm/processor.h's INIT_THREAD:
     // "{ .sp = (unsigned long)&__top_init_kernel_stack }", where .sp is a
@@ -7258,6 +7235,12 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
     // a few lines up; that branch only fires for pointer-typed members, so
     // an integer-typed member holding a cast address never tried
     // extract_reloc() at all.
+    //
+    // Must run BEFORE the plain eval_const_expr() below: that evaluator
+    // folds a string literal (or any address expression) to its truthiness
+    // (ND_STR -> 1), never its address, so `(intptr_t)"lit"` / `(unsigned
+    // long)&sym` in an integer scalar would silently store 1 instead of a
+    // relocation (git's `struct option` tables, `.defval = (intptr_t)"all"`).
     //
     // Only fires when the field is at least pointer-width: a real relocation
     // needs the full 8-byte address to be representable, so on LLP64
@@ -7273,6 +7256,29 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         int addend = 0;
         if (looks_like_address_expr(node) && extract_reloc(node, &label, &addend) && label) {
             append_reloc(var, offset, label, addend);
+            return tok;
+        }
+    }
+    long long val = 0;
+    if (eval_const_expr(node, &val)) {
+        write_scalar_bytes(var, offset, ty->size, (int64_t)val);
+        return tok;
+    }
+    // Label-address DIFFERENCE (GCC's `&&label_a - &&label_b` computed-goto
+    // jump-table idiom, e.g. torture/pr70460.c's `static int b[] = { &&lab1
+    // - &&lab0, &&lab2 - &&lab0 };`). Applies at any integer size (unlike
+    // the >=8-byte-only single-address case above): neither label's byte
+    // offset is knowable yet — labels live in .text, defined only once the
+    // enclosing function's body is generated, strictly after every static
+    // initializer in this early pass — so it can never fold via
+    // eval_const_expr(); defer it to codegen.c as a label-diff reloc,
+    // resolved as a same-object byte patch (there is no ELF/Mach-O
+    // relocation kind for "symbol A minus symbol B") once the enclosing
+    // function's body has been generated.
+    {
+        char *label_hi = NULL, *label_lo = NULL;
+        if (extract_label_diff(node, &label_hi, &label_lo)) {
+            append_label_diff_reloc(var, offset, label_hi, label_lo, ty->size);
             return tok;
         }
     }
@@ -13761,6 +13767,40 @@ static void global_initializer_impl(Token **rest, Token *tok, LVar *var) {
             return;
         }
 
+        // A relocatable address stored in an integer-typed (not pointer-
+        // typed) scalar — e.g. arch/x86/include/asm/processor.h's
+        // INIT_THREAD: "{ .sp = (unsigned long)&__top_init_kernel_stack }",
+        // where .sp is a plain `unsigned long`, not a pointer. Not a
+        // foldable constant (eval_const_expr above correctly rejects it —
+        // the address isn't known until link time) but not an error
+        // either: the TY_PTR branch above already handles exactly this
+        // shape via extract_reloc()/append_reloc() for pointer-typed
+        // globals; scalars just never tried the same fallback.
+        //
+        // Must run BEFORE the plain eval_const_expr() below: that
+        // evaluator folds a string literal (or any address expression) to
+        // its truthiness (ND_STR -> 1), never its address, so
+        // `(intptr_t)"lit"` / `(unsigned long)&sym` in an integer scalar
+        // would silently store 1 instead of a relocation (git's `struct
+        // option` tables, `.defval = (intptr_t)"all"`).
+        //
+        // Only fires when the field is at least pointer-width — see the
+        // matching guard in global_init_one() for why: on LLP64 (Windows)
+        // "unsigned long" is 4 bytes, too narrow to guarantee a real address
+        // fits, and GCC itself rejects the cast there as non-constant.
+        if (var->ty->size >= 8) {
+            char *label = NULL;
+            int addend = 0;
+            if (looks_like_address_expr(node) && extract_reloc(node, &label, &addend) && label) {
+                var->has_init = true;
+                var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
+                var->init_size = var->ty->size;
+                append_reloc(var, 0, label, addend);
+                *rest = tok;
+                return;
+            }
+        }
+
         // Try integer constant evaluation
         long long ival = 0;
         if (eval_const_expr(node, &ival)) {
@@ -13807,33 +13847,6 @@ static void global_initializer_impl(Token **rest, Token *tok, LVar *var) {
             var->init_val = 1;
             *rest = tok;
             return;
-        }
-
-        // A relocatable address stored in an integer-typed (not pointer-
-        // typed) scalar — e.g. arch/x86/include/asm/processor.h's
-        // INIT_THREAD: "{ .sp = (unsigned long)&__top_init_kernel_stack }",
-        // where .sp is a plain `unsigned long`, not a pointer. Not a
-        // foldable constant (eval_const_expr above correctly rejects it —
-        // the address isn't known until link time) but not an error
-        // either: the TY_PTR branch above already handles exactly this
-        // shape via extract_reloc()/append_reloc() for pointer-typed
-        // globals; scalars just never tried the same fallback.
-        //
-        // Only fires when the field is at least pointer-width — see the
-        // matching guard in global_init_one() for why: on LLP64 (Windows)
-        // "unsigned long" is 4 bytes, too narrow to guarantee a real address
-        // fits, and GCC itself rejects the cast there as non-constant.
-        if (var->ty->size >= 8) {
-            char *label = NULL;
-            int addend = 0;
-            if (looks_like_address_expr(node) && extract_reloc(node, &label, &addend) && label) {
-                var->has_init = true;
-                var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
-                var->init_size = var->ty->size;
-                append_reloc(var, 0, label, addend);
-                *rest = tok;
-                return;
-            }
         }
 
         if (!var->is_local && !in_speculative_const_fold)
