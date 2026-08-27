@@ -96,6 +96,8 @@ test/*.out
 .mcp.json
 opencode.json
 amazon_bug_bounty/
+/.github/copilot-instructions.md
+/.vscode/
 /.cache
 /AGENTS.md
 /CLAUDE.md

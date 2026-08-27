@@ -6873,7 +6873,15 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
 #else
             asm_movq_r_xmm(cg_sec, X86_XMM0, r_lhs); // movq X86_XMM0, r_lhs
             asm_movq_r_xmm(cg_sec, X86_XMM1, r_rhs); // movq X86_XMM1, r_rhs
-            asm_ucomisd(cg_sec); // ucomisd
+            if (cond->kind == ND_LT || cond->kind == ND_LE) {
+                // Ordered compare: raises MXCSR IE on NaN operands, as
+                // required for signaling `<`/`<=`/`>`/`>=` (see the
+                // matching ND_LT/ND_LE fix in the value path). EQ/NE stay
+                // unordered and never raise.
+                x86_comisd(cg_sec, X86_XMM0, X86_XMM1); // comisd
+            } else {
+                asm_ucomisd(cg_sec); // ucomisd
+            }
             free_reg(r_rhs);
             free_reg(r_lhs);
             if (cond->kind == ND_EQ) {
@@ -15819,7 +15827,17 @@ VReg gen(Node *node) {
 #else
         asm_movq_r_xmm(cg_sec, X86_XMM0, r_lhs); // movq %s, %%xmm0
         asm_movq_r_xmm(cg_sec, X86_XMM1, r_rhs); // movq %s, %%xmm1
-        asm_ucomisd(cg_sec); // ucomisd %%xmm1, %%xmm0
+        if (node->kind == ND_LT || node->kind == ND_LE) {
+            // Ordered compare (`comisd`): raises the SSE invalid-operation
+            // exception (MXCSR IE) when either operand is NaN, matching
+            // gcc and the C/IEEE signaling semantics of `<`/`<=`/`>`/`>=`
+            // (rvvM's FPU signaling compares rely on this flag, as does
+            // any code reading fetestexcept after a comparison). EQ/NE
+            // below stay on the unordered `ucomisd`, which never raises.
+            x86_comisd(cg_sec, X86_XMM0, X86_XMM1); // comisd %%xmm1, %%xmm0
+        } else {
+            asm_ucomisd(cg_sec); // ucomisd %%xmm1, %%xmm0
+        }
         if (node->kind == ND_EQ) {
             asm_setcc(cg_sec, X86_RAX, X86_E); // sete %%al
             asm_setcc(cg_sec, X86_RCX, X86_NP); // setnp %%cl

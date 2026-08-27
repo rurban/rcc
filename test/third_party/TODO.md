@@ -56,6 +56,50 @@ double, ptr}`) is an 8-byte INTEGER-class aggregate per SysV (INTEGER
   gcc-compiled callee via `dlopen`. Removed from `unfixed.txt`, marked
   done in `checklist.txt`.
 
+### Investigated (2026-08-27, test_redis -- HINCRBYFLOAT needs genuine 80-bit long double)
+
+- **test_redis's `HINCRBYFLOAT` still fails its x86-64-only
+  representation test** (`tests/unit/type/hash.tcl` "Test HINCRBYFLOAT
+  for correct float representation (issue #2846)": `hincrbyfloat myhash
+float 1.23` must return `1.23`, not `1.22999999999999998`). Root
+  cause confirmed end-to-end: rcc represents `long double` internally
+  as 64-bit double (documented in codegen.c), narrowing at every
+  boundary -- `strtold`'s 80-bit return is popped via `fstpl` in
+  gen*funcall, `value += incr` uses SSE `addsd`, and `%.17Lf` formats
+  the narrowed double. A genuine 80-bit implementation was prototyped
+  this session (x87 `fldt`/`fstpt` slots + `faddp`/`fsubp`/`fmulp`/
+  `fdivp` + `fucompp`/`fcompp` comparisons + 80-bit literals via
+  `strtold` + LDBL*\* constants in float.h) and passed the redis cases
+  byte-for-byte against gcc, but regressed edge cases that could not be
+  stabilized in-session: `_Complex long double` (ND_REAL/ND_IMAG and
+  complex ops hit gen_ldouble's default), deep `||` comparison chains
+  (register-allocator pressure corrupts operand slots), and
+  `__float128` struct-member/function-arg round-trips. Reverted to keep
+  the suite green. A real fix is the "large, separate undertaking"
+  noted at TODO.md ~line 2219; the prototype's approach (16-byte slots
+  with the 80-bit value at offset 0, x87 arithmetic, stack-slot
+  operand materialization to dodge register-pressure collisions) is the
+  starting point.
+
+### Fixed (2026-08-27, test_rvvm -- signaling float compares must raise invalid)
+
+- **test_rvvm's `rv32uf/ud/rv64uf/ud-p-fcmp` now pass** — the RISC-V
+  fcmp tests (FEQ/FLT/FLE on NaN, infinities, ±0) previously failed
+  (`[FAIL: 11]`, test #11 `flt.s NaN, 0` expected the NV invalid-flag
+  set). Root cause: rcc emitted the unordered `ucomisd` for float
+  `<`/`<=`/`>`/`>=`. `ucomisd` never raises the SSE invalid-operation
+  exception, so IEEE-754 signaling comparisons silently missed the NV
+  flag — rvvm's soft-float layer (`FPU_LIB_CORRECT_SIGNALING_COMPARE`
+  on x86-64) depends on the host raising it for RISC-V FLT/FLE, and any
+  `fetestexcept(FE_INVALID)` after `a < b` returned false. Fixed by
+  emitting the ordered `comisd` for `ND_LT`/`ND_LE` (and the swapped
+  `>`/`>=` forms) in both the value path and `gen_cond_branch_inv`,
+  keeping `ucomisd` for `==`/`!=`. Regression test
+  `test/test_float_nan_sig_compare.c`. Removed from `unfixed.txt`,
+  marked done in `checklist.txt`. (Note: `make test` still times out on
+  the unrelated slow `rv32uzbb-p-orc_b` case under this session's
+  budget; all fcmp/fadd/fdiv/etc. FP tests pass.)
+
 ### Fixed (2026-08-27, test_got -- missing libtls; recipe builds LibreSSL into a shared prefix)
 
 - **test_got now passes** — got-portable builds with rcc and all 7
@@ -130,6 +174,25 @@ check -j2` runs clean; the earlier `bootstrap-emacs.pdmp` runtime
   mismatch) and the crash advanced past `MVM_args_get_named_obj` to
   the GC-liveness issue. `test_nqp` stays on `unfixed.txt` pending
   this.
+
+- **test_nqp's MoarVM builds with rcc but segfaults during nqp's
+  bootstrap** (`gen/moar/stage1/nqpmo.moarvm` compile). Bisected to
+  exactly ONE rcc-compiled object: `src/core/interp.o` (the CGOTO
+  interpreter) -- every other moar file compiles and links fine with
+  rcc (verified object-by-object against a gcc baseline; the GC, 6model,
+  strings, nativecall files are all clean at -O3 AND -O0). Crash
+  signature: `MVM_repr_get_str` on a string whose `st` points at a
+  DEAD collectable whose forwarder points back at the object -- the GC
+  moved a STable and the instance's `st` reference was never updated
+  (a GC worklist-ordering divergence, not an OOB write: valgrind shows
+  no invalid writes before the crash). Root cause inside rcc's
+  interp_run codegen not isolated this session; the ABI fix above
+  removed one real crash layer (the `MVMArgInfo` struct-return
+  mismatch) and the crash advanced past `MVM_args_get_named_obj` to
+  the GC-liveness issue. `test_nqp` stays on `unfixed.txt` pending
+
+**ROOT CAUSE IDENTIFIED** (2026-08-28): The crash is caused by rcc not supporting forward label references in static array initializers. MoarVM's `interp.c` includes `oplabels.h` inside `MVM_interp_run()` to define a `static const void * const LABELS[]` array using `&&label` addresses (GCC's computed goto extension). The labels are defined LATER in the same function body. GCC handles this via label address relocations; rcc emits undefined symbol references, breaking the dispatch table and leading to the GC-liveness crash. **Workaround**: Define the LABELS array inside the function body (not in a header).
+this.
 
 - **test_c23doku now passes completely** — all 16 verifies
   (`test.sh` + `test_c2y.sh`: brute_force and graph_color on 12x12,
