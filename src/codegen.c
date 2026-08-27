@@ -1997,10 +1997,24 @@ static bool type_is_all_integer(Type *ty) {
     case TY_ARRAY:
         return type_is_all_integer(ty->base);
     case TY_STRUCT:
-    case TY_UNION:
+        // A struct's eightbytes stay separate: a float member makes ITS
+        // eightbyte SSE-class, which fails the whole aggregate's
+        // all-INTEGER register-return test (SysV psABI).
         for (Member *m = ty->members; m; m = m->next)
             if (!type_is_all_integer(m->ty)) return false;
         return true;
+    case TY_UNION:
+        // A union's eightbyte class is the MERGE of its members' classes,
+        // and INTEGER dominates SSE in the merge: a union holding both an
+        // integer and a double (e.g. moar's MVMRegister) is INTEGER-class
+        // and returns in RAX:RDX like any other small integer struct --
+        // gcc does this; treating the float member as disqualifying made
+        // rcc pass a hidden return pointer where the (gcc-compiled)
+        // callee returned registers, corrupting every argument after the
+        // phantom pointer (moar's MVM_args_get_named_obj crash).
+        for (Member *m = ty->members; m; m = m->next)
+            if (type_is_all_integer(m->ty)) return true;
+        return false;
     default:
         return true;
     }

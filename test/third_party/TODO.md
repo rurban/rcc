@@ -38,6 +38,24 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-27, test_janet -- union small-aggregate return ABI)
+
+- **test_janet now passes completely** — full `make test` (33 suites,
+  including the previously failing `suite-io` `xprintf` case) runs
+  green. Root cause: `union Janet` (NaN-boxed value: `{u64, i64,
+double, ptr}`) is an 8-byte INTEGER-class aggregate per SysV (INTEGER
+  dominates SSE in a union's eightbyte-class merge), so it returns in
+  RAX with no hidden pointer. rcc's `type_is_all_integer()` treated a
+  `double` leaf anywhere as disqualifying, so rcc-compiled code passed
+  a phantom hidden return pointer in RDI where a gcc-compiled callee
+  (or the ABI) returned registers — `janet_nanbox_from_double` wrote
+  its result through the caller's garbage `%rdi`, crashing or
+  corrupting every Janet value. Fixed by the union-return ABI change in
+  `codegen.c` (`type_is_all_integer` TY_UNION case: INTEGER dominates
+  SSE); regression test `test/test_union_struct_ret_abi.c` links a
+  gcc-compiled callee via `dlopen`. Removed from `unfixed.txt`, marked
+  done in `checklist.txt`.
+
 ### Fixed (2026-08-27, test_got -- missing libtls; recipe builds LibreSSL into a shared prefix)
 
 - **test_got now passes** — got-portable builds with rcc and all 7
@@ -53,7 +71,65 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
   ("missing libbsd-overlay") was stale — libbsd-dev is present and the
   configure check passes; the real blocker was libtls.
 
+### Fixed (2026-08-27, test_emacs -- confirmed green)
+
+- **test_emacs now passes completely** — full `./configure && make
+check -j2` runs clean; the earlier `bootstrap-emacs.pdmp` runtime
+  segfault (see the 2026-08-15 session note) is resolved by the
+  accumulated emacs fixes (stdc_bit_width, nested compound-literal
+  conversion, function-call argument-count, sha512 spill-depth, `-E`
+  object-macro spacing). Removed from `unfixed.txt`, marked done in
+  `checklist.txt`.
+
+### Fixed (2026-08-27, test_glib -- confirmed green)
+
+- **test_glib now passes completely** — full build and `make check`
+  run clean; the earlier `gio/inotify` `<sys/inotify.h>` block and the
+  gvfs-daemon `file` test-measure artifact are resolved by the
+  accumulated glib fixes (ctor/dtor attribute flags, libatomic helper
+  names, `-std=gnu17`). Removed from `unfixed.txt`, marked done in
+  `checklist.txt`.
+
 ### Fixed (2026-08-27, test_c23doku -- wide `_BitInt` + C23 control-flow session)
+
+### Fixed (2026-08-27, SysV small-aggregate return ABI -- union-with-float classification)
+
+- \*\*rcc's `type_is_all_integer()` treated a float leaf ANYWHERE in a
+  <=16-byte struct -- including inside a UNION member -- as
+  disqualifying it from GP-register return (RAX:RDX). Per SysV psABI a
+  union's eightbyte class is the MERGE of its members' classes, and
+  INTEGER dominates SSE in the merge: a union holding both an integer
+  and a double (moar's `MVMRegister` = `{ int64, double, ptr }`) is
+  INTEGER-class. rcc therefore passed a phantom hidden return pointer in
+  RDI to gcc-compiled callees returning such structs (e.g.
+  `MVM_args_get_named_obj()` returning the 16-byte `MVMArgInfo`), and
+  read garbage/zero out of the unwritten buffer instead of RAX:RDX.
+  Fixed in `type_is_all_integer()`: a TY_UNION is all-integer if ANY
+  member is (INTEGER wins the merge); a TY_STRUCT still requires ALL
+  members (its eightbytes stay separate). Regression:
+  `test/test_union_struct_ret_abi.c` (rcc caller + gcc-compiled callee
+  via dlopen; fails on the pre-fix compiler with arg=0/idx=0).
+  Found while debugging test_nqp's MoarVM bootstrap (see the nqp
+  investigation note below).
+
+### Investigated, not fixed (2026-08-27, test_nqp -- MoarVM interp_run GC-liveness crash)
+
+- **test_nqp's MoarVM builds with rcc but segfaults during nqp's
+  bootstrap** (`gen/moar/stage1/nqpmo.moarvm` compile). Bisected to
+  exactly ONE rcc-compiled object: `src/core/interp.o` (the CGOTO
+  interpreter) -- every other moar file compiles and links fine with
+  rcc (verified object-by-object against a gcc baseline; the GC, 6model,
+  strings, nativecall files are all clean at -O3 AND -O0). Crash
+  signature: `MVM_repr_get_str` on a string whose `st` points at a
+  DEAD collectable whose forwarder points back at the object -- the GC
+  moved a STable and the instance's `st` reference was never updated
+  (a GC worklist-ordering divergence, not an OOB write: valgrind shows
+  no invalid writes before the crash). Root cause inside rcc's
+  interp_run codegen not isolated this session; the ABI fix above
+  removed one real crash layer (the `MVMArgInfo` struct-return
+  mismatch) and the crash advanced past `MVM_args_get_named_obj` to
+  the GC-liveness issue. `test_nqp` stays on `unfixed.txt` pending
+  this.
 
 - **test_c23doku now passes completely** — all 16 verifies
   (`test.sh` + `test_c2y.sh`: brute_force and graph_color on 12x12,
