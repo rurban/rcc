@@ -439,6 +439,7 @@ extern bool opt_werror_flag;
 extern bool opt_pedantic;
 extern bool opt_Werror_unknown;
 extern bool opt_Wno_homoglyph;
+extern bool opt_Wno_c23_c2y_compat;
 extern bool opt_ms_bitfields;
 extern bool opt_dM;
 extern bool opt_E;
@@ -796,6 +797,23 @@ struct Node {
     int64_t case_end; // for case ranges (GNU extension)
     bool is_case_range;
     int label_id;
+
+    // C2Y labeled break/continue: on a loop (ND_FOR/ND_DO) or switch
+    // (ND_SWITCH) node, `label_name` holds the first label directly
+    // preceding it (`MainLoop: for (...)`, `k: l: switch (...)`); further
+    // labels chain via label_next (each a dummy node carrying label_name).
+    // On an ND_BREAK/ND_CONTINUE with a label, `target_loop` is the node the
+    // break/continue must exit/continue; `parent_loop` chains to the
+    // lexically enclosing loop/switch (the parser's current_ctrl) so the
+    // target can be found several nesting levels out. rcc previously
+    // dropped the label: `continue MainLoop;` inside a nested loop was
+    // emitted as a plain `continue` of the INNERMOST loop, skipping the
+    // labeled loop's continuation semantics entirely (found via c23doku's
+    // graph_color_c2y.c, whose backtracking solver diverged and then
+    // smashed sort_buf on a 9x9 puzzle).
+    Node *parent_loop;
+    Node *target_loop;
+    Node *label_next;
 
     // ND_ASM (inline asm statement)
     char *asm_template; // raw template string (with escape sequences decoded)

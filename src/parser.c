@@ -264,6 +264,49 @@ static int str_lit_counter;
 
 static Node *current_switch;
 static Node *current_loop;
+// Innermost enclosing loop OR switch being parsed (chains through each
+// node's parent_loop). C23/C2Y labeled `break label;` / `continue label;`
+// resolution walks this chain so a target loop/switch several nesting
+// levels out — possibly through intervening switches — is reachable.
+static Node *current_ctrl;
+// Set by `label: for|while|do|switch` just before the statement is parsed
+// (C2Y labeled statements); the loop/switch parse consumes the names as
+// its labels (first in label_name, extras chained via label_next), which
+// labeled `continue label;` / `break label;` resolve against. Set BEFORE
+// stmt() so the node carries the labels while its body is still parsed.
+static char *pending_loop_labels[32];
+static int pending_loop_labels_n;
+
+static Node *new_node(NodeKind kind, Token *tok); // declared below; needed by consume_pending_loop_labels
+
+// Attach the pending label chain (accumulated by `lbl1: lbl2: ...` directly
+// before this statement) to a loop/switch node: the first name goes into
+// label_name, the rest onto the label_next chain.
+static void consume_pending_loop_labels(Node *node, Token *tok) {
+    if (pending_loop_labels_n <= 0)
+        return;
+    node->label_name = pending_loop_labels[0];
+    Node **tail = &node->label_next;
+    for (int i = 1; i < pending_loop_labels_n; i++) {
+        Node *ln = new_node(ND_NULL, tok);
+        ln->label_name = pending_loop_labels[i];
+        *tail = ln;
+        tail = &ln->next;
+    }
+    pending_loop_labels_n = 0;
+}
+
+// Does `node` (loop or switch) carry the label `name` (first or chained)?
+static bool node_has_label(Node *node, char *name) {
+    if (!node || !name)
+        return false;
+    if (node->label_name && !strcmp(node->label_name, name))
+        return true;
+    for (Node *ln = node->label_next; ln; ln = ln->next)
+        if (ln->label_name && !strcmp(ln->label_name, name))
+            return true;
+    return false;
+}
 static int static_local_counter;
 static LVar *current_fn_scope_locals;
 static char *parser_current_fn;
@@ -9166,9 +9209,23 @@ static Node *stmt(Token **rest, Token *tok) {
             EnumConst *saved_enum = enum_consts;
             EnumLog *saved_enum_log = enum_scope_checkpoint();
 
+            // C23 if/switch init-statement: `if (init-statement; condition)`.
+            // The `;` that terminates the init-statement sits at paren depth 0;
+            // a function call or parenthesized subexpression inside the init
+            // has its own parens, and the old flat scan stopped at the FIRST
+            // `)` -- the init's own closing paren -- never seeing the `;`, so
+            // `if (int num = enc(&p[x+y]); num >= 0)` was misparsed as the
+            // C99 decl-in-condition form and choked on the leftover `;`.
             bool has_semi = false;
-            for (Token *s = tok; s && !equalc(s, ")"); s = s->next) {
-                if (equalc(s, ";")) {
+            int paren_depth = 0;
+            for (Token *s = tok; s; s = s->next) {
+                if (equalc(s, "(")) {
+                    paren_depth++;
+                } else if (equalc(s, ")")) {
+                    if (paren_depth == 0)
+                        break; // the condition's own closing paren
+                    paren_depth--;
+                } else if (paren_depth == 0 && equalc(s, ";")) {
                     has_semi = true;
                     break;
                 }
@@ -9229,17 +9286,22 @@ static Node *stmt(Token **rest, Token *tok) {
 
     if (equalc(tok, "while")) {
         Node *node = new_node(ND_FOR, tok);
+        consume_pending_loop_labels(node, tok);
         tok = skip(tok->next, "(");
         EnumConst *saved_enum = enum_consts;
         EnumLog *saved_enum_log = enum_scope_checkpoint();
         node->cond = expr(&tok, tok);
         tok = skip(tok, ")");
         Node *saved_loop = current_loop;
+        Node *saved_ctrl = current_ctrl;
         node->cleanup_end = locals;
         node->continue_cleanup_end = locals;
+        node->parent_loop = saved_ctrl;
         current_loop = node;
+        current_ctrl = node;
         node->then = stmt(&tok, tok);
         current_loop = saved_loop;
+        current_ctrl = saved_ctrl;
         enum_scope_restore(saved_enum_log);
         enum_consts = saved_enum;
         *rest = tok;
@@ -9248,12 +9310,17 @@ static Node *stmt(Token **rest, Token *tok) {
 
     if (equalc(tok, "do")) {
         Node *node = new_node(ND_DO, tok);
+        consume_pending_loop_labels(node, tok);
         Node *saved_loop = current_loop;
+        Node *saved_ctrl = current_ctrl;
         node->cleanup_end = locals;
         node->continue_cleanup_end = locals;
+        node->parent_loop = saved_ctrl;
         current_loop = node;
+        current_ctrl = node;
         node->then = stmt(&tok, tok->next);
         current_loop = saved_loop;
+        current_ctrl = saved_ctrl;
         tok = skip(tok, "while");
         tok = skip(tok, "(");
         EnumConst *saved_enum = enum_consts;
@@ -9273,6 +9340,7 @@ static Node *stmt(Token **rest, Token *tok) {
         EnumConst *saved_enum = enum_consts;
         EnumLog *saved_enum_log = enum_scope_checkpoint();
         Node *node = new_node(ND_FOR, tok);
+        consume_pending_loop_labels(node, tok);
         tok = skip(tok->next, "(");
 
         if (!equalc(tok, ";")) {
@@ -9307,11 +9375,15 @@ static Node *stmt(Token **rest, Token *tok) {
             node->inc = expr(&tok, tok);
         tok = skip(tok, ")");
         Node *saved_loop = current_loop;
+        Node *saved_ctrl = current_ctrl;
         node->cleanup_end = for_init_locals;
         node->continue_cleanup_end = for_init_locals;
+        node->parent_loop = saved_ctrl;
         current_loop = node;
+        current_ctrl = node;
         node->then = stmt(&tok, tok);
         current_loop = saved_loop;
+        current_ctrl = saved_ctrl;
         enum_scope_restore(saved_enum_log);
         typedef_scope_restore(saved_typedef_log);
         enum_consts = saved_enum;
@@ -9333,9 +9405,23 @@ static Node *stmt(Token **rest, Token *tok) {
             EnumConst *saved_enum = enum_consts;
             EnumLog *saved_enum_log = enum_scope_checkpoint();
 
+            // C23 if/switch init-statement: `if (init-statement; condition)`.
+            // The `;` that terminates the init-statement sits at paren depth 0;
+            // a function call or parenthesized subexpression inside the init
+            // has its own parens, and the old flat scan stopped at the FIRST
+            // `)` -- the init's own closing paren -- never seeing the `;`, so
+            // `if (int num = enc(&p[x+y]); num >= 0)` was misparsed as the
+            // C99 decl-in-condition form and choked on the leftover `;`.
             bool has_semi = false;
-            for (Token *s = tok; s && !equalc(s, ")"); s = s->next) {
-                if (equalc(s, ";")) {
+            int paren_depth = 0;
+            for (Token *s = tok; s; s = s->next) {
+                if (equalc(s, "(")) {
+                    paren_depth++;
+                } else if (equalc(s, ")")) {
+                    if (paren_depth == 0)
+                        break; // the condition's own closing paren
+                    paren_depth--;
+                } else if (paren_depth == 0 && equalc(s, ";")) {
                     has_semi = true;
                     break;
                 }
@@ -9369,9 +9455,14 @@ static Node *stmt(Token **rest, Token *tok) {
             tok = skip(tok, ")");
             node->cleanup_end = saved_locals;
             Node *saved = current_switch;
+            Node *saved_ctrl = current_ctrl;
+            consume_pending_loop_labels(node, tok);
+            node->parent_loop = saved_ctrl;
             current_switch = node;
+            current_ctrl = node;
             node->then = stmt(&tok, tok);
             current_switch = saved;
+            current_ctrl = saved_ctrl;
             enum_scope_restore(saved_enum_log);
             typedef_scope_restore(saved_typedef_log);
             enum_consts = saved_enum;
@@ -9387,10 +9478,15 @@ static Node *stmt(Token **rest, Token *tok) {
         node->cond = expr(&tok, tok);
         tok = skip(tok, ")");
         Node *saved = current_switch;
+        Node *saved_ctrl = current_ctrl;
+        consume_pending_loop_labels(node, tok);
         node->cleanup_end = locals;
+        node->parent_loop = saved_ctrl;
         current_switch = node;
+        current_ctrl = node;
         node->then = stmt(&tok, tok);
         current_switch = saved;
+        current_ctrl = saved_ctrl;
         enum_scope_restore(saved_enum_log);
         enum_consts = saved_enum;
         *rest = tok;
@@ -9459,11 +9555,27 @@ static Node *stmt(Token **rest, Token *tok) {
         Node *node = new_node(ND_BREAK, tok);
         node->cleanup_begin = locals;
         if (tok->next->kind == TK_IDENT) {
+            // C2Y labeled break: must name a loop or switch enclosing this
+            // statement; the break exits that statement, not the innermost
+            // one. Under -std=c23 this is a C2Y feature (pedantic error).
+            node->label_name = tok->next->name;
             tok = tok->next->next;
             *rest = skip(tok, ";");
-        } else {
-            *rest = skip(tok->next, ";");
+            for (Node *l = current_ctrl; l; l = l->parent_loop) {
+                if (node_has_label(l, node->label_name)) {
+                    node->target_loop = l;
+                    break;
+                }
+            }
+            if (opt_pedantic && !opt_Wno_c23_c2y_compat)
+                warn_tok(tok, "ISO C does not support 'break' statement with an identifier operand before C2Y");
+            if (!node->target_loop)
+                error_tok(tok, "break label '%s' is not a loop or switch label",
+                          node->label_name);
+            node->cleanup_end = node->target_loop->cleanup_end;
+            return node;
         }
+        *rest = skip(tok->next, ";");
         if (current_switch) {
             node->cleanup_end = current_switch->cleanup_end;
             return node;
@@ -9479,11 +9591,34 @@ static Node *stmt(Token **rest, Token *tok) {
         Node *node = new_node(ND_CONTINUE, tok);
         node->cleanup_begin = locals;
         if (tok->next->kind == TK_IDENT) {
+            // C2Y labeled continue: must name a loop enclosing this
+            // statement; the continue jumps to that loop's continuation
+            // (skipping everything between, including inner loop bodies).
+            // The old code dropped the label and treated the statement as
+            // a plain continue of the innermost loop.
+            node->label_name = tok->next->name;
             tok = tok->next->next;
             *rest = skip(tok, ";");
-        } else {
-            *rest = skip(tok->next, ";");
+            for (Node *l = current_ctrl; l; l = l->parent_loop) {
+                if (node_has_label(l, node->label_name)) {
+                    if (l->kind == ND_FOR || l->kind == ND_DO) {
+                        node->target_loop = l;
+                        break;
+                    }
+                    /* a switch carries the label: continue is illegal there */
+                    error_tok(tok, "continue label '%s' does not label a loop",
+                              node->label_name);
+                }
+            }
+            if (opt_pedantic && !opt_Wno_c23_c2y_compat)
+                warn_tok(tok, "ISO C does not support 'continue' statement with an identifier operand before C2Y");
+            if (!node->target_loop)
+                error_tok(tok, "continue label '%s' does not label an enclosing loop",
+                          node->label_name);
+            node->cleanup_end = node->target_loop->continue_cleanup_end;
+            return node;
         }
+        *rest = skip(tok->next, ";");
         if (!current_loop)
             error_tok(tok, "stray continue");
         node->cleanup_end = current_loop->continue_cleanup_end;
@@ -9550,11 +9685,27 @@ static Node *stmt(Token **rest, Token *tok) {
         if (equalc(tok, "}") || equalc(tok, "__auto_type") ||
             equalc(tok, "_Static_assert") || equalc(tok, "static_assert") ||
             is_typename(tok)) {
+            /* No loop/switch follows: drop any accumulated label chain so a
+             * later loop elsewhere doesn't wrongly claim these labels. */
+            pending_loop_labels_n = 0;
             node->lhs = new_node(ND_NULL, tok);
             *rest = tok;
             return node;
         }
+        // C2Y 6.8.7: a label directly preceding a loop or switch is that
+        // statement's label, the target of `continue label;` (loops) /
+        // `break label;` (loops and switches). Accumulate the name into the
+        // pending chain so a chain like `a: b: c: for (...)` labels the
+        // loop with all three (the loop node must carry them while its body
+        // is parsed, so labeled continue/break inside the body can resolve
+        // them); the next loop/switch parse consumes the whole chain, and
+        // any other statement clears it.
+        if (pending_loop_labels_n < 32)
+            pending_loop_labels[pending_loop_labels_n++] = node->label_name;
         node->lhs = stmt(&tok, tok);
+        if (!(node->lhs->kind == ND_FOR || node->lhs->kind == ND_DO ||
+              node->lhs->kind == ND_SWITCH))
+            pending_loop_labels_n = 0; /* label not on a loop/switch */
         *rest = tok;
         return node;
     }

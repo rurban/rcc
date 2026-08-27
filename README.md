@@ -185,6 +185,8 @@ compiler and tests, it is much faster now.
     -Wfatal-errors     exit at the first error (errors are collected otherwise)
     -fmax-errors=N     exit after N errors (default 20, 0 = unlimited)
     -Wno-homoglypth    suppress homoglyph unicode identifier warnings
+    -Wno-c23-c2y-compat
+                       suppress pedantic diagnostic for C2Y labeled break/continue under -std=c23
     -Wunknown-warning-option
                        for autoconf probes
     -Lpath             add linker path

@@ -1091,7 +1091,7 @@
   c23-mismatching-fn-ptr-a52dec       PASS (compile only)
   c23-mismatching-fn-ptr-alsatools    PASS (compile only)
   c23-mismatching-fn-ptr              PASS (compile only)
-  c23-named-loops-1                   PASS (compile only)
+  c23-named-loops-1                   PASS (expected error)
   c23-named-loops-5                   PASS (compile only)
   c23-no-dfp-1                        PASS (compile only)
   c23-null-pointer-constant-1         PASS (compile only)
@@ -3966,4 +3966,4 @@
 
 Torture: 3605/3609 passed (100%), 0 failed, 354 skipped, 4 todo.
 
-Dg-error tests: 34/34 passed (caught expected error), 0 failed.
+Dg-error tests: 35/35 passed (caught expected error), 0 failed.

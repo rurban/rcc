@@ -546,6 +546,13 @@ static int va_reg_save_ofs;
 #endif
 static int break_stack[128];
 static int continue_stack[128];
+// Parallel to break_stack/continue_stack: the loop or switch NODE whose
+// body is being emitted at that ctrl_depth (loops push their node, switches
+// push theirs too — both are break targets; only loops are continue
+// targets). C2Y labeled break/continue carry node->target_loop; codegen
+// finds its stack slot by node identity and jumps to that statement's own
+// end/continue label instead of the innermost one.
+static Node *ctrl_loop_stack[128];
 static int ctrl_depth = 0;
 static int float_lit_count = 0;
 
@@ -6525,7 +6532,24 @@ VReg gen_addr(Node *node) {
     case ND_MUL:
     case ND_DIV:
     case ND_MOD:
-        return -1; // expression result, not an lvalue
+    case ND_SHL:
+    case ND_SHR:
+    case ND_BITAND:
+    case ND_BITXOR:
+    case ND_BITOR:
+    case ND_LOGAND:
+    case ND_LOGOR:
+    case ND_EQ:
+    case ND_NE:
+    case ND_LT:
+    case ND_LE:
+    case ND_NOT:
+        // Expression result, not an lvalue -- return -1 so callers fall
+        // back to gen(), which materializes a wide _BitInt result in a
+        // stack slot and returns its address (previously these hit the
+        // default error: `return bit << n;` for a wide bitint failed
+        // with "lvalue required as left operand of assignment").
+        return -1;
     case ND_BITNOT:
     case ND_NEG:
         return -1; // expression result, not an lvalue
@@ -8884,7 +8908,17 @@ static VReg gen_bitint(Node *node) {
             if (to->bitint_width != from->bitint_width ||
                 to->is_unsigned != from->is_unsigned) {
                 emit_bitint_bits_arg(from->bitint_width);
-                emit_bitint_imm_arg(to->is_unsigned ? 1 : 0, 1);
+                // The extension fill follows the SOURCE's signedness, not
+                // the destination's: widening preserves the source value
+                // (C 6.3.1.8/6.3.1.3) -- an unsigned _BitInt source must
+                // zero-extend even when the destination is signed, and a
+                // signed source sign-extends into a wider unsigned target
+                // (bit pattern preserved). Passing to->is_unsigned here
+                // made `(State)(unsigned _BitInt(144))x` with the source's
+                // top bit set sign-extend into a run of ones (c23doku's
+                // `_BitInt(total*3)` masks came out as 145-bit runs --
+                // "invalid puzzle").
+                emit_bitint_imm_arg(from->is_unsigned ? 1 : 0, 1);
                 emit_bitint_addr_arg(dst, 1);
                 emit_bitint_imm_arg(to->bitint_width, 3);
                 free_reg(dst);
@@ -10696,6 +10730,30 @@ VReg gen(Node *node) {
     }
     case ND_NOT: {
         VReg r = gen(node->lhs);
+        if (node->lhs->ty && is_wide_bitint(node->lhs->ty)) {
+            // Wide _BitInt: gen() returns the slot ADDRESS, not a value --
+            // `cmp $0, <addr>` would be always-truthy. Get a real bool via
+            // the to_bool helper, then negate it (c23doku's solver
+            // `if (!(state & msk))` backtracked wrong because the wide AND
+            // result's address was never zero, declaring the puzzle
+            // unsolvable after the first placements).
+            emit_bitint_bits_arg(node->lhs->ty->bitint_width);
+            emit_bitint_addr_arg(r, 0);
+            free_reg(r);
+            emit_bitint_call((char *)"rcc_bitint_to_bool");
+            VReg br = alloc_reg();
+#ifdef ARCH_ARM64
+            asm_mov_retval(cg_sec, br, 4);
+            asm_cmp_zero(cg_sec, br, 4);
+            asm_cset(cg_sec, br, ARM64_EQ); // cset br, eq
+#else
+            asm_mov_retval(cg_sec, br, 4); // movl %eax, br
+            asm_cmp_zero(cg_sec, br, 4); // cmpl $0, br
+            asm_setcc(cg_sec, X86_RAX, X86_E); // sete %%al
+            asm_movzx_phys(cg_sec, br, X86_RAX, 4, 1); // movzbl %%al, br
+#endif
+            return br;
+        }
         if (is_flonum(node->lhs->ty)) {
 #ifdef ARCH_ARM64
             asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
@@ -12507,6 +12565,7 @@ VReg gen(Node *node) {
         size_t begin_pos = cg_sec->len; // begin label
         break_stack[ctrl_depth] = c;
         continue_stack[ctrl_depth] = c;
+        ctrl_loop_stack[ctrl_depth] = node;
         ctrl_depth++;
         size_t end_jmp = (size_t)-1;
         if (node->cond) {
@@ -12531,6 +12590,7 @@ VReg gen(Node *node) {
         size_t begin_pos = cg_sec->len; // begin label
         break_stack[ctrl_depth] = c;
         continue_stack[ctrl_depth] = c;
+        ctrl_loop_stack[ctrl_depth] = node;
         ctrl_depth++;
         VReg r_then = gen(node->then);
         if (r_then != -1) free_reg(r_then);
@@ -12684,6 +12744,7 @@ VReg gen(Node *node) {
         free_reg(cond);
         break_stack[ctrl_depth] = c;
         continue_stack[ctrl_depth] = ctrl_depth > 0 ? continue_stack[ctrl_depth - 1] : c;
+        ctrl_loop_stack[ctrl_depth] = node; // switch: break target, no continue
         ctrl_depth++;
         VReg r_body = gen(node->then);
         if (r_body != -1) free_reg(r_body);
@@ -12703,8 +12764,22 @@ VReg gen(Node *node) {
         emit_cleanup_range(node->cleanup_begin, node->cleanup_end);
         emit_vla_dealloc(node->cleanup_begin, node->cleanup_end);
         {
+            // C23 labeled break: jump to the labeled loop's own end label,
+            // which may be several ctrl depths out (through switches and
+            // nested loops). Unlabeled breaks keep the innermost target.
+            int c = node->target_loop ? -1 : break_stack[ctrl_depth - 1];
+            if (node->target_loop) {
+                for (int i = ctrl_depth - 1; i >= 0; i--) {
+                    if (ctrl_loop_stack[i] == node->target_loop) {
+                        c = break_stack[i];
+                        break;
+                    }
+                }
+                if (c < 0)
+                    error("break label target loop not on codegen stack");
+            }
             size_t brk_off = asm_jmp_label(cg_sec); // b .L.end.%d
-            asm_fixup_add(cg_sec, brk_off, format(".L.end.%d", break_stack[ctrl_depth - 1]), 0); // fixup label
+            asm_fixup_add(cg_sec, brk_off, format(".L.end.%d", c), 0); // fixup label
         }
         return -1;
     case ND_CONTINUE:
@@ -12713,8 +12788,21 @@ VReg gen(Node *node) {
         emit_cleanup_range(node->cleanup_begin, node->cleanup_end);
         emit_vla_dealloc(node->cleanup_begin, node->cleanup_end);
         {
+            // C23 labeled continue: jump to the labeled loop's continue
+            // label, skipping every nested loop/switch body in between.
+            int c = node->target_loop ? -1 : continue_stack[ctrl_depth - 1];
+            if (node->target_loop) {
+                for (int i = ctrl_depth - 1; i >= 0; i--) {
+                    if (ctrl_loop_stack[i] == node->target_loop) {
+                        c = continue_stack[i];
+                        break;
+                    }
+                }
+                if (c < 0)
+                    error("continue label target loop not on codegen stack");
+            }
             size_t cont_off = asm_jmp_label(cg_sec); // b .L.continue.%d
-            asm_fixup_add(cg_sec, cont_off, format(".L.continue.%d", continue_stack[ctrl_depth - 1]), 0); // fixup add for forward branch
+            asm_fixup_add(cg_sec, cont_off, format(".L.continue.%d", c), 0); // fixup add for forward branch
         }
         return -1;
     case ND_GOTO:
@@ -17712,6 +17800,44 @@ struct ObjFile *codegen(Program *prog) {
                         arm64_stur(cg_sec, 1, ARM64_X11, ARM64_X29, -(var->offset - 8)); // stur x11, [x29, #-(var->offset-8)]
                         stack_param += 2;
                     }
+                } else if (var->ty->kind == TY_BITINT && var->ty->size > 16) {
+                    // AAPCS64: a >16-byte _BitInt parameter arrives BY
+                    // REFERENCE (a pointer in x{gp_param}, or on the
+                    // caller's stack once x0-x7 are exhausted) -- the
+                    // callee must copy the pointed-to limbs into its own
+                    // slot. Without this case the generic single-register
+                    // store below saved only the POINTER as 8 bytes,
+                    // leaving the other limbs garbage (c23doku's solver
+                    // and test_wide_bitint's test_param_byvalue read
+                    // wrong values; found via the macOS/arm64 CI).
+                    int c = ++rcc_label_count;
+                    if (gp_param < 8) {
+                        arm64_add_imm(cg_sec, 1, ARM64_X16, gp_param, 0, 0); // mov x16, x{gp_param}
+                        gp_param++;
+                    } else {
+                        int spoff = 16 + stack_param * 8;
+                        arm64_ldr_uoff(cg_sec, 3, ARM64_X16, ARM64_X29, (uint32_t)(spoff / 8)); // ldr x16, [x29, #spoff]
+                        stack_param++;
+                    }
+                    if (var->offset <= 4095)
+                        arm64_sub_imm(cg_sec, 1, ARM64_X17, ARM64_X29, var->offset, 0); // sub x17, x29, #var->offset
+                    else {
+                        emit_mov_imm64(ARM64_X17, (uint64_t)var->offset); // mov x17, #var->offset
+                        arm64_sub_reg(cg_sec, 1, ARM64_X17, ARM64_X29, ARM64_X17, ARM64_LSL, 0); // sub x17, x29, x17
+                    }
+                    emit_mov_imm64(ARM64_X9, (uint64_t)var->ty->size); // mov x9, #var->ty->size
+                    cg_def_label(format(".L.param_copy.%d", c));
+                    arm64_subs_imm(cg_sec, 1, ARM64_XZR, ARM64_X9, 0, 0); // cmp x9, #0
+                    size_t cj = asm_jcc_label(cg_sec, ARM64_EQ); // beq .L.param_copy_end.%d
+                    asm_fixup_add(cg_sec, cj, format(".L.param_copy_end.%d", c), 1);
+                    arm64_sub_imm(cg_sec, 1, ARM64_X9, ARM64_X9, 1, 0); // sub x9, x9, #1
+                    asm_ldur_phy(cg_sec, ARM64_X18, ARM64_X16, 0, 0); // ldurb w18, [x16]
+                    asm_stur_phy(cg_sec, ARM64_X18, ARM64_X17, 0, 0); // sturb w18, [x17]
+                    arm64_add_imm(cg_sec, 1, ARM64_X16, ARM64_X16, 1, 0); // add x16, x16, #1
+                    arm64_add_imm(cg_sec, 1, ARM64_X17, ARM64_X17, 1, 0); // add x17, x17, #1
+                    size_t cj2 = asm_jmp_label(cg_sec); // b .L.param_copy.%d
+                    asm_fixup_add(cg_sec, cj2, format(".L.param_copy.%d", c), 0);
+                    cg_def_label(format(".L.param_copy_end.%d", c));
                 } else if (gp_param < 8) {
                     int sf = var->ty->size <= 4 ? 0 : 1; // word or dword
                     if (is_complex(var->ty) && var->ty->size > 8) {
@@ -18229,6 +18355,56 @@ struct ObjFile *codegen(Program *prog) {
                     }
                     continue;
                 }
+                // Wide _BitInt(N > 128, size > 16): passed by pointer (one
+                // GP register or stack slot holds the address), like a
+                // >8-byte struct -- Pass 1's dry-run layout copies the
+                // pointee, and the REAL pass-2 prologue must too. Before
+                // this case existed the pass-2 prologue fell through to
+                // the generic 8-byte scalar store, saving the raw pointer
+                // into the parameter's local slot; every use of the
+                // parameter then read the pointer bits as the value
+                // (c23doku's `_BitInt(total*3)` solver masks came out
+                // wrong -- `invalid puzzle`).
+                if (var->ty->kind == TY_BITINT && var->ty->size > 16) {
+                    if (gp < max_gp) {
+                        int c = ++rcc_label_count;
+                        x86_mov_rr(cg_sec, 8, X86_R11, greg[gp]); // movq greg[gp], %r11
+                        x86_mov_ri(cg_sec, 8, X86_R10, var->ty->size); // movq $size, %r10
+                        cg_def_label(format(".L.pcopy2.%d", c));
+                        x86_cmp_ri(cg_sec, 8, X86_R10, 0); // cmpq $0, %r10
+                        size_t jz2 = cg_sec->len;
+                        x86_jcc_rel32(cg_sec, X86_E, 0);
+                        asm_fixup_add(cg_sec, jz2, format(".L.pcopy2_end.%d", c), 1);
+                        asm_movb_r11_r10_al(cg_sec, -1); // movb -1(%r11,%r10), %%al
+                        asm_movb_al_rbp_r10(cg_sec, var->offset); // movb %%al, -(off)-1(%rbp,%r10)
+                        x86_sub_ri(cg_sec, 8, X86_R10, 1); // subq $1, %r10
+                        size_t jm2 = cg_sec->len;
+                        x86_jmp_rel32(cg_sec, 0);
+                        asm_fixup_add(cg_sec, jm2, format(".L.pcopy2.%d", c), 0);
+                        cg_def_label(format(".L.pcopy2_end.%d", c));
+                        gp++;
+                    } else {
+                        // Passed on the stack: the slot holds a pointer.
+                        int c = ++rcc_label_count;
+                        int stack_off2 = 16 + stack_param_index2 * 8;
+                        x86_mov_rm(cg_sec, 8, X86_R11, x86_mem(X86_RBP, stack_off2)); // movq stack_off(%rbp), %r11
+                        x86_mov_ri(cg_sec, 8, X86_R10, var->ty->size); // movq $size, %r10
+                        cg_def_label(format(".L.pcopy2.%d", c));
+                        x86_cmp_ri(cg_sec, 8, X86_R10, 0); // cmpq $0, %r10
+                        size_t jz3 = cg_sec->len;
+                        x86_jcc_rel32(cg_sec, X86_E, 0);
+                        asm_fixup_add(cg_sec, jz3, format(".L.pcopy2_end.%d", c), 1);
+                        asm_movb_r11_r10_al(cg_sec, -1);
+                        asm_movb_al_rbp_r10(cg_sec, var->offset);
+                        x86_sub_ri(cg_sec, 8, X86_R10, 1);
+                        size_t jm3 = cg_sec->len;
+                        x86_jmp_rel32(cg_sec, 0);
+                        asm_fixup_add(cg_sec, jm3, format(".L.pcopy2.%d", c), 0);
+                        cg_def_label(format(".L.pcopy2_end.%d", c));
+                        stack_param_index2++;
+                    }
+                    continue;
+                }
 #endif
 #ifdef _WIN32
                 // Win64: __int128/_Decimal128 is passed by pointer (like large struct)
@@ -18250,26 +18426,44 @@ struct ObjFile *codegen(Program *prog) {
                     }
                     continue;
                 }
-                // Win64: _Complex > 8 bytes passed by pointer like large struct
-                bool is_large_complex = is_complex(var->ty) && var->ty->size > 8;
-                if (is_large_complex && gp < max_gp) {
-                    // Complex > 8 in GP reg: copy pointee to local slot
-                    int c = ++rcc_label_count;
-                    x86_mov_rr(cg_sec, 8, X86_R11, greg[gp]); // movq greg[gp], %r11
-                    x86_mov_ri(cg_sec, 8, X86_R10, var->ty->size); // movq $size, %r10
-                    cg_def_label(format(".L.param2.%d", c));
-                    x86_cmp_ri(cg_sec, 8, X86_R10, 0);
-                    size_t js = cg_sec->len;
-                    x86_jcc_rel32(cg_sec, X86_E, 0);
-                    asm_fixup_add(cg_sec, js, format(".L.param2_end.%d", c), 1);
-                    asm_movb_r11_r10_al(cg_sec, -1);
-                    asm_movb_al_rbp_r10(cg_sec, var->offset);
-                    x86_sub_ri(cg_sec, 8, X86_R10, 1);
-                    size_t jp = cg_sec->len;
-                    x86_jmp_rel32(cg_sec, 0);
-                    asm_fixup_add(cg_sec, jp, format(".L.param2.%d", c), 0);
-                    cg_def_label(format(".L.param2_end.%d", c));
-                    gp++;
+                // Win64: wide _BitInt (>16 bytes) passed by pointer; copy pointee.
+                if (var->ty->kind == TY_BITINT && var->ty->size > 16) {
+                    if (gp < max_gp) {
+                        int c = ++rcc_label_count;
+                        x86_mov_rr(cg_sec, 8, X86_R11, greg[gp]); // movq greg[gp], %r11
+                        x86_mov_ri(cg_sec, 8, X86_R10, var->ty->size); // movq $size, %r10
+                        cg_def_label(format(".L.pcopy2w.%d", c));
+                        x86_cmp_ri(cg_sec, 8, X86_R10, 0);
+                        size_t jzw = cg_sec->len;
+                        x86_jcc_rel32(cg_sec, X86_E, 0);
+                        asm_fixup_add(cg_sec, jzw, format(".L.pcopy2w_end.%d", c), 1);
+                        asm_movb_r11_r10_al(cg_sec, -1);
+                        asm_movb_al_rbp_r10(cg_sec, var->offset);
+                        x86_sub_ri(cg_sec, 8, X86_R10, 1);
+                        size_t jmw = cg_sec->len;
+                        x86_jmp_rel32(cg_sec, 0);
+                        asm_fixup_add(cg_sec, jmw, format(".L.pcopy2w.%d", c), 0);
+                        cg_def_label(format(".L.pcopy2w_end.%d", c));
+                        gp++;
+                    } else {
+                        int c = ++rcc_label_count;
+                        int stack_off2 = 48 + stack_param_index2 * 8;
+                        x86_mov_rm(cg_sec, 8, X86_R11, x86_mem(X86_RBP, stack_off2)); // movq stack_off(%rbp), %r11
+                        x86_mov_ri(cg_sec, 8, X86_R10, var->ty->size);
+                        cg_def_label(format(".L.pcopy2w.%d", c));
+                        x86_cmp_ri(cg_sec, 8, X86_R10, 0);
+                        size_t jzw2 = cg_sec->len;
+                        x86_jcc_rel32(cg_sec, X86_E, 0);
+                        asm_fixup_add(cg_sec, jzw2, format(".L.pcopy2w_end.%d", c), 1);
+                        asm_movb_r11_r10_al(cg_sec, -1);
+                        asm_movb_al_rbp_r10(cg_sec, var->offset);
+                        x86_sub_ri(cg_sec, 8, X86_R10, 1);
+                        size_t jmw2 = cg_sec->len;
+                        x86_jmp_rel32(cg_sec, 0);
+                        asm_fixup_add(cg_sec, jmw2, format(".L.pcopy2w.%d", c), 0);
+                        cg_def_label(format(".L.pcopy2w_end.%d", c));
+                        stack_param_index2++;
+                    }
                     continue;
                 }
 #endif

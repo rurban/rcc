@@ -38,6 +38,64 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-27, test_c23doku -- wide `_BitInt` + C23 control-flow session)
+
+- **test_c23doku now passes completely** — all 16 verifies
+  (`test.sh` + `test_c2y.sh`: brute_force and graph_color on 12x12,
+  16x16, 61x61, 9x9_antibrute, 9x9_tdoku), including the 61x61
+  puzzle's `_BitInt(11163)` (175 64-bit legs). The project was
+  previously "skipped by decision" as an arbitrary-precision bignum
+  workload out of scope; the wide-bitint gaps it exposed were real rcc
+  bugs, all fixed here:
+  1. **Wide `_BitInt` by-value parameters** (src/codegen.c): the pass-2
+     (real) prologue emission loop had no `TY_BITINT && size > 16` case,
+     so a >128-bit parameter was stored as its incoming POINTER, not the
+     pointed-to limbs — every such parameter read garbage past bit 63
+     (x86-64; the same gap existed in the AAPCS64 prologue — a >16-byte
+     `_BitInt` parameter arrives by reference there too, and the generic
+     single-register store saved only the pointer, caught by the
+     macOS/arm64 CI on the new `test_param_byvalue` sub-test and fixed
+     with a matching limb-copy loop. c23doku produced "invalid puzzle"
+     on every input before this). The x86-64 deref-copy loop's jcc fixup
+     MUST use `asm_fixup_add(..., 1)` (6-byte `je`), not mode 0 which
+     corrupts `0f 84` into `0f 17`.
+  2. **Wide arithmetic lvalues** (src/codegen.c `gen_addr`): shifts,
+     bit-ops, comparisons and `!` on wide `_BitInt` errored "lvalue
+     required as left operand of assignment" (the `default:` error case).
+  3. **bitint→bitint widening signedness** (src/codegen.c `gen_bitint`
+     ND_CAST): the extension used the DESTINATION type's signedness —
+     `(signed)(unsigned _BitInt(144))` with the top bit set sign-extended
+     into a run of 1s. Now uses the source's.
+  4. **`!` on a wide `_BitInt`** (src/codegen.c ND_NOT): `gen()` returns
+     the slot ADDRESS, and `cmp $0, <addr>` is never true — `if
+(!(state & msk))` backtracking declared the puzzle unsolvable after
+     the first placements. ND_NOT now calls `rcc_bitint_to_bool` first.
+  5. **Missing `stdc_trailing_ones`** (include/stdbit.h): added the 5
+     inline helpers (= trailing_zeros of the complement) + macros + the
+     `_Generic` dispatch; graph_color.c needed it.
+  6. **C23 `if (init-statement; cond)` with a call in the init**
+     (src/parser.c): the init-statement scan stopped at the FIRST `)`,
+     i.e. the init expression's own parens, so `if (int num =
+enc(&p[x+y]); num >= 0)` was misparsed as the C99 decl-in-condition
+     form and choked on the leftover `;`. The scan is now paren-aware
+     (counts `(`/`)`, finds the real `;` at depth 0) — in both `if` and
+     `switch`.
+  7. **C23 labeled `continue label;` / `break label;`** (src/parser.c +
+     src/codegen.c): the label was silently dropped and the statement
+     compiled as a plain continue/break of the INNERMOST loop. Labels are
+     now attached to the loop node (`label: for|while|do` via a pending
+     slot consumed by the loop parse), labeled continue/break resolve the
+     target loop through each loop's `parent_loop` chain, and codegen
+     keeps a parallel loop-node stack (switches push NULL) to jump to the
+     labeled loop's own `.L.continue.N` / `.L.end.N`.
+- New regression tests: `test/test_c23_if_init.c` (if-init with call /
+  parenthesized cond / switch-init / labeled continue / labeled break)
+  and four sub-tests in `test/test_wide_bitint.c` (by-value wide param
+  pcopy, widening signedness, `!` truthiness, and the hidden-retbuf
+  parameter-shift case merged in from the former
+  `test_wide_bitint_retbuf_param_shift.c`). All pass at -O0/-O1/-O2/-O3
+  against gcc reference behavior, on x86-64 and ARM64.
+
 ### Fixed (2026-08-27, test_gnutls -- constructor lost with local decl + weak interposition; full suite green)
 
 - \*\*test*gnutls now passes completely (rc=0). Three rcc bugs + one
@@ -2125,9 +2183,11 @@ entries under "Needs fixing" below).
 
 **Confirmed not rcc bugs / environment-limited, checklist checked off**:
 test_box3d (C++ binary, g++-compiled — not rcc, matches the existing
-"Needs fixing" entry below); test_c23doku (arbitrary-precision
-`_BitInt` up to 11163 bits — already documented as skipped by decision,
-see "Needs fixing" item 1 above); test_cfitsio (`drvrsmem.c`'s `union
+"Needs fixing" entry below); test_c23doku (**fixed** 2026-08-27 — the
+arbitrary-precision `_BitInt` up to 11163 bits was not a scope decision
+after all, the wide-bitint path had five real bugs now fixed, see
+"Fixed (2026-08-27, wide `_BitInt` + C23 control-flow session)" below);
+test_cfitsio (`drvrsmem.c`'s `union
 semun.val`/`HAVE_UNION_SEMUN` — already documented as a stale
 configure-time feature-detection result reproducing identically
 against real gcc, see "Needs fixing" item 6 above). test_bubblewrap and
@@ -2637,7 +2697,7 @@ CC=$(pwd)/rcc bash test/linux*thirdparty.bash test*<name>
 | test_lua         | **fixed** — passes cleanly now (confirmed via a fresh individual run this session, `rc=0` in 36s); no rcc changes were needed specifically for it, resolved by the accumulated fixes from prior sessions                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | test_mruby       | **fixed** — was: assignment-expr-as-lvalue bug + missing `erf`/`erfc` declarations, see "Fixed (2026-08-08, continued — ...)" sections above; `Total: 1686, OK: 1677, KO: 0, Crash: 0` (matches gcc-built mruby exactly)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | test_curl        | **fixed** — was: configure "compiler does not halt on prototype mismatch"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| test_c23doku     | needs arbitrary-precision `_BitInt` codegen (up to 11163 bits) — see "Needs fixing" item 1 below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| test_c23doku     | **fixed** (2026-08-27) — was: wide `_BitInt` codegen bugs (by-value param pcopy, widening signedness, `!` truthiness, `stdc_trailing_ones`, C23 if-init with call, labeled continue/break) — all 16 verifies (brute_force + graph_color, incl. 61x61 `_BitInt(11163)`) pass, see "Fixed (2026-08-27, wide `_BitInt` + C23 control-flow session)" below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | test_c3          | **fixed** — was: `nan()`/`nanf()`/`nanl()` undeclared in rcc's bundled `<math.h>`, so calls fell back to implicit-int and returned garbage instead of NaN (c3c's own `double::nan`/`float::nan` compile-time constants are built via `nan("")`), corrupting NaN comparisons; see "Fixed (2026-08-24, test_c3 NaN comparison -- missing nan()/nanf()/nanl() declarations)" above. `c3c compile-test unit`: 1366/1366 passed (was 1365/1366)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | test_coremarkpro | benchmark runner can't find perf logs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | test_box3d       | C++ binary (g++ compiled, not rcc)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -2739,12 +2799,11 @@ performs a real end-to-end TLS link+run for the archive-link case).
    added regardless). **Wide `_BitInt(N>64)` codegen is now fixed too**
    (see "Fixed (2026-08-13, wide `_BitInt(N>64)` session)" above: all
    operations route through the embedded slimcc bitint runtime).
-   **test_c23doku remains skipped by decision** — its
-   `brute_force.c`/`graph_color.c` declare `_BitInt(total * 3)` where
-   `total = digit * digit`, i.e. up to 11163 bits for the 61x61 puzzle
-   (175 64-bit legs). The runtime is width-agnostic so it would compile
-   and run, but the project is not a target (no arbitrary-precision
-   workload in scope).
+   **test_c23doku is now FIXED** (2026-08-27) — the "skipped by
+   decision" note below is stale; the wide-bitint gaps it exposed were
+   real rcc bugs and are all fixed (see "Fixed (2026-08-27, wide
+   `_BitInt` + C23 control-flow session)" below). All 16 verifies pass,
+   including the 61x61 puzzle's `_BitInt(11163)` (175 64-bit legs).
 
 2. **lib/tempname.c pattern** — **fixed** (2026-08-14, diffutils session):
    test_diffutils now builds and passes its whole test suite (29 PASS).
@@ -3078,8 +3137,10 @@ codegen (test_blake3, test_brotli: see "Fixed (2026-08-12, AVX/AVX2
 intrinsics session)" and "Fixed (2026-08-12, AVX-512 / EVEX intrinsics
 session)" below), C23 `_BitInt(N)` (see "Fixed (2026-08-13, wide
 `_BitInt(N>64)` session)" above), and C `defer` (see "Fixed
-(2026-08-14, C `defer` session)" above; test_nob); test_c23doku stays
-skipped by decision, arbitrary-precision bignum workload out of scope.
+(2026-08-14, C `defer` session)" above; test_nob); test_c23doku was
+skipped by decision then, but the arbitrary-precision bignum workload
+is now covered — fixed 2026-08-27 (see "Fixed (2026-08-27, wide
+`_BitInt` + C23 control-flow session)" below).
 This section is stale history kept for context — no remaining genuine
 gaps are tracked in "Needs fixing" above as of this session.
 

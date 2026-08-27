@@ -84,6 +84,23 @@ static inline unsigned int __rcc_stdc_bit_width_ull(unsigned long long x) {
     return __rcc_ull_width - __rcc_stdc_leading_zeros_ull(x);
 }
 
+static inline int __rcc_stdc_trailing_ones_uc(unsigned char x) {
+    /* trailing_ones(x) == trailing_zeros(~x); ~0 -> 0 -> width, all correct */
+    return __rcc_stdc_trailing_zeros_uc((unsigned char)~x);
+}
+static inline int __rcc_stdc_trailing_ones_us(unsigned short x) {
+    return __rcc_stdc_trailing_zeros_us((unsigned short)~x);
+}
+static inline int __rcc_stdc_trailing_ones_ui(unsigned int x) {
+    return __rcc_stdc_trailing_zeros_ui(~x);
+}
+static inline int __rcc_stdc_trailing_ones_ul(unsigned long x) {
+    return __rcc_stdc_trailing_zeros_ul(~x);
+}
+static inline int __rcc_stdc_trailing_ones_ull(unsigned long long x) {
+    return __rcc_stdc_trailing_zeros_ull(~x);
+}
+
 #define stdc_leading_zeros_uc(x)  __rcc_stdc_leading_zeros_uc(x)
 #define stdc_leading_zeros_us(x)  __rcc_stdc_leading_zeros_us(x)
 #define stdc_leading_zeros_ui(x)  __rcc_stdc_leading_zeros_ui(x)
@@ -101,6 +118,12 @@ static inline unsigned int __rcc_stdc_bit_width_ull(unsigned long long x) {
 #define stdc_count_ones_ui(x)  __rcc_stdc_count_ones_ui(x)
 #define stdc_count_ones_ul(x)  __rcc_stdc_count_ones_ul(x)
 #define stdc_count_ones_ull(x) __rcc_stdc_count_ones_ull(x)
+
+#define stdc_trailing_ones_uc(x)  __rcc_stdc_trailing_ones_uc(x)
+#define stdc_trailing_ones_us(x)  __rcc_stdc_trailing_ones_us(x)
+#define stdc_trailing_ones_ui(x)  __rcc_stdc_trailing_ones_ui(x)
+#define stdc_trailing_ones_ul(x)  __rcc_stdc_trailing_ones_ul(x)
+#define stdc_trailing_ones_ull(x) __rcc_stdc_trailing_ones_ull(x)
 
 #define stdc_bit_width_uc(x)  __rcc_stdc_bit_width_uc(x)
 #define stdc_bit_width_us(x)  __rcc_stdc_bit_width_us(x)
@@ -129,6 +152,14 @@ static inline unsigned int __rcc_stdc_bit_width_ull(unsigned long long x) {
     unsigned int:       __rcc_stdc_count_ones_ui, \
     unsigned long:      __rcc_stdc_count_ones_ul, \
     unsigned long long: __rcc_stdc_count_ones_ull \
+)(x)
+
+#define stdc_trailing_ones(x) _Generic((x), \
+    unsigned char:      __rcc_stdc_trailing_ones_uc, \
+    unsigned short:     __rcc_stdc_trailing_ones_us, \
+    unsigned int:       __rcc_stdc_trailing_ones_ui, \
+    unsigned long:      __rcc_stdc_trailing_ones_ul, \
+    unsigned long long: __rcc_stdc_trailing_ones_ull \
 )(x)
 
 #define stdc_bit_width(x) _Generic((x), \

@@ -2,7 +2,7 @@
 
 **Platform**: Linux x86_64
 
-Generated: August 27 2026 10:53
+Generated: August 27 2026 12:38
 
 ## Overall Summary
 
@@ -46,5 +46,5 @@ Generated: August 27 2026 10:53
 - **Passed**: 3605
 - **Failed**: 0
 - **Skipped**: 354
-- **Dg-error Tests**: 34/34 passed, 0 failed
+- **Dg-error Tests**: 35/35 passed, 0 failed
 - **Pass Rate (excl. skip)**: 100%

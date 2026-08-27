@@ -2,7 +2,7 @@
 
 **Platform**: macOS ARM64 (native)
 
-Generated: August 27 2026 10:54
+Generated: August 27 2026 12:40
 
 ## Overall Summary
 
@@ -46,5 +46,5 @@ Generated: August 27 2026 10:54
 - **Passed**: 3586
 - **Failed**: 0
 - **Skipped**: 373
-- **Dg-error Tests**: 34/34 passed, 0 failed
+- **Dg-error Tests**: 35/35 passed, 0 failed
 - **Pass Rate (excl. skip)**: 100%

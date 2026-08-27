@@ -257,6 +257,7 @@ void help(void) {
            "-Werror=unknown-warning-option  for autoconf probes\n"
            "-Wno-unknown-warning-option     we warn on unknown warning options by default\n"
            "-Wno-homoglyph      disable Unicode indentifer homoglyph warnings\n"
+           "-Wno-c23-c2y-compat disable pedantic diagnostic for C2Y labeled break/continue under -std=c23\n"
            "-Lpath              add linker path\n"
            "-lname              add lib\n"
            "-pthread            link with pthreads library\n"
@@ -324,6 +325,11 @@ bool opt_werror_flag = false;
 bool opt_pedantic = false;
 bool opt_Werror_unknown = false;
 bool opt_Wno_homoglyph = false;
+// -Wno-c23-c2y-compat: suppress the pedantic diagnostic for C2Y features
+// (labeled break/continue) under -std=c23, so `-std=c23 -pedantic-errors
+// -Wno-c23-c2y-compat` compiles code that uses them (gcc's own
+// c23-named-loops torture tests rely on this pairing).
+bool opt_Wno_c23_c2y_compat = false;
 bool opt_dryrun = false;
 bool opt_dM = false;
 bool opt_E = false;
@@ -578,6 +584,8 @@ int main(int argc, char **argv) {
             opt_fmax_errors = atoi(argv[i] + 13);
         } else if (!strcmp(argv[i], "-Wno-homoglyph")) {
             opt_Wno_homoglyph = true;
+        } else if (!strcmp(argv[i], "-Wno-c23-c2y-compat")) {
+            opt_Wno_c23_c2y_compat = true;
         } else if (!strcmp(argv[i], "-Werror=unknown-warning-option")) {
             opt_Werror_unknown = true;
         } else if (!strcmp(argv[i], "-Wunknown-warning-option")) {
