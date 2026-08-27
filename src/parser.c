@@ -4369,6 +4369,7 @@ static void check_duplicate_member(Member *list, Member *newm, Token *tok) {
 // redefinition detection below) is defined much later, alongside the
 // rest of _Generic's compatible-type machinery.
 static bool type_equal(Type *a, Type *b);
+static bool types_compatible_p(Type *a, Type *b);
 
 // True if `a` and `b` are structurally identical struct/union bodies —
 // same member count, each pair same name/type/offset/bitfield packing,
@@ -7685,6 +7686,69 @@ static KRParam *parse_kr_param_list(Token **rest, Token *tok);
 static Token *parse_nested_function_def(Token **rest, Token *tok, Type *fty,
                                         char *decl_name, char *mangled_name, KRParam *kr_params);
 
+// C11 6.2.7p2: two declarations of the same function with incompatible
+// types are a constraint violation ("conflicting types"). Shared by the
+// file-scope redeclaration path (parse()) and block-scope function
+// declarations (declaration()) -- the latter previously never compared
+// the local prototype against the file-scope symbol: gnulib's ioctl
+// POSIX-signature configure probe declares `int ioctl (int, int, ...);`
+// inside main(), which must conflict with glibc's `int ioctl(int,
+// unsigned long, ...)`. rcc silently accepted it, gnutls' configure
+// concluded the POSIX signature holds, set REPLACE_IOCTL=0 and the
+// generated sys/ioctl.h redeclared ioctl with `int request`,
+// failing the build (the `# if @SYS_IOCTL_H_HAVE_WINSOCK2_H@ || 1`
+// branch). gcc errors on the probe, sets REPLACE_IOCTL=1 and takes the
+// rpl_ioctl path -- no conflict.
+static bool func_decls_conflict(Type *prev_fty, Type *fty) {
+    // Return types must always match (C11 6.2.7p2), old-style parameter
+    // lists included: glibc's stdlib.h declares `char *ptsname(int)`
+    // under _GNU_SOURCE, and configure probes re-declare it as
+    // `int ptsname();` to test whether the declaration is present -- the
+    // resulting conflicting-types error is how zsh detects /dev/ptmx
+    // support. rcc only compared parameter lists, so the probe compiled
+    // clean and zsh took its BSD /dev/ptyXX fallback, which cannot open
+    // a pty on Linux.
+    if (prev_fty->return_ty && fty->return_ty &&
+        !types_compatible_p(prev_fty->return_ty, fty->return_ty) &&
+        !(prev_fty->return_ty->is_enum && fty->return_ty->is_enum))
+        return true;
+    if (!prev_fty->is_oldstyle &&
+        ((prev_fty->is_void_params && fty->param_types) ||
+         (fty->is_void_params && prev_fty->param_types)))
+        return true;
+    if (prev_fty->param_types && fty->param_types && !prev_fty->is_oldstyle) {
+        if (prev_fty->is_variadic != fty->is_variadic)
+            return true;
+        Type *pa = prev_fty->param_types;
+        Type *pb = fty->param_types;
+        while (pa && pb) {
+            if (pa->kind != TY_STRUCT && pa->kind != TY_UNION &&
+                pb->kind != TY_STRUCT && pb->kind != TY_UNION) {
+                // C11 6.7.6.3p10: a parameter's declared qualified type is
+                // taken as its UNQUALIFIED version for function-type
+                // compatibility -- a top-level const/volatile/restrict on a
+                // by-value parameter (including a function-pointer-typed
+                // one) differing between a declaration and its definition
+                // is NOT a conflict; real gcc/clang accept it silently
+                // even under -Wall -Wextra. njs's
+                // njs_vm_external_constructor() declares
+                // "njs_function_native_t native" but defines
+                // "const njs_function_native_t native" -- legal, was
+                // previously misdiagnosed here.
+                Type ta = *pa, tb = *pb;
+                ta.qual = tb.qual = 0;
+                if (!type_equal(&ta, &tb))
+                    return true;
+            }
+            pa = pa->param_next;
+            pb = pb->param_next;
+        }
+        if ((pa != NULL) != (pb != NULL))
+            return true;
+    }
+    return false;
+}
+
 static Node *declaration(Token **rest, Token *tok) {
     // C23 static_assert / C11 _Static_assert
     if (equalc(tok, "static_assert") || equalc(tok, "_Static_assert")) {
@@ -7833,6 +7897,20 @@ static Node *declaration(Token **rest, Token *tok) {
                 fn_sym->is_reproducible = attr.is_reproducible;
                 fn_sym->is_unsequenced = attr.is_unsequenced;
             } else {
+                // A block-scope prototype redeclaring a file-scope function
+                // must still be type-compatible with it (C11 6.2.7p2) --
+                // gnulib's ioctl POSIX-signature configure probe declares
+                // `int ioctl (int, int, ...);` inside main() to see whether
+                // it conflicts with glibc's unsigned-long prototype; rcc
+                // silently accepted it, so gnutls' configure set
+                // REPLACE_IOCTL=0 and the generated sys/ioctl.h took the
+                // SYS branch, redeclaring ioctl with `int request` and
+                // failing the build. gcc errors here, REPLACE_IOCTL=1, and
+                // the rpl_ioctl path is taken instead.
+                if (!fn_sym->is_synthetic_prelude && fn_sym->ty && fn_sym->ty->base &&
+                    !fty->is_oldstyle &&
+                    func_decls_conflict(fn_sym->ty->base, fty))
+                    error_tok(tok, "conflicting types for '%s'", name);
                 // Preserve alignment from prior declaration
                 if (fn_sym->ty && fn_sym->ty->base && fn_sym->ty->base->align > fty->align)
                     fty->align = fn_sym->ty->base->align;
@@ -14456,63 +14534,8 @@ Program *parse(Token *tok) {
                         if (!existing->is_synthetic_prelude &&
                             !(attr.is_extern && attr.is_inline) &&
                             existing->ty && existing->ty->base && !was_oldstyle) {
-                            Type *prev_fty = existing->ty->base;
-                            // Return types must always match (C11 6.2.7p2),
-                            // old-style parameter lists included: glibc's
-                            // stdlib.h declares `char *ptsname(int)` under
-                            // _GNU_SOURCE, and configure probes re-declare
-                            // it as `int ptsname();` to test whether the
-                            // declaration is present — the resulting
-                            // conflicting-types error is how zsh detects
-                            // /dev/ptmx support. rcc only compared
-                            // parameter lists, so the probe compiled clean
-                            // and zsh took its BSD /dev/ptyXX fallback,
-                            // which cannot open a pty on Linux.
-                            if (prev_fty->return_ty && fty->return_ty &&
-                                !types_compatible_p(prev_fty->return_ty, fty->return_ty) &&
-                                !(prev_fty->return_ty->is_enum && fty->return_ty->is_enum)) {
+                            if (func_decls_conflict(existing->ty->base, fty))
                                 error_tok(tok, "conflicting types for '%s'", name);
-                            } else if (!prev_fty->is_oldstyle &&
-                                       ((prev_fty->is_void_params && fty->param_types) ||
-                                        (fty->is_void_params && prev_fty->param_types))) {
-                                error_tok(tok, "conflicting types for '%s'", name);
-                            } else if (prev_fty->param_types && fty->param_types &&
-                                       !prev_fty->is_oldstyle) {
-                                if (prev_fty->is_variadic != fty->is_variadic) {
-                                    error_tok(tok, "conflicting types for '%s'", name);
-                                } else {
-                                    Type *pa = prev_fty->param_types;
-                                    Type *pb = fty->param_types;
-                                    while (pa && pb) {
-                                        if (pa->kind != TY_STRUCT && pa->kind != TY_UNION &&
-                                            pb->kind != TY_STRUCT && pb->kind != TY_UNION) {
-                                            // C11 6.7.6.3p10: a parameter's declared
-                                            // qualified type is taken as its UNQUALIFIED
-                                            // version for function-type compatibility --
-                                            // a top-level const/volatile/restrict on a
-                                            // by-value parameter (including a function-
-                                            // pointer-typed one) differing between a
-                                            // declaration and its definition is NOT a
-                                            // conflict; real gcc/clang accept it silently
-                                            // even under -Wall -Wextra. njs's
-                                            // njs_vm_external_constructor() declares
-                                            // "njs_function_native_t native" but defines
-                                            // "const njs_function_native_t native" --
-                                            // legal, was previously misdiagnosed here.
-                                            Type ta = *pa, tb = *pb;
-                                            ta.qual = tb.qual = 0;
-                                            if (!type_equal(&ta, &tb)) {
-                                                error_tok(tok, "conflicting types for '%s'", name);
-                                                break;
-                                            }
-                                        }
-                                        pa = pa->param_next;
-                                        pb = pb->param_next;
-                                    }
-                                    if ((pa != NULL) != (pb != NULL))
-                                        error_tok(tok, "conflicting types for '%s'", name);
-                                }
-                            }
                         }
                         existing->ty = fn_symbol_ty;
                         // Update flags on redeclaration
