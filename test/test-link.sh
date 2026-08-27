@@ -627,6 +627,37 @@ else
     printf '  %-44s SKIP (Windows/PE only)\n' "DLL with debug info, directly linked"
 fi
 
+# ---------------------------------------------------------------------------
+# 17. Repeated -l flags emit a single DT_NEEDED entry each. rcc's ELF
+#    linker pre-seeds libc/libgcc_s/libm DT_NEEDED entries and then
+#    appended one per -l<name> occurrence without dedup, so a link with
+#    the same library twice (rcc's default libm plus an explicit -lm in
+#    a Makefile/configure LIBS, or -lfoo -lfoo) produced duplicate
+#    NEEDED entries -- real ld dedups to one. Harmless at runtime, but
+#    configure probes that parse `objdump -p` NEEDED lines (gnutls'
+#    M_LIBRARY_SONAME check) captured "libm.so.6\nlibm.so.6" and wrote
+#    a broken config.h define. Count NEEDED libm.so.6 in the linked
+#    binary's dynamic section: must be exactly one.
+# ---------------------------------------------------------------------------
+if [ "$SOEXT" = so ]; then
+    cat > "$TMP/need.c" <<'EOF'
+#include <math.h>
+int main(void) { return trunc(1.5) == 1.0 ? 0 : 1; }
+EOF
+    if "$RCC" "$TMP/need.c" -lm -lm -o "$TMP/needprog" 2>"$TMP/e15"; then
+        n=$(LC_ALL=C objdump -p "$TMP/needprog" 2>/dev/null | grep -c 'NEEDED.*libm\.so\.6')
+        if [ "$n" = 1 ] && "$TMP/needprog"; then
+            pass "repeated -lm emits one DT_NEEDED libm.so.6"
+        else
+            fail "repeated -lm emits one DT_NEEDED libm.so.6" "NEEDED libm count=$n"
+        fi
+    else
+        fail "repeated -lm emits one DT_NEEDED libm.so.6" "$(tr '\n' ' ' < "$TMP/e15")"
+    fi
+else
+    printf '  %-44s SKIP (ELF/Linux only)\n' "repeated -lm emits one DT_NEEDED libm.so.6"
+fi
+
 echo ""
 echo "Link tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

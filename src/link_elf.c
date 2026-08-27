@@ -1849,6 +1849,10 @@ int link_elf(LinkState *s) {
         needed_offs[0] = libc_off;
         needed_offs[1] = libgcc_off;
         needed_offs[2] = libm_off;
+        char needed_names[16][64] = {0};
+        snprintf(needed_names[0], sizeof(needed_names[0]), "libc.so.6");
+        snprintf(needed_names[1], sizeof(needed_names[1]), "libgcc_s.so.1");
+        snprintf(needed_names[2], sizeof(needed_names[2]), "libm.so.6");
         bool lib_lookup_failed = false;
         const char *lp = s->libs;
         while (lp && *lp) {
@@ -1921,12 +1925,30 @@ int link_elf(LinkState *s) {
                         lib_lookup_failed = true;
                         break;
                     }
+                    // Dedup against the pre-seeded libc/libgcc_s/libm and
+                    // any earlier -l: a repeated -l (rcc's own default
+                    // libm plus an explicit -lm from a Makefile/configure
+                    // LIBS, or -lfoo -lfoo) must not emit two identical
+                    // DT_NEEDED entries -- real ld dedups to one, and a
+                    // duplicate corrupts configure probes that parse
+                    // `objdump -p` NEEDED lines (gnutls' M_LIBRARY_SONAME
+                    // check captured "libm.so.6\nlibm.so.6", producing a
+                    // broken config.h define).
+                    bool seen = false;
+                    for (int k = 0; k < n_needed && !seen; k++)
+                        if (needed_names[k][0] && !strcmp(needed_names[k], resolved_soname))
+                            seen = true;
+                    if (seen) {
+                        lp = end;
+                        continue;
+                    }
                     if (n_scan < 32) {
                         snprintf(scan_paths[n_scan], sizeof(scan_paths[0]), "%s", found_path);
                         n_scan++;
                     }
                     needed_offs[n_needed] = (int)link_sec_append(s, dynstr_sec,
                                                                  (const uint8_t *)resolved_soname, strlen(resolved_soname) + 1, 1);
+                    snprintf(needed_names[n_needed], sizeof(needed_names[0]), "%s", resolved_soname);
                     n_needed++;
                 }
                 lp = end;
@@ -1976,12 +1998,21 @@ int link_elf(LinkState *s) {
                         base = base ? base + 1 : spath;
                         snprintf(resolved_soname, sizeof(resolved_soname), "%s", base);
                     }
+                    bool seen = false;
+                    for (int k = 0; k < n_needed && !seen; k++)
+                        if (needed_names[k][0] && !strcmp(needed_names[k], resolved_soname))
+                            seen = true;
+                    if (seen) {
+                        sp = send;
+                        continue;
+                    }
                     if (n_scan < 32) {
                         snprintf(scan_paths[n_scan], sizeof(scan_paths[0]), "%s", spath);
                         n_scan++;
                     }
                     needed_offs[n_needed] = (int)link_sec_append(s, dynstr_sec,
                                                                  (const uint8_t *)resolved_soname, strlen(resolved_soname) + 1, 1);
+                    snprintf(needed_names[n_needed], sizeof(needed_names[0]), "%s", resolved_soname);
                     n_needed++;
                 }
             }
