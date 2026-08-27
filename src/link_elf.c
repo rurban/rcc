@@ -1400,6 +1400,110 @@ static bool so_mark_defined(const char *path, const char **names,
     return true;
 }
 
+// True iff the shared object defines (exports in .dynsym) a global/weak
+// symbol with this name. Used to decide which of the executable's own
+// definitions must be exported so ld.so's global-scope lookup can
+// resolve the library's interposable references to them. Walks
+// PT_DYNAMIC (not section headers) so it works on a .so this linker
+// itself produced, which carries no section header table at all.
+static bool so_has_symbol(const char *path, const char *name) {
+    ElfFile ef;
+    if (elf_open(path, &ef) != 0) return false;
+    if (ef.size < 64 || memcmp(ef.image, "\x7f"
+                                         "ELF",
+                               4) != 0) {
+        elf_close(&ef);
+        return false;
+    }
+    uint64_t e_phoff = r64le(ef.image + 32);
+    uint16_t e_phnum = r16le(ef.image + 56);
+    if (!e_phoff || e_phnum == 0) {
+        elf_close(&ef);
+        return false;
+    }
+    typedef struct {
+        uint64_t vaddr, offset, filesz;
+    } LoadSeg;
+    LoadSeg loads[16];
+    int n_loads = 0;
+    uint64_t dyn_off = 0, dyn_filesz = 0;
+    bool have_dyn = false;
+    for (int i = 0; i < e_phnum; i++) {
+        uint64_t ph_off = e_phoff + (uint64_t)i * 56;
+        if (ph_off + 56 > ef.size) break;
+        const uint8_t *ph = ef.image + ph_off;
+        uint32_t p_type = r32le(ph);
+        if (p_type == PT_DYNAMIC) {
+            dyn_off = r64le(ph + 8);
+            dyn_filesz = r64le(ph + 32);
+            have_dyn = true;
+        } else if (p_type == PT_LOAD && n_loads < 16) {
+            loads[n_loads].offset = r64le(ph + 8);
+            loads[n_loads].vaddr = r64le(ph + 16);
+            loads[n_loads].filesz = r64le(ph + 32);
+            n_loads++;
+        }
+    }
+    if (!have_dyn || dyn_off + dyn_filesz > ef.size) {
+        elf_close(&ef);
+        return false;
+    }
+    uint64_t symtab_vaddr = 0, strtab_vaddr = 0, strsz = 0;
+    bool have_symtab = false, have_strtab = false;
+    for (uint64_t off = dyn_off; off + 16 <= dyn_off + dyn_filesz; off += 16) {
+        uint64_t tag = r64le(ef.image + off);
+        uint64_t val = r64le(ef.image + off + 8);
+        if (tag == DT_NULL) break;
+        if (tag == DT_SYMTAB) {
+            symtab_vaddr = val;
+            have_symtab = true;
+        } else if (tag == DT_STRTAB) {
+            strtab_vaddr = val;
+            have_strtab = true;
+        } else if (tag == DT_STRSZ) {
+            strsz = val;
+        }
+    }
+    if (!have_symtab || !have_strtab || !strsz) {
+        elf_close(&ef);
+        return false;
+    }
+    uint64_t sym_off = 0, str_off = 0;
+    bool mapped_sym = false, mapped_str = false;
+    for (int i = 0; i < n_loads; i++) {
+        if (!mapped_sym && symtab_vaddr >= loads[i].vaddr &&
+            symtab_vaddr < loads[i].vaddr + loads[i].filesz) {
+            sym_off = loads[i].offset + (symtab_vaddr - loads[i].vaddr);
+            mapped_sym = true;
+        }
+        if (!mapped_str && strtab_vaddr >= loads[i].vaddr &&
+            strtab_vaddr < loads[i].vaddr + loads[i].filesz) {
+            str_off = loads[i].offset + (strtab_vaddr - loads[i].vaddr);
+            mapped_str = true;
+        }
+    }
+    if (!mapped_sym || !mapped_str || sym_off + 24 > ef.size) {
+        elf_close(&ef);
+        return false;
+    }
+    bool found = false;
+    for (uint64_t off = sym_off; off + 24 <= ef.size; off += 24) {
+        const uint8_t *se = ef.image + off;
+        if (r16le(se + 6) == SHN_UNDEF) continue; // imported, not defined here
+        uint8_t bind = se[4] >> 4;
+        if (bind != STB_GLOBAL && bind != STB_WEAK) continue;
+        uint32_t nidx = r32le(se);
+        if (nidx >= strsz) continue;
+        const char *sname = (const char *)(ef.image + str_off + nidx);
+        if (strcmp(sname, name) == 0) {
+            found = true;
+            break;
+        }
+    }
+    elf_close(&ef);
+    return found;
+}
+
 // Extract DT_SONAME from an arbitrary ELF shared object by walking its
 // PROGRAM headers (PT_DYNAMIC) directly, the same way ld.so itself finds
 // it at load time -- unlike lookup_lib_symbol_versions() above, this
@@ -1656,6 +1760,56 @@ int link_elf(LinkState *s) {
         }
     }
 
+    // -shared: internal calls to a defined global/weak function must also
+    // go through the PLT, not be bound directly -- a direct call would
+    // hard-wire the call site to this library's own copy and silently
+    // defeat symbol interposition (gnutls' GNUTLS_SKIP_GLOBAL_INIT macro:
+    // the executable's strong _gnutls_global_init_skip must override the
+    // library's weak one; with a direct call the lib's lib_init()
+    // constructor called its own copy and initialized anyway, failing
+    // tests/global-init-override). GNU ld emits a PLT entry for every
+    // global/weak function reference in a shared object by default, so
+    // ld.so's global-scope lookup can resolve a stronger definition in
+    // the executable or an LD_PRELOAD. Collect such symbols into the
+    // dynamic set so apply_dynamic_relocs routes the call through the
+    // PLT and .rela.plt names the symbol for ld.so.
+    if (s->opt_shared) {
+        for (int i = 0; i < s->n_syms; i++) {
+            LinkSym *sym = &s->syms[i];
+            if (sym->sec < 0 || sym->bind == STB_LOCAL || dyn_idx[i] ||
+                !sym->name || !sym->name[0])
+                continue;
+            if (sym->visibility == STV_HIDDEN || sym->visibility == STV_INTERNAL)
+                continue; // not interposable; a direct call is correct
+            bool called = false;
+            for (int si = 0; si < s->n_secs && !called; si++) {
+                LinkSec *sec = &s->secs[si];
+                if (!sec->alloc) continue;
+                for (int rj = 0; rj < sec->n_relocs; rj++)
+                    if (sec->relocs[rj].sym == i &&
+                        (sec->relocs[rj].type == RL_PC32_PLT ||
+                         sec->relocs[rj].type == RL_ARM64_B26)) {
+                        called = true;
+                        break;
+                    }
+            }
+            if (!called) continue;
+            if (n_dyn == cap_dyn) {
+                cap_dyn = cap_dyn ? cap_dyn * 2 : 16;
+                int *tmp = realloc(dyn_syms, (size_t)cap_dyn * sizeof(int));
+                if (!tmp) {
+                    free(dyn_syms);
+                    fprintf(stderr, "rcc: out of memory\n");
+                    exit(1);
+                }
+                dyn_syms = tmp;
+            }
+            dyn_syms[n_dyn] = i;
+            dyn_idx[i] = n_dyn + 1;
+            n_dyn++;
+        }
+    }
+
     // A shared object always needs .dynamic/.dynsym/PT_DYNAMIC
     // infrastructure to be a discoverable, loadable shared object at
     // all -- regardless of whether it happens to import anything.
@@ -1694,6 +1848,7 @@ int link_elf(LinkState *s) {
             // into .dynsym — real ld drops them too, so a dlopen()
             // caller (or glib's check-abis.sh) never sees them.
             if (sym->sec >= 0 && sym->bind != STB_LOCAL && sym->name && sym->name[0] &&
+                !dyn_idx[i] &&
                 sym->visibility != STV_HIDDEN && sym->visibility != STV_INTERNAL) {
                 if (n_exp == cap_exp) {
                     cap_exp = cap_exp ? cap_exp * 2 : 16;
@@ -2019,6 +2174,58 @@ int link_elf(LinkState *s) {
             sp = send;
         }
 
+        // A non-shared executable must also export its own definitions of
+        // symbols the linked shared libraries reference -- GNU ld does
+        // this by default, independent of -rdynamic: without it, ld.so's
+        // global-scope lookup for a library's PLT slots cannot see the
+        // executable's stronger definition, so a library's weak function
+        // binds to the library's own copy instead of the executable's
+        // (gnutls' GNUTLS_SKIP_GLOBAL_INIT: the test executable's strong
+        // _gnutls_global_init_skip must override libgnutls' weak one, or
+        // the lib's implicit-init constructor runs anyway).
+        if (!s->opt_shared && !s->opt_static) {
+            const char *core_names[3] = {"libc.so.6", "libgcc_s.so.1", "libm.so.6"};
+            char lib_paths[64][600];
+            int n_lib_paths = 0;
+            for (int c = 0; c < 3 && n_lib_paths < 64; c++) {
+                char cpath[600];
+                if (find_shared_lib(core_names[c], cpath, sizeof(cpath), NULL, 0) == 0)
+                    snprintf(lib_paths[n_lib_paths++], sizeof(lib_paths[0]), "%s", cpath);
+            }
+            for (int p = 0; p < n_scan && n_lib_paths < 64; p++)
+                snprintf(lib_paths[n_lib_paths++], sizeof(lib_paths[0]), "%s", scan_paths[p]);
+            for (int i = 0; i < s->n_syms; i++) {
+                LinkSym *sym = &s->syms[i];
+                if (sym->sec < 0 || sym->bind == STB_LOCAL || dyn_idx[i] ||
+                    !sym->name || !sym->name[0])
+                    continue;
+                if (sym->visibility == STV_HIDDEN || sym->visibility == STV_INTERNAL)
+                    continue;
+                bool already = false;
+                for (int e = 0; e < n_exp; e++)
+                    if (exp_syms[e] == i) {
+                        already = true;
+                        break;
+                    }
+                if (already) continue;
+                bool referenced = false;
+                for (int p = 0; p < n_lib_paths && !referenced; p++)
+                    referenced = so_has_symbol(lib_paths[p], sym->name);
+                if (!referenced) continue;
+                if (n_exp == cap_exp) {
+                    cap_exp = cap_exp ? cap_exp * 2 : 16;
+                    int *tmp = realloc(exp_syms, (size_t)cap_exp * sizeof(int));
+                    if (!tmp) {
+                        free(exp_syms);
+                        fprintf(stderr, "rcc: out of memory\n");
+                        exit(1);
+                    }
+                    exp_syms = tmp;
+                }
+                exp_syms[n_exp++] = i;
+            }
+        }
+
         // Genuine-undefined-symbol gate (dynamic executables only).
         //
         // Every non-weak symbol left undefined at this point was collected
@@ -2099,9 +2306,13 @@ int link_elf(LinkState *s) {
             ent[4] = (uint8_t)(((sym->bind == 2 ? STB_WEAK : STB_GLOBAL) << 4) |
                                (sym->type == 2 ? STT_FUNC : (sym->type == 1 ? STT_OBJECT : STT_NOTYPE)));
             ent[5] = STV_DEFAULT;
-            w16le_m(ent + 6, SHN_UNDEF);
+            // A defined-but-dynamic entry (a -shared interposable
+            // function collected above) must be marked defined (shndx !=
+            // SHN_UNDEF) with its real size; st_value is patched after
+            // layout, like the exported entries below.
+            w16le_m(ent + 6, sym->sec >= 0 ? 1 : SHN_UNDEF);
             w64le_m(ent + 8, 0);
-            w64le_m(ent + 16, 0);
+            w64le_m(ent + 16, sym->sec >= 0 ? sym->size : 0);
             link_sec_append(s, dynsym_sec, ent, 24, 8);
         }
 
@@ -2143,6 +2354,12 @@ int link_elf(LinkState *s) {
             char libc_path[512];
             if (find_shared_lib("libc.so.6", libc_path, sizeof(libc_path), NULL, 0) == 0)
                 lookup_lib_symbol_versions(libc_path, names, dyn_versions, n_dyn);
+            // Defined-but-dynamic entries (interposable functions in a
+            // -shared link) are defined HERE -- they must not pick up a
+            // libc version requirement from a same-named libc symbol.
+            for (int k = 0; k < n_dyn; k++)
+                if (s->syms[dyn_syms[k]].sec >= 0)
+                    dyn_versions[k] = NULL;
             free(names);
         }
         // Assign a VERSYM index (>= 2) to each distinct version name seen,
@@ -2519,6 +2736,14 @@ int link_elf(LinkState *s) {
         for (int k = 0; k < n_exp; k++) {
             uint8_t *ent = dynsym->data + (size_t)(1 + n_dyn + k) * 24;
             w64le_m(ent + 8, symbol_address(s, exp_syms[k]));
+        }
+        // Defined-but-dynamic entries (interposable functions in a -shared
+        // link, dynsym indices 1..n_dyn where the symbol is defined): same
+        // real-address patch.
+        for (int k = 0; k < n_dyn; k++) {
+            if (s->syms[dyn_syms[k]].sec < 0) continue;
+            uint8_t *ent = dynsym->data + (size_t)(1 + k) * 24;
+            w64le_m(ent + 8, symbol_address(s, dyn_syms[k]));
         }
 
         // PLT entries.

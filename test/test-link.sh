@@ -658,6 +658,43 @@ else
     printf '  %-44s SKIP (ELF/Linux only)\n' "repeated -lm emits one DT_NEEDED libm.so.6"
 fi
 
+# ---------------------------------------------------------------------------
+# 18. Weak-symbol interposition across a shared-library boundary. A
+#    -shared link must route internal calls to defined global/weak
+#    functions through the PLT (a direct call hard-wires the library's
+#    own copy), and a non-shared executable must export its definitions of
+#    symbols the linked libraries reference (GNU ld does both by default,
+#    independent of -rdynamic). gnutls' GNUTLS_SKIP_GLOBAL_INIT relies on
+#    exactly this: the test executable's strong _gnutls_global_init_skip
+#    must override the library's weak one, or the lib's implicit-init
+#    constructor runs anyway (failed tests/global-init-override). The
+#    executable's strong gsk() (42) must win over the library's weak gsk()
+#    (0) even WITHOUT -rdynamic.
+# ---------------------------------------------------------------------------
+if [ "$SOEXT" = so ]; then
+    cat > "$TMP/wl.c" <<'EOF'
+__attribute__((weak)) int gsk(void) { return 0; }
+int call_gsk(void) { return gsk(); }
+EOF
+    cat > "$TMP/wm.c" <<'EOF'
+int gsk(void) { return 42; }
+int call_gsk(void);
+int main(void) { return call_gsk() == 42 ? 0 : 1; }
+EOF
+    if "$RCC" -shared -fPIC "$TMP/wl.c" -o "$TMP/libweak.so" 2>"$TMP/e16" \
+        && "$RCC" "$TMP/wm.c" "$TMP/libweak.so" -o "$TMP/weakprog" 2>>"$TMP/e16"; then
+        if LD_LIBRARY_PATH="$TMP" "$TMP/weakprog"; then
+            pass "weak symbol interposed from executable without -rdynamic"
+        else
+            fail "weak symbol interposed from executable without -rdynamic" "$(tr '\n' ' ' < "$TMP/e16")"
+        fi
+    else
+        fail "weak symbol interposed from executable without -rdynamic" "$(tr '\n' ' ' < "$TMP/e16")"
+    fi
+else
+    printf '  %-44s SKIP (ELF/Linux only)\n' "weak symbol interposed from executable without -rdynamic"
+fi
+
 echo ""
 echo "Link tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

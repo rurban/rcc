@@ -23,7 +23,12 @@ run_one() {
   local d="$BASE/$t"
   rm -rf "$d"; mkdir -p "$d"
   local start=$SECONDS
-  ( cd "$d" && timeout "$TIMEOUT" bash "$ROOT/test/linux_thirdparty.bash" "$t" ) \
+  local to="${TIMEOUT:-420}"
+  # Do NOT leak $TIMEOUT into the test's environment: several third-party
+  # test scripts (gnutls' gnutls-cli-debug.sh, ...) use $TIMEOUT as the
+  # name of their own timeout command (`: ${TIMEOUT=timeout}`), and a
+  # numeric per-test timeout here would become "1800: command not found".
+  ( cd "$d" && unset TIMEOUT && timeout "$to" bash "$ROOT/test/linux_thirdparty.bash" "$t" ) \
       > "$BASE/logs/$t.log" 2>&1
   local rc=$?
   local dur=$((SECONDS - start))

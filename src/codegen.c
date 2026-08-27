@@ -1523,8 +1523,20 @@ static void emit_direct_call(char *name, bool is_asm_label) {
     size_t off = asm_call_label(cg_sec); // bl %s
     int sidx = objfile_find_sym(cg_obj, label);
 #ifdef ARCH_ARM64
+    // Same-section STATIC function: patch the displacement directly, no
+    // relocation. A same-TU GLOBAL/WEAK function must NOT take this
+    // shortcut: its call must stay a reloc (R_AARCH64_CALL26) so the
+    // shared-library linker can route it through the PLT and ld.so can
+    // interpose a stronger definition from the executable or an LD_PRELOAD
+    // (gnutls' GNUTLS_SKIP_GLOBAL_INIT relies on this -- the exe's strong
+    // _gnutls_global_init_skip overrides the lib's weak one; a direct call
+    // bound the lib's own copy and failed tests/global-init-override).
+#ifdef _WIN32
     if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT) {
-        // Same-section function: patch displacement directly, no relocation.
+#else
+    if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT &&
+        cg_obj->syms[sidx].bind == SB_LOCAL) {
+#endif
         int32_t disp = (int32_t)((int64_t)cg_obj->syms[sidx].offset - (int64_t)off);
         uint32_t insn = 0x94000000 | (((uint32_t)(disp / 4)) & 0x03FFFFFF);
         secbuf_patch32le(cg_sec, off, insn);
@@ -1534,10 +1546,25 @@ static void emit_direct_call(char *name, bool is_asm_label) {
         sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
     objfile_add_reloc(cg_obj, SEC_TEXT, off, sidx, R_AARCH64_CALL26, 0);
 #else
+    // Same-section STATIC function: patch the displacement directly, no
+    // relocation. This avoids blowing the COFF 16-bit per-section
+    // relocation limit in files with many local calls (e.g. 101_cleanup).
+    // A same-TU GLOBAL/WEAK function must NOT take this shortcut: its call
+    // must stay an R_X86_64_PLT32 relocation so the shared-library linker
+    // can route it through the PLT and ld.so can interpose a stronger
+    // definition from the executable or an LD_PRELOAD (gnutls'
+    // GNUTLS_SKIP_GLOBAL_INIT relies on this -- the exe's strong
+    // _gnutls_global_init_skip overrides the lib's weak one; a direct call
+    // bound the lib's own copy and failed tests/global-init-override).
+    // On PE (mingw) there is no ELF-style interposition and the COFF
+    // per-section relocation count is 16-bit, so same-TU global calls
+    // must keep the direct patch or 101_cleanup blows the limit.
+#ifdef _WIN32
     if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT) {
-        // Same-section function: patch displacement directly, no relocation.
-        // This avoids blowing the COFF 16-bit per-section relocation limit
-        // in files with many local calls (e.g. 101_cleanup).
+#else
+    if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT &&
+        cg_obj->syms[sidx].bind == SB_LOCAL) {
+#endif
         int32_t disp = (int32_t)((int64_t)cg_obj->syms[sidx].offset - (int64_t)(off + 5));
         secbuf_patch32le(cg_sec, off + 1, (uint32_t)disp);
         return;

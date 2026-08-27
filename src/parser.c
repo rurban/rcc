@@ -14563,6 +14563,22 @@ Program *parse(Token *tok) {
                         error_tok(tok, "typedef cannot have function body");
 
                     LVar *fn_locals = NULL;
+                    // A statement-level declaration inside the body
+                    // (declaration() resets the pending attribute flags so
+                    // they can't leak onto the NEXT top-level declaration)
+                    // would otherwise wipe the constructor/destructor
+                    // attributes attached to THIS definition before they
+                    // are consumed below -- `static void
+                    // __attribute__((constructor)) f(void) { int x; }`
+                    // silently lost its .init_array entry (found via
+                    // gnutls' lib_init: the ASN.1 tree was never built at
+                    // load, and DH params imported before
+                    // gnutls_global_init() failed). Capture them before
+                    // parsing the body.
+                    bool def_is_constructor = pending_constructor;
+                    bool def_is_destructor = pending_destructor;
+                    char *def_asm_name = pending_asm_name;
+                    char *def_alias_target = pending_alias_target;
                     // extern inline IS the external definition, right
                     // here where any static object it references is
                     // visible -- gcc never warns there (only for a bare
@@ -14592,9 +14608,9 @@ Program *parse(Token *tok) {
                     Function *fn = arena_alloc(sizeof(Function));
                     fn->name = name;
                     LVar *fn_sym2 = find_global_name(name);
-                    fn->asm_name = pending_asm_name ? pending_asm_name
-                                                    : (fn_sym2 ? fn_sym2->asm_name : NULL);
-                    fn->alias_target = pending_alias_target;
+                    fn->asm_name = def_asm_name ? def_asm_name
+                                                : (fn_sym2 ? fn_sym2->asm_name : NULL);
+                    fn->alias_target = def_alias_target;
                     fn->ty = fty;
                     fn->params = params;
                     fn->locals = fn_locals;
@@ -14617,9 +14633,9 @@ Program *parse(Token *tok) {
                     fn->stack_size = align_to(stack_offset, 16);
                     fn->is_variadic = is_variadic;
                     fn->dealloc_vla = fn_uses_vla;
-                    fn->is_constructor = pending_constructor ||
+                    fn->is_constructor = def_is_constructor ||
                         (fn_sym2 && fn_sym2->is_constructor);
-                    fn->is_destructor = pending_destructor ||
+                    fn->is_destructor = def_is_destructor ||
                         (fn_sym2 && fn_sym2->is_destructor);
                     fn->is_inline = attr.is_inline;
                     fn->is_gnu_inline = attr.is_gnu_inline;
