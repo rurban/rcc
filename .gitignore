@@ -85,6 +85,7 @@ test/*.out
 /test/third_party/binutils
 /muon
 /test/third_party/muon
+/test/third_party/libressl-install
 
 # agents
 .claude/

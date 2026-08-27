@@ -551,6 +551,12 @@ test_got() {
  github_tar gameoftrees got-portable 0.126
  sh autogen.sh
 
+ # got's configure hard-requires libtls (LibreSSL's TLS library), which
+ # Debian/Ubuntu dropped from their repos. Build LibreSSL once into a
+ # shared prefix here (like shared_muon/shared_binutils) and point
+ # pkg-config at it so `./configure` finds libtls.
+ shared_libressl
+
  local GOT="$PWD"/got_install
  ./configure --prefix="$GOT"
  make PREFIX="$GOT" install
@@ -2432,6 +2438,31 @@ url_xz() {
 shared_binutils() {
  url_xz https://ftpmirror.gnu.org/gnu/binutils/binutils-2.46.1.tar.xz binutils
  sed -i 's|^# define __attribute__(x)$||g' include/ansidecl.h
+}
+
+shared_libressl() {
+ # Build LibreSSL (provides libtls, required by got's configure) into a
+ # shared prefix under the current dir and export pkg-config, leaving the
+ # caller's cwd unchanged. Reused across runs when the .pc file exists.
+ local prefix="$PWD"/libressl-install
+ if [ -f "$prefix/lib/pkgconfig/libtls.pc" ]; then
+  export PKG_CONFIG_PATH="$prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+  return
+ fi
+ local tmp
+ tmp="$(mktemp -d)"
+ if ! ( cd "$tmp" \
+    && wget_loop https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-4.3.2.tar.gz libressl.tar.gz \
+    && tar xzf libressl.tar.gz && cd libressl-4.3.2 \
+    && ./configure --prefix="$prefix" >/dev/null \
+    && make -j"$(nproc)" >/dev/null \
+    && make install >/dev/null ); then
+  rm -rf "$tmp"
+  echo "shared_libressl: LibreSSL build failed" >&2
+  exit 1
+ fi
+ rm -rf "$tmp"
+ export PKG_CONFIG_PATH="$prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 }
 
 shared_muon() {
