@@ -6249,6 +6249,23 @@ static int count_array_initializer(Token **rest, Token *tok, Type *elem_ty) {
                 LVar *var = find_var(tok);
                 if (var && var->ty && (var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION))
                     is_struct_expr = true;
+                // A struct/union-returning function call is a single element
+                // expression (e.g. `struct S a[] = { mk0(), mk1() }`), not a
+                // flat aggregate of the struct's members. A function's global
+                // LVar is typed pointer-to-function (TY_PTR -> TY_FUNC), so
+                // check the pointee's return type. Without this,
+                // count_array_initializer() routed `mk0()` through
+                // skip_flat_aggregate_init(), which consumed `mk0()` as the
+                // first member and `mk1()` as the second -- miscounting the
+                // array as 1 element and dropping the second initializer call
+                // (jerryscript's test-ext-arg: the second jerryx_arg_t in the
+                // mapping[] array ended up NULL).
+                else if (var && var->ty && var->ty->kind == TY_PTR && var->ty->base &&
+                         var->ty->base->kind == TY_FUNC && var->ty->base->return_ty &&
+                         (var->ty->base->return_ty->kind == TY_STRUCT ||
+                          var->ty->base->return_ty->kind == TY_UNION) &&
+                         tok->next && equalc(tok->next, "("))
+                    is_struct_expr = true;
             } else if (find_compound_literal_start(tok)) {
                 is_struct_expr = true;
             }

@@ -133,10 +133,10 @@ test_blake3() {
 
 test_blosc2() {
  github_tar Blosc c-blosc2 v3.2.3
- replace_line "  #elif (defined(__GNUC__) && __GNUC__ >= 4) || defined(__clang__)" "#elif 1" include/blosc2/blosc2-export.h
- replace_line "#ifdef __GNUC__" "#if 1" tests/b2nd/test_b2nd_persistency.c
- replace_line "#ifdef __GNUC__" "#if 1" tests/b2nd/test_b2nd_save.c
- replace_line "#ifdef __GNUC__" "#if 1" tests/b2nd/test_b2nd_save_append.c
+ #replace_line "  #elif (defined(__GNUC__) && __GNUC__ >= 4) || defined(__clang__)" "#elif 1" include/blosc2/blosc2-export.h
+ #replace_line "#ifdef __GNUC__" "#if 1" tests/b2nd/test_b2nd_persistency.c
+ #replace_line "#ifdef __GNUC__" "#if 1" tests/b2nd/test_b2nd_save.c
+ #replace_line "#ifdef __GNUC__" "#if 1" tests/b2nd/test_b2nd_save_append.c
  cmake_init -DPREFER_EXTERNAL_LZ4=ON -DPREFER_EXTERNAL_ZLIB=ON -DPREFER_EXTERNAL_ZSTD=ON
  make && ctest
 }
@@ -145,7 +145,7 @@ test_box2d() {
  github_tar erincatto box2d v3.1.1
  use_stdbit '#include <stdint.h>' src/ctz.h
  use_stdatomic '#include <stdint.h>' src/atomic.h
- replace_line "#elif defined( __GNUC__ ) || defined( __clang__ )" "#elif 1" src/atomic.h
+ #replace_line "#elif defined( __GNUC__ ) || defined( __clang__ )" "#elif 1" src/atomic.h
  sed -i 's|__atomic_compare_exchange_n( &a->value, &expected, desired, false,|atomic_compare_exchange_strong_explicit(\&a->value,\&expected,desired,|g' src/atomic.h
  cmake_init -DBOX2D_DISABLE_SIMD=ON
  make
@@ -156,7 +156,7 @@ test_box3d() {
  git_fetch https://github.com/erincatto/box3d d421e45c828f6f853a145f726f0b9425d31146eb box3d
  use_stdbit '#include <stdint.h>' src/ctz.h
  use_stdatomic '#include <stdint.h>' src/platform.h
- replace_line "#elif defined( __GNUC__ ) || defined( __clang__ )" "#elif 1" src/platform.h
+ #replace_line "#elif defined( __GNUC__ ) || defined( __clang__ )" "#elif 1" src/platform.h
  sed -i 's|__atomic_compare_exchange_n( &a->value, &expected, desired, false,|atomic_compare_exchange_strong_explicit(\&a->value,\&expected,desired,|g' src/platform.h
  cmake_init -DBOX3D_DISABLE_SIMD=ON
  make
@@ -189,11 +189,11 @@ test_bubblewrap() {
 test_busybox() {
  git_fetch https://github.com/vda-linux/busybox_mirror ec0c5cc142f1f9ea57235df5d093fbe180ad9c7d busybox
  sed -i 's|LDLIBS += rt|LDLIBS += rt resolv|g' Makefile.flags
- sed -i 's|&& defined(__GNUC__)||g' libbb/hash_sha1_hwaccel_x86-64.S
- sed -i 's|&& defined(__GNUC__)||g' libbb/hash_sha256_hwaccel_x86-64.S
+ #sed -i 's|&& defined(__GNUC__)||g' libbb/hash_sha1_hwaccel_x86-64.S
+ #sed -i 's|&& defined(__GNUC__)||g' libbb/hash_sha256_hwaccel_x86-64.S
  # shellcheck disable=SC2016
  sed -i 's|\tgcc |$CC |g' testsuite/testing.sh
- replace_line "# if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))" "#if 1" libbb/hash_md5_sha.c
+ #replace_line "# if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))" "#if 1" libbb/hash_md5_sha.c
  # shellcheck disable=SC2016
  sed -i 's|`printf |`$ECHO -ne |g' testsuite/ls.tests # https://lists.busybox.net/pipermail/busybox/2026-June/092340.html
  # shellcheck disable=SC2086
@@ -299,8 +299,8 @@ test_chibischeme() {
 
 test_cjson() {
  github_tar DaveGamble cJSON v1.7.19
- replace_line "#if (defined(__GNUC__) || defined(__SUNPRO_CC) || defined (__SUNPRO_C)) && defined(CJSON_API_VISIBILITY)" "#if 1" cJSON.h
- sed -i 's/if defined(__GNUC__) || defined(__ghs__)/if 1/g' tests/unity/src/unity_internals.h
+ #replace_line "#if (defined(__GNUC__) || defined(__SUNPRO_CC) || defined (__SUNPRO_C)) && defined(CJSON_API_VISIBILITY)" "#if 1" cJSON.h
+ #sed -i 's/if defined(__GNUC__) || defined(__ghs__)/if 1/g' tests/unity/src/unity_internals.h
  cmake_init
  make check
 }
@@ -516,9 +516,9 @@ test_glib() {
  # union member), which is only legal before C23. Match the real-world
  # default so glib compiles without requiring per-file source edits.
  CC="$CC -std=gnu17" fix_and_configure
- replace_line "#if  __GNUC__ > 2 || (__GNUC__ == 2 && __GNUC_MINOR__ >= 7)" "#if 1" glib/gconstructor.h
- replace_line "#ifdef __GNUC__" "#if 1" glib/gmacros.h
- replace_line "#elif defined(__GNUC__) && (__GNUC__ >= 4)" "#elif 1" gio/tests/modules/symbol-visibility.h
+ #replace_line "#if  __GNUC__ > 2 || (__GNUC__ == 2 && __GNUC_MINOR__ >= 7)" "#if 1" glib/gconstructor.h
+ #replace_line "#ifdef __GNUC__" "#if 1" glib/gmacros.h
+ #replace_line "#elif defined(__GNUC__) && (__GNUC__ >= 4)" "#elif 1" gio/tests/modules/symbol-visibility.h
  make check
 }
 
@@ -656,7 +656,7 @@ test_janet() {
  sed -i "s|/\* #define JANET_THREAD_LOCAL _Thread_local \*/|#define JANET_THREAD_LOCAL _Thread_local|g" src/conf/janetconf.h
  sed -i "s|/\* #define JANET_USE_STDATOMIC \*/|#define JANET_USE_STDATOMIC|g" src/conf/janetconf.h
  # Enable computed goto
- replace_line "#if defined(__GNUC__) && !defined(__EMSCRIPTEN__)" "#if 1" src/core/vm.c
+ #replace_line "#if defined(__GNUC__) && !defined(__EMSCRIPTEN__)" "#if 1" src/core/vm.c
  make test
 }
 
@@ -671,8 +671,8 @@ test_jerryscript() {
  github_tar jerryscript-project jerryscript v3.0.0
  # shellcheck disable=SC2016
  sed -i 's|if(NOT (${CMAKE_C_COMPILER_ID} STREQUAL MSVC))|if(FALSE)|g' tests/unit-doc/CMakeLists.txt
- replace_line "#ifdef __GNUC__" "#if 1" jerry-ext/include/jerryscript-ext/autorelease.impl.h
- replace_line "#elif defined(__GNUC__)" "#elif 1" jerry-ext/include/jerryscript-ext/module.h
+ #replace_line "#ifdef __GNUC__" "#if 1" jerry-ext/include/jerryscript-ext/autorelease.impl.h
+ #replace_line "#elif defined(__GNUC__)" "#elif 1" jerry-ext/include/jerryscript-ext/module.h
  python3 tools/run-tests.py --unittest
  python3 tools/run-tests.py --jerry-tests
  python3 tools/run-tests.py --test262
@@ -735,8 +735,8 @@ test_liballegro5() {
 
 test_libarchive() {
  github_tar libarchive libarchive v3.8.8
- replace_line "#elif defined(__GNUC__)" "#elif 1" libarchive/archive_blake2.h
- replace_line "#if defined(__GNUC__)" "#if 1" libarchive/archive_write_set_format_cpio_binary.c
+ #replace_line "#elif defined(__GNUC__)" "#elif 1" libarchive/archive_blake2.h
+ #replace_line "#if defined(__GNUC__)" "#if 1" libarchive/archive_write_set_format_cpio_binary.c
  libtoolize
  autoreconf -fi
  fix_and_configure
@@ -771,9 +771,9 @@ test_libgc() {
  git_fetch https://github.com/bdwgc/bdwgc e8e5a4eb19d21c94b14c158ff39cc68a3e105d30 libgc
  sed -i 's|__atomic_compare_exchange_n(p, &ov, nv, 0,|atomic_compare_exchange_strong_explicit(p, \&ov, nv,|g'  include/private/gc_atomic_ops.h
  use_stdatomic 'typedef size_t AO_t' include/private/gc_atomic_ops.h
- sed -i 's/(defined(__GNUC__)/1 || (defined(__GNUC__)/g' cord/cordxtra.c
+ #sed -i 's/(defined(__GNUC__)/1 || (defined(__GNUC__)/g' cord/cordxtra.c
  use_stdatomic '#include <stdarg.h>' cord/cordxtra.c
- sed -i 's|defined(__GNUC__)|1|g' cord/cordprnt.c
+ #sed -i 's|defined(__GNUC__)|1|g' cord/cordprnt.c
  libtoolize
  sh autogen.sh
  fix_and_configure --disable-dynamic-loading --enable-threads=posix --with-libatomic-ops=none
@@ -786,7 +786,7 @@ test_libgit2(){
  sed -i 's|defined(GIT_BUILTIN_ATOMIC)|1|g' src/util/thread.h
  sed -i 's|__atomic_exchange(ptr, &newval, &foundval,|return atomic_exchange_explicit(ptr, newval,|g' src/util/thread.h
  sed -i 's|__atomic_compare_exchange(ptr, &foundval, &newval, false,|atomic_compare_exchange_strong_explicit(ptr, \&foundval, newval,|g' src/util/thread.h
- replace_line "#elif defined(__clang__) || defined(__GNUC__)" "#elif 1" deps/ntlmclient/utf8.h
+ #replace_line "#elif defined(__clang__) || defined(__GNUC__)" "#elif 1" deps/ntlmclient/utf8.h
  sed -i 's|__has_builtin(__builtin_add_overflow)|0|g' src/util/integer.h
 
  ${is_CI+ sed -i '/\-sonline/d' tests/libgit2/CMakeLists.txt } # flaky
@@ -802,7 +802,7 @@ test_libgmp() {
 
 test_libjansson() {
  github_tar akheron jansson v2.15.1
- replace_line "#if defined(__GNUC__) || defined(__clang__)" "#if 1" src/jansson.h
+ #replace_line "#if defined(__GNUC__) || defined(__clang__)" "#if 1" src/jansson.h
  convert_atomic_x_fetch src/jansson.h
  use_stdatomic "#include <stdio.h>" src/hashtable_seed.c
  cmake_init -DJANSSON_BUILD_DOCS=OFF -DHAVE_ATOMIC_BUILTINS=1
@@ -829,7 +829,7 @@ test_liblz4() {
 
 test_libmicrohttpd() {
  url_tar https://ftpmirror.gnu.org/gnu/libmicrohttpd/libmicrohttpd-1.0.6.tar.gz libmicrohttpd
- sed -i 's|defined(__GNUC__)|1|g' src/include/autoinit_funcs.h
+ #sed -i 's|defined(__GNUC__)|1|g' src/include/autoinit_funcs.h
  fix_and_configure
  make check
 }
@@ -896,8 +896,8 @@ test_libsamplerate() {
 test_libsodium() {
  url_tar https://github.com/jedisct1/libsodium/releases/download/1.0.21-RELEASE/libsodium-1.0.21.tar.gz libsodium
  fix_and_configure
- replace_line "#if !defined(__clang__) && !defined(__GNUC__)" "#if 0" src/libsodium/include/sodium/private/common.h
- replace_line "#if !defined(__clang__) && !defined(__GNUC__)" "#if 0" src/libsodium/include/sodium/export.h
+ #replace_line "#if !defined(__clang__) && !defined(__GNUC__)" "#if 0" src/libsodium/include/sodium/private/common.h
+ #replace_line "#if !defined(__clang__) && !defined(__GNUC__)" "#if 0" src/libsodium/include/sodium/export.h
  replace_line "#elif defined(HAVE_C11_MEMORY_FENCES)" "#elif defined(HAVE_C11_MEMORY_FENCES)\n#include <stdatomic.h>" src/libsodium/include/sodium/private/common.h
  make check
 }
@@ -1037,7 +1037,7 @@ test_mawk() {
 
 test_mbedtls() {
  url_bz https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-4.2.0/mbedtls-4.2.0.tar.bz2 mbedtls
- replace_line "    (defined(__GNUC__) || defined(__clang__)) && defined(MBEDTLS_ARCH_IS_X64)" "1" tf-psa-crypto/drivers/builtin/src/aesni.h
+ #replace_line "    (defined(__GNUC__) || defined(__clang__)) && defined(MBEDTLS_ARCH_IS_X64)" "1" tf-psa-crypto/drivers/builtin/src/aesni.h
  cmake_init
  make -j3 && ctest -j3
 }
@@ -1073,7 +1073,7 @@ test_micropython() {
  # inline MP_ALWAYSINLINE const in py/misc.h now compiles and links
  # correctly (verified against rcc's improved C99 inline linkage) --
  # no sed patch or CFLAGS_EXTRA workaround needed.
- replace_line "#if defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 8)" "#if 1" py/nlrx64.c
+ #replace_line "#if defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 8)" "#if 1" py/nlrx64.c
  sed -i 's|defined(LFS2_NO_INTRINSICS)|1|g' lib/littlefs/lfs2_util.h
  make -C ports/unix/ CC="$CC" V=1 VARIANT=standard MICROPY_PY_THREAD_GIL=1 test_full
  cd tests
@@ -1085,7 +1085,7 @@ test_mimalloc() {
  replace_line "project(libmimalloc C CXX)" "project(libmimalloc C)" CMakeLists.txt
  replace_line "set(CMAKE_CXX_STANDARD 17)" "" CMakeLists.txt
  replace_line "#include <immintrin.h>" "" include/mimalloc/bits.h
- replace_line "#if defined(__GNUC__) || defined(__clang__)" "#if 1" src/prim/prim.c
+ #replace_line "#if defined(__GNUC__) || defined(__clang__)" "#if 1" src/prim/prim.c
  cmake_init
  make && make test
 }
@@ -1316,9 +1316,9 @@ test_perl() {
 
 test_php() {
  github_tar php php-src php-8.5.8
- replace_line "#elif defined(__GNUC__) || defined(__INTEL_COMPILER) || defined(__SUNPRO_C) || defined(__TINYC__)" "#elif 1" ext/pcre/pcre2lib/sljit/sljitNativeX86_common.c
+ #replace_line "#elif defined(__GNUC__) || defined(__INTEL_COMPILER) || defined(__SUNPRO_C) || defined(__TINYC__)" "#elif 1" ext/pcre/pcre2lib/sljit/sljitNativeX86_common.c
  replace_line "#elif (defined(__i386__) || defined(__x86_64__)) && defined(__GNUC__)" "#elif 1" Zend/zend_multiply.h
- replace_line "#elif defined(__GNUC__) && defined(__x86_64__)" "#elif 1" Zend/zend_multiply.h
+ #replace_line "#elif defined(__GNUC__) && defined(__x86_64__)" "#elif 1" Zend/zend_multiply.h
  sed -i 's|#if __has_feature(c_atomic) && defined(__clang__)|#if 1\n#include <stdatomic.h>|g' Zend/zend_atomic.h
  sed -i 's|__c11_atomic_init(|atomic_store(|g' Zend/zend_atomic.h
  sed -i 's|__c11_atomic_|atomic_|g' Zend/zend_atomic.h
@@ -1349,10 +1349,10 @@ test_pixman() {
 
 test_postgres() {
  github_tar postgres postgres REL_18_4
- replace_line "#if defined(__GNUC__) || defined(__INTEL_COMPILER)" "#if 1" src/include/storage/s_lock.h
- replace_line "#if (defined(__x86_64__) || defined(_M_AMD64))" "#if 0" src/include/port/simd.h
- replace_line "#if defined(__GNUC__) || defined(__INTEL_COMPILER)" "#if 1" src/include/port/atomics.h
- replace_line "#if defined(__GNUC__) || defined(__INTEL_COMPILER)" "#if 1" src/include/port/atomics/arch-x86.h
+ #replace_line "#if defined(__GNUC__) || defined(__INTEL_COMPILER)" "#if 1" src/include/storage/s_lock.h
+ #replace_line "#if (defined(__x86_64__) || defined(_M_AMD64))" "#if 0" src/include/port/simd.h
+ #replace_line "#if defined(__GNUC__) || defined(__INTEL_COMPILER)" "#if 1" src/include/port/atomics.h
+ #replace_line "#if defined(__GNUC__) || defined(__INTEL_COMPILER)" "#if 1" src/include/port/atomics/arch-x86.h
  ./configure && make && make check
 }
 
@@ -1370,9 +1370,9 @@ test_ptmalloc() {
 
 test_python() {
  github_tar python cpython v3.14.6
- replace_line "#if defined(__GNUC__) || defined(__clang__)" "#if 1" Include/pyport.h
- replace_line "#if defined(__linux__) && (defined(__GNUC__) || defined(__clang__))" "#if 1" Include/internal/pycore_debug_offsets.h
- replace_line "#elif defined(__GNUC__) || defined(__clang__)" "#elif 1" Objects/mimalloc/init.c
+ #replace_line "#if defined(__GNUC__) || defined(__clang__)" "#if 1" Include/pyport.h
+ #replace_line "#if defined(__linux__) && (defined(__GNUC__) || defined(__clang__))" "#if 1" Include/internal/pycore_debug_offsets.h
+ #replace_line "#elif defined(__GNUC__) || defined(__clang__)" "#elif 1" Objects/mimalloc/init.c
  skip_tests=(
   ${is_CI+ test_asyncio test_socket }
   test_os # https://github.com/python/cpython/issues/126112
@@ -1411,7 +1411,7 @@ test_quickjs() {
 
 test_redis() {
  github_tar redis redis 8.6.4
- replace_line "#    if defined(__GNUC__) && !(defined(__clang__) && defined(__cplusplus))" "#if 1" src/redismodule.h
+ #replace_line "#    if defined(__GNUC__) && !(defined(__clang__) && defined(__cplusplus))" "#if 1" src/redismodule.h
  sed -i 's|asm volatile|__asm volatile|g' deps/hdr_histogram/hdr_atomic.h
  convert_atomic_x_fetch deps/hdr_histogram/hdr_atomic.h
  use_stdbit "#include <stdint.h>" deps/hdr_histogram/hdr_histogram.c
@@ -1443,7 +1443,7 @@ test_redis() {
 
 test_valkey() {
  github_tar valkey-io valkey 9.1.0
- replace_line "#if defined(__GNUC__) && !(defined(__clang__) && defined(__cplusplus))" "#if 1" src/valkeymodule.h
+ #replace_line "#if defined(__GNUC__) && !(defined(__clang__) && defined(__cplusplus))" "#if 1" src/valkeymodule.h
  sed -i 's|asm volatile|__asm volatile|g' deps/hdr_histogram/hdr_atomic.h
  convert_atomic_x_fetch deps/hdr_histogram/hdr_atomic.h
  use_stdbit "#include <stdint.h>" deps/hdr_histogram/hdr_histogram.c
@@ -1469,7 +1469,7 @@ test_valkey() {
 
 test_rpmalloc() {
  github_tar mjansson rpmalloc 2.0.1
- replace_line "#if defined(__clang__) || defined(__GNUC__)" "#if 1" rpmalloc/rpmalloc.h
+ #replace_line "#if defined(__clang__) || defined(__GNUC__)" "#if 1" rpmalloc/rpmalloc.h
  use_stdbit '#include <stdint.h' rpmalloc/rpmalloc.c
  python3 configure.py
  sed -i 's|-fstrict-aliasing||g' build.ninja
@@ -1501,8 +1501,9 @@ test_ruby() {
 
 test_rvvm() {
  git_fetch https://github.com/LekKit/RVVM 2c4c5e32eb5c97d1b76c289ccdc665a54dc23c7c rvvm
- sed -i 's|defined(__SSE2__) && defined(__SSE2_MATH__)|1|g' src/util/fpu_lib.c
- make test CC="$CC" CFLAGS='-std=c23 -DSDL_DISABLE_IMMINTRIN_H' USE_SDL=2
+ #sed -i 's|defined(__SSE2__) && defined(__SSE2_MATH__)|1|g' src/util/fpu_lib.c
+ # -DSDL_DISABLE_IMMINTRIN_H
+ make test CC="$CC" USE_SDL=2
 }
 
 test_samba() {
@@ -1512,8 +1513,8 @@ test_samba() {
  use_stdatomic '#include <stdarg.h>' third_party/socket_wrapper/socket_wrapper.c
  use_stdatomic '#include <stdarg.h>' third_party/quic_ko_wrapper/quic_ko_wrapper.c
  sed -i 's|elif x.startswith(('\''-m'\'', '\''-f'\''|elif x != '\''-fstack-protector-strong'\'' and x.startswith(('\''-m'\'', '\''-f'\''|g' third_party/waf/waflib/Tools/c_config.py
- replace_line "#if defined(__clang__) || defined(__GNUC__) || defined(__SUNPRO_C)" "#if 1" third_party/heimdal/include/heim_threads.h
- sed -i 's/defined(_MSC_VER) && !defined(__clang__) &&/1||/g' third_party/ngtcp2/lib/ngtcp2_ringbuf.c
+ #replace_line "#if defined(__clang__) || defined(__GNUC__) || defined(__SUNPRO_C)" "#if 1" third_party/heimdal/include/heim_threads.h
+ #sed -i 's/defined(_MSC_VER) && !defined(__clang__) &&/1||/g' third_party/ngtcp2/lib/ngtcp2_ringbuf.c
  ./configure --without-json --without-ad-dc --enable-selftest --without-ldap --without-ldb-lmdb --without-ads --with-shared-modules='!vfs_snapper,!vfs_nfs4acl_xattr'
  LD_LIBRARY_PATH="$PWD"/bin/default/lib/util:$PWD/bin/default/libcli/util:$PWD/bin/default/librpc:$PWD/bin/default/nsswitch/libwbclient:$PWD/bin/default/source3:$PWD/bin/default/source3/libsmb make quicktest -j4
 }
@@ -1686,8 +1687,8 @@ test_unqlite() {
 
 test_utf8h() {
  git_fetch https://github.com/sheredom/utf8.h 3821317e4185d91c5f69e8e639295881c7f51812 utf8h
- replace_line "#elif defined(__clang__) || defined(__GNUC__) || defined(__TINYC__)" "#elif 1" test/utest.h
- replace_line "#elif defined(__clang__) || defined(__GNUC__)" "#elif 1" utf8.h
+ #replace_line "#elif defined(__clang__) || defined(__GNUC__) || defined(__TINYC__)" "#elif 1" test/utest.h
+ #replace_line "#elif defined(__clang__) || defined(__GNUC__)" "#elif 1" utf8.h
  "$CC" test/main.c -I./ -o run_tests
  ./run_tests
 }
@@ -1720,7 +1721,7 @@ test_vlc() {
  fix_configure
  CFLAGS=-fdisable-visibility ./configure --disable-lua --disable-avcodec --disable-swscale
  touch src/revision.txt
- replace_line "# ifdef __GNUC__" "#if 1" src/modules/bank.c
+ #replace_line "# ifdef __GNUC__" "#if 1" src/modules/bank.c
  make check
 }
 
@@ -1825,7 +1826,7 @@ test_zsh() {
 
 test_zstd() {
  github_tar facebook zstd v1.5.7
- replace_line "#if defined(__ELF__) && defined(__GNUC__)" "#if 1" lib/decompress/huf_decompress_amd64.S
+ #replace_line "#if defined(__ELF__) && defined(__GNUC__)" "#if 1" lib/decompress/huf_decompress_amd64.S
  make check
 }
 
@@ -1887,8 +1888,8 @@ build_ellipsis() {
 
 build_erlang() {
  github_tar erlang otp OTP-29.0.3
- replace_line "#  if defined(__GNUC__)" "#if 1" erts/include/internal/ethread.h
- replace_line "#if defined(__GNUC__)" "#if 1" erts/include/internal/ethread_inline.h
+ #replace_line "#  if defined(__GNUC__)" "#if 1" erts/include/internal/ethread.h
+ #replace_line "#if defined(__GNUC__)" "#if 1" erts/include/internal/ethread_inline.h
  sed -i 's|-funroll-loops||g' lib/megaco/src/flex/Makefile.in
  CFLAGS='-O -fPIC' ./configure --enable-bootstrap-only
  OTP_TINY_BUILD=true make
@@ -1998,7 +1999,7 @@ build_libsoldout() {
 build_luajit() {
  git_fetch https://github.com/LuaJIT/LuaJIT 3c4f9fe2052b8d08a917ac0d5f38563f0297b5a3 luajit
  sed -i 's|-O2 -fomit-frame-pointer|-O2 -DLUAJIT_NO_UNWIND|g' src/Makefile
- replace_line "#if defined(__GNUC__) || defined(__clang__) || defined(__psp2__)" "#if 1" src/lj_def.h
+ #replace_line "#if defined(__GNUC__) || defined(__clang__) || defined(__psp2__)" "#if 1" src/lj_def.h
  use_stdbit "#include <stdlib.h>" src/lj_def.h
  make CC="$CC"
 
@@ -2109,7 +2110,7 @@ EOF
 
 build_q2rtx() {
  github_clone NVIDIA Q2RTX v1.8.1
- replace_line "#if (defined __GNUC__)" "#if 1" inc/common/intreadwrite.h
+ #replace_line "#if (defined __GNUC__)" "#if 1" inc/common/intreadwrite.h
  replace_line "#define inline __inline" "" inc/shared/config.h
  sed -i 's|-msse2 -mfpmath=sse||g' CMakeLists.txt
  cmake_init -DUSE_SYSTEM_CURL=on -DUSE_SYSTEM_OPENAL=on -DUSE_SYSTEM_SDL2=on -DUSE_SYSTEM_ZLIB=on -DCONFIG_BUILD_GLSLANG=no \
@@ -2241,14 +2242,14 @@ bootstrap_uclibcng() {
  sed -i 's|:$(DEVEL_PREFIX)|:$(PREFIX)$(DEVEL_PREFIX)|g' Makefile.in
  # shellcheck disable=SC2016
  sed -i 's|:$(RUNTIME_PREFIX)|:$(PREFIX)$(RUNTIME_PREFIX)|g' Makefile.in
- replace_line '#ifdef\t__GNUC__' '#if 1' include/alloca.h
- replace_line '#if defined __GNUC__ && __GNUC__ >= 2' '#if 1' include/byteswap.h
- replace_line '# if defined __GNUC__ && __GNUC__ >= 2' '#if 1' libc/sysdeps/linux/common/bits/sigset.h
- replace_line '#if __GNUC_PREREQ (3,1)' '#if 1' include/sys/cdefs.h
+ #replace_line '#ifdef\t__GNUC__' '#if 1' include/alloca.h
+ #replace_line '#if defined __GNUC__ && __GNUC__ >= 2' '#if 1' include/byteswap.h
+ #replace_line '# if defined __GNUC__ && __GNUC__ >= 2' '#if 1' libc/sysdeps/linux/common/bits/sigset.h
+ #replace_line '#if __GNUC_PREREQ (3,1)' '#if 1' include/sys/cdefs.h
  sed -i 's|# define __inline||g' include/sys/cdefs.h
- replace_line '#if __GNUC__' '#if 1' libc/misc/ftw/ftw.c
- sed -i 's|defined __ICC|1|g' include/libc-symbols.h
- sed -i 's|__GNUC__ < 2|(defined(__GNUC__) \&\& &)|g' include/glob.h
+ #replace_line '#if __GNUC__' '#if 1' libc/misc/ftw/ftw.c
+ #sed -i 's|defined __ICC|1|g' include/libc-symbols.h
+ #sed -i 's|__GNUC__ < 2|(defined(__GNUC__) \&\& &)|g' include/glob.h
  sed -i 's|__VERSION__||g' libc/misc/internals/version.c
  perl -i -p0e 's|int rename\(const char \*oldpath, const char \*newpath\)\n\{\n\t_syscall5|static inline _syscall5|g' libc/sysdeps/linux/common/rename.c
  perl -i -p0e 's|\treturn renameat2|int rename\(const char \*oldpath, const char \*newpath\)\n\{\n\treturn renameat2|g' libc/sysdeps/linux/common/rename.c
