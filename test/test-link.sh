@@ -257,14 +257,27 @@ EOF
 extern int answer;
 int main(void) { return answer == 42 ? 0 : 1; }
 EOF
-    if "$RCC" -shared -fPIC "$TMP/onlydata.c" -o "$TMP/libonlydata.dll" \
-            -Wl,--out-implib,"$TMP/libonlydata.lib" 2>"$TMP/e5c" \
-        && [ -f "$TMP/libonlydata.lib" ] \
-        && "$RCC" "$TMP/dmain.c" "$TMP/libonlydata.lib" -o "$TMP/dprog" 2>>"$TMP/e5c" \
-        && runlib "$TMP/dprog"; then
+    # The windows CI saw this case fail once with an empty error (a flaky
+    # mingw/wine hiccup that passed on immediate rerun), so retry up to 3
+    # times before reporting a real failure. Each attempt rebuilds every
+    # artifact so a stale .dll/.lib/.exe from a failed earlier attempt can
+    # never satisfy the `-f`/runlib checks.
+    ok=0
+    for attempt in 1 2 3; do
+        rm -f "$TMP/libonlydata.dll" "$TMP/libonlydata.lib" "$TMP/dprog" "$TMP/dprog.exe"
+        if "$RCC" -shared -fPIC "$TMP/onlydata.c" -o "$TMP/libonlydata.dll" \
+                -Wl,--out-implib,"$TMP/libonlydata.lib" 2>"$TMP/e5c" \
+            && [ -f "$TMP/libonlydata.lib" ] \
+            && "$RCC" "$TMP/dmain.c" "$TMP/libonlydata.lib" -o "$TMP/dprog" 2>>"$TMP/e5c" \
+            && runlib "$TMP/dprog"; then
+            ok=1
+            break
+        fi
+    done
+    if [ "$ok" -eq 1 ]; then
         pass "import lib data-only export (.lib)"
     else
-        fail "import lib data-only export (.lib)" "$(tr '\n' ' ' < "$TMP/e5c")"
+        fail "import lib data-only export (.lib)" "$(tr '\n' ' ' < "$TMP/e5c") (after $attempt attempts)"
     fi
 else
     printf '  %-44s SKIP (not a Windows target)\n' "import lib data-only export (.lib)"
