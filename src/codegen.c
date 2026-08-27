@@ -15728,8 +15728,28 @@ VReg gen(Node *node) {
         if (!rhs_in_x16 && r_rhs != r_lhs)
             free_reg(r_rhs);
 #else
-        asm_movq_r_xmm(cg_sec, X86_XMM0, r_lhs); // fcvt s0, d0
-        asm_movq_r_xmm(cg_sec, X86_XMM1, r_rhs); // fcvt d0, s0
+        // If gen(rhs) reused r_lhs's physical register (register pressure
+        // spilled the lhs during gen(rhs), and alloc_reg() returned the same
+        // index for the rhs), the register now holds the rhs value, not the
+        // lhs.  Reload the spilled lhs before feeding both to the FP op --
+        // otherwise xmm0 and xmm1 both get the rhs (a constant) and the op
+        // degenerates into a self-op (e.g. z * C becomes C * C).
+        bool spilled_lhs = (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs)));
+        if (spilled_lhs) {
+            // The shared register still holds the rhs value (e.g. a constant);
+            // capture it into xmm1 BEFORE reloading the spilled lhs into that
+            // same register, then load the lhs into xmm0.  Otherwise both
+            // xmm operands end up with the lhs and the FP op degenerates into
+            // a self-op (z * C becomes z * z).
+            asm_movq_r_xmm(cg_sec, X86_XMM1, r_rhs);
+            asm_mov_rbp_reg(cg_sec, r_lhs, 8, spill_offset(r_lhs));
+            spilled_regs &= ~(1 << r_lhs);
+            pop_spill_slot(r_lhs); // spilled lhs reloaded; pop the slot
+            asm_movq_r_xmm(cg_sec, X86_XMM0, r_lhs);
+        } else {
+            asm_movq_r_xmm(cg_sec, X86_XMM0, r_lhs); // fcvt s0, d0
+            asm_movq_r_xmm(cg_sec, X86_XMM1, r_rhs); // fcvt d0, s0
+        }
         free_reg(r_rhs);
         __attribute__((unused)) char *inst = "";
         if (node->kind == ND_ADD) inst = "addsd";

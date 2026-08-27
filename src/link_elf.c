@@ -857,17 +857,14 @@ static int resolve_archives(LinkState *s) {
         }
     }
 
-    // A .a given directly as a positional link input (not via -l<name>)
-    // -- e.g. `rcc main.c libmath.a -o prog` -- was previously never
-    // routed through load_archive() at all: the -l/-L scan above only
-    // recognizes "-l"-prefixed tokens, so a bare archive path sat in
-    // s->libs unread. Any symbol only that archive defines then stayed
-    // permanently undefined, silently exported as an unresolvable
-    // DT_NEEDED-style import (native linking still "succeeds", but the
-    // resulting binary fails at load/run time with a dynamic-loader
-    // "undefined symbol" error instead of a link-time one). Load every
-    // bare *.a token here directly by its given path -- no name-based
-    // search needed, the path is already exact.
+    // Positional link inputs (.a archives and .o object files) given
+    // directly by path -- e.g. `rcc main.c libmath.a foo.o -o prog` --
+    // are placed in s->libs by the driver but previously only .a files
+    // were routed through load_archive(): bare .o paths sat unread and
+    // the symbols they define stayed permanently undefined (the native
+    // link silently succeeded but the resulting binary resolved those
+    // symbols to libc or emitted a DT_NEEDED-style import). Load every
+    // bare *.a and *.o positional token here by its exact path.
     {
         const char *ap = s->libs;
         while (ap && *ap) {
@@ -876,12 +873,16 @@ static int resolve_archives(LinkState *s) {
             const char *aend = ap;
             while (*aend && *aend != ' ') aend++;
             size_t alen = (size_t)(aend - ap);
-            if (ap[0] != '-' && alen > 2 && alen < 600 &&
-                strncmp(aend - 2, ".a", 2) == 0) {
-                char apath[600];
-                memcpy(apath, ap, alen);
-                apath[alen] = '\0';
-                if (load_archive(s, apath) != 0) return -1;
+            if (ap[0] != '-' && alen > 2 && alen < 600) {
+                char fpath[600];
+                memcpy(fpath, ap, alen);
+                fpath[alen] = '\0';
+                if (strncmp(aend - 2, ".a", 2) == 0) {
+                    if (load_archive(s, fpath) != 0) return -1;
+                } else if (strncmp(aend - 2, ".o", 2) == 0 ||
+                           (alen > 3 && (strncmp(aend - 3, ".lo", 3) == 0 || strncmp(aend - 3, ".os", 3) == 0 || strncmp(aend - 3, ".od", 3) == 0))) {
+                    if (link_load_object(s, fpath) != 0) return -1;
+                }
             }
             ap = aend;
         }

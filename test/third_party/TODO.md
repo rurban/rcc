@@ -524,50 +524,48 @@ from whatever precedes a macro invocation onto the first token of its
 expansion) looks entirely unhandled and would need separate treatment.
 `test_micropython` stays on `unfixed.txt` pending this fix.
 
-### Investigated, not fixed (2026-08-25, static-archive PC32-relocation precision divergence)
+### Fixed (2026-08-27, test_jerryscript -- x86 FP binary-op register-spill + isinf sign)
 
-**jerryscript's `unittests-math` suite's `unit-test-math` fails 26/91
-acos/asin sub-cases** (bit-exact comparisons against jerry-math's own,
-from-scratch fdlibm-derived software `acos`/`asin`/`sqrt` implementation,
-e.g. `acos(0.5)` returns `0x3ff0c2a6874d5540` instead of the expected
-`0x3ff0c152382d7366`) -- confirmed NOT a codegen bug (the compiled
-object code is bit-for-bit identical either way; verified via `cmp`).
-Root-caused to rcc's native ELF linker (`src/link_elf.c`): the SAME
-`acos.o`+`sqrt.o`, linked as loose object-file arguments
-(`rcc driver.c acos.o sqrt.o -lm`), produce the numerically-correct
-result; linked with `acos.o` pulled from a **static archive** instead
-(`rcc driver.c sqrt.o -L. -lacos_only -lm`, `libacos_only.a` containing
-only `acos.o`), the identical object's own float-literal constant loads
-(`crc32`-unrelated `.LF0`../`.LFn` PC32-relative `.rodata` references)
-resolve to wrong addresses -- reproduces with a single archive member,
-no cross-object collision needed. Debug instrumentation of
-`apply_dynamic_relocs()`'s `RL_PC32` case (the function that actually
-applies these relocations for a dynamically-linked executable, NOT
-`link_apply_relocs()` -- that's the dead-for-non-`-static` "Static
-link: apply relocations normally" branch) showed only 1 of `acos.o`'s
-51 own `.LF*`-targeted relocations reaching that switch case when
-linked directly, vs. all 51 when `acos.o` is archive-loaded -- meaning
-~50 of them are resolved through some OTHER, not-yet-located mechanism
-in the direct-load case (correctly), which the archive-load path
-doesn't take, falling through to `apply_dynamic_relocs()` for
-everything instead (each individual entry's own `S` computation looked
-arithmetically consistent in isolation, so the bug is in _which_
-relocations take which path, not an arithmetic error in this switch
-case itself). Not root-caused further this session -- next step is
-tracing where/why direct-loaded objects' local-symbol PC32 relocations
-bypass `apply_dynamic_relocs()` almost entirely while archive-loaded
-ones don't, likely in whatever pass classifies a relocation as
-"needs the dynamic/PLT/GOT machinery at all" vs. "purely link-time
-resolvable, apply directly" ahead of this function. Minimal repro
-preserved: any two-file jerry-math-style .c pair (a function with
-several `#define`d `double` constants baked into `.rodata`, referenced
-via PC32-relative loads, calling a second function from a different
-TU) reproduces with `ar qc lib.a a.o && rcc main.c b.o -L. -la -lm`
-vs. `rcc main.c a.o b.o -lm`. `test_jerryscript` stays on
-`unfixed.txt` pending this fix (its `unittests`/`unittests-init-fini`
-build variants each show the identical `unit-test-ext-arg` failure too
--- `Assertion 'arg2 == 10.5' failed`, not yet investigated, possibly
-unrelated).
+**jerryscript's `unittests-math` suite's `unit-test-math` now passes
+all 923 checks** (previously 26/91 acos/asin sub-cases failed, e.g.
+`acos(0.5)` returned `0x3ff0c2a6874d5540` instead of
+`0x3ff0c152382d7366`). Root cause was NOT the linker (the earlier
+"static-archive PC32-relocation divergence" diagnosis was wrong), but
+two real codegen bugs:
+
+1. **x86-64 FP binary-op register-spill corruption** (src/codegen.c
+   `gen`, the flonum ADD/SUB/MUL/DIV path): computing a Horner-chain
+   polynomial like `z * (pS0 + z * (pS1 + ...))` (jerry-math's acos/
+   asin `p`/`q` coefficients) builds a deeply nested FP expression.
+   Under register pressure, `gen(rhs)` for an inner `z * C` reused the
+   VReg `gen(lhs)` had allocated for `z` (alloc_reg() spilled the lhs
+   and returned the same index). The x86-64 path then loaded that SAME
+   register into both `xmm0` and `xmm1`, so `z * C` degenerated into
+   `C * C` and the polynomial evaluated with a wrong coefficient. The
+   ARM64 path already handled this (preserving rhs in `x16`); the x86
+   path did not. Now, when `r_lhs == r_rhs && (spilled_regs & (1
+<<r_lhs))`, the rhs is captured into `xmm1` first, the spilled lhs is
+   reloaded into `xmm0`, and the op proceeds correctly.
+2. **`__builtin_isinf` lost the sign** (src/cg_builtins.c): glibc's
+   `isinf(x)` returns +1 for +INFINITY, -1 for -INFINITY, 0 for finite
+   (sign-preserving, not a boolean). rcc's `__builtin_isinf` only
+   returned 0/1, so `isinf(-INFINITY)` was 1 instead of -1. The 0/1 inf
+   flag is now negated when the original value's sign bit is set.
+
+The "loose vs archive" divergence that misled the earlier diagnosis
+was actually the driver dropping bare `.o` positional arguments: the
+native linker (`src/link_elf.c` `resolve_archives`) only loaded
+positional `.a` files from `s->libs`, so `rcc main.c a.o b.o -lm`
+silently linked WITHOUT `a.o`/`b.o` -- `acos` resolved to libc and
+gave the "correct" value, while the archive path (which loaded the
+member) exposed the real codegen bug. Bare `.o`/`.lo`/`.os`/`.od`
+positional tokens in `s->libs` are now loaded via `link_load_object`
+too.
+
+- New regression tests: `test/test_fp_spill_poly.c` (the Horner-chain
+  polynomial that triggers the x86 FP spill corruption; asserts the
+  exact `0x3ff0c152382d7366` bit pattern) and `test/test_isinf_sign.c`
+  (isinf sign-preserving: +1/-1/0).
 
 ### Fixed (2026-08-25, unfixed.txt sweep -- CRC32/PCMPEQx memory-operand asm gaps + -x c-header driver rejection)
 

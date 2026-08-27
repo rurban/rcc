@@ -522,8 +522,10 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
         }
     }
 
-    /* __builtin_isinf(x): true if exponent all-1s, mantissa 0.
-         * On x86: clear sign bit, compare against the inf bit pattern. */
+    /* __builtin_isinf(x): like glibc's isinf macro, returns +1 for +inf,
+         * -1 for -inf, 0 for finite (not just a boolean 0/1).  The sign of
+         * the original value is preserved: clear the sign bit to test the
+         * inf pattern, then re-apply the sign to the 0/1 result. */
     if (is_isinf) {
         Node *arg = node->args;
         if (arg && !arg->next) {
@@ -531,16 +533,20 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
             VReg r = alloc_reg();
             VReg r_tmp = alloc_reg();
 #ifdef ARCH_ARM64
-            // rcc promotes all floats to doubles in GP registers;
-            // use 64-bit operations regardless of the source type size
-            asm_mov_reg_reg(cg_sec, r, r_arg, 8);
+            // is_neg = sign bit of x; isinf = (|x| == inf pattern)
+            asm_mov_reg_reg(cg_sec, r, r_arg, 8); // r = x
             emit_mov_imm64(REG(r_tmp), 0x7fffffffffffffffULL);
-            asm_and_reg_reg(cg_sec, r, r_tmp, 8);
+            asm_and_reg_reg(cg_sec, r, r_tmp, 8); // r = |x|
             emit_mov_imm64(REG(r_tmp), 0x7ff0000000000000ULL);
             asm_cmp_reg_reg(cg_sec, r, r_tmp, 8);
-            asm_cset(cg_sec, r, ARM64_EQ);
+            asm_cset(cg_sec, r, ARM64_EQ); // r = isinf (0/1)
+            // Apply sign: if x < 0, negate r.
+            emit_mov_imm64(REG(r_tmp), 0x8000000000000000ULL);
+            asm_and_reg_reg(cg_sec, r_tmp, r_arg, 8); // r_tmp = x & signbit
+            asm_cmp_zero(cg_sec, r_tmp, 8); // cmp r_tmp, #0
+            asm_cneg_mi(cg_sec, r, 8); // cneg r, r, mi (negate if negative)
 #else
-            // Same on x86_64: floats are stored as doubles in GP regs
+            // r = (|x| == inf) ? 1 : 0
             asm_mov_reg_reg(cg_sec, r, r_arg, 8); // movq r_arg, r
             asm_movabs_phy(cg_sec, REG(r_tmp), 0x7fffffffffffffffULL); // movabsq $0x7fff..., r_tmp
             asm_and_reg_reg(cg_sec, r, r_tmp, 8); // andq r_tmp, r (clear sign)
@@ -548,6 +554,15 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
             asm_cmp_reg_reg(cg_sec, r, r_tmp, 8); // cmpq r_tmp, r
             asm_setcc(cg_sec, X86_RAX, X86_E); // sete %al
             asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1); // movzbl %al, %er
+            // Negate r if the original x was negative (sign bit set).
+            asm_movabs_phy(cg_sec, REG(r_tmp), 0x8000000000000000ULL);
+            asm_test_reg_reg(cg_sec, r_arg, r_tmp, 8); // testq r_tmp, r_arg
+            {
+                size_t o = asm_jcc_label(cg_sec, X86_E); // je done (x >= 0)
+                asm_fixup_add(cg_sec, o, format(".L.isinf_done.%d", ++rcc_label_count), 1);
+            }
+            x86_neg_r(cg_sec, 8, REG(r)); // negq r
+            cg_def_label(format(".L.isinf_done.%d", rcc_label_count));
 #endif
             free_reg(r_tmp);
             free_reg(r_arg);
