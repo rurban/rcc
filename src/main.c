@@ -1410,7 +1410,11 @@ int main(int argc, char **argv) {
             // _Decimal64 ABI (XMM registers) for __bid_adddd3, incompatible
             // with rcc's plain bit-pattern ABI (GP registers) emitted for
             // the same symbol names. Our lib/libdfp.a is built for that ABI.
+#ifdef _WIN32
+            xappendf(&libs, &libs_len, &libs_cap, " %s/../lib/libdfp.lib", RCC_INCDIR);
+#else
             xappendf(&libs, &libs_len, &libs_cap, " %s/../lib/libdfp.a", RCC_INCDIR);
+#endif
         }
         if (native_link_capable) {
             int n_link_objs = 0;
