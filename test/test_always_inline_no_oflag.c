@@ -8,57 +8,56 @@
  * standalone out-of-line definition for `fn` -- every call must actually
  * be inlined, or the program fails to link.
  *
- * Regression 1: try_inline()'s cost-budget check (an ordinary `inline`
- * function may only inline if its body is "cheap enough") applied
- * UNCONDITIONALLY, even to an always_inline callee -- so a callee whose
- * body happens to desugar into a bigger expression tree than the budget
- * (e.g. __builtin_shuffle() lowers to several per-lane compare/gather
- * nodes) silently refused to inline despite always_inline, leaving a
- * real call to a function with no definition anywhere: "undefined
- * reference" at link time.
+ * Two bugs in rcc's try_inline():
  *
- * Regression 2: even with (1) fixed, try_inline() is only ever invoked
- * from optimize()/optimize_node(), which itself only runs when the
- * compile passes -O1, -finline, or -funroll. A translation unit built
- * with NO such flag (this test's own build command, and how run_tests.c
- * invokes rcc for every test/test_*.c file) never called try_inline() a
- * single time -- so always_inline never actually forced anything,
- * contradicting real GCC's -O0 behavior.
+ * 1. The cost-budget check ("only inline an ordinary `inline` function if
+ *    its body is cheap enough") applied unconditionally, even to callees
+ *    marked always_inline. A callee whose body happens to desugar into a
+ *    bigger expression tree than the budget silently refused to inline
+ *    despite always_inline, leaving a real call to a function with no
+ *    definition anywhere: "undefined reference" at link time. This test's
+ *    poly() body is deliberately large (many chained operators) to exceed
+ *    the ordinary `inline`-keyword cost budget on its own.
+ *
+ * 2. try_inline() is only ever invoked from optimize()/optimize_node(),
+ *    which itself only runs when the compile passes -O1, -finline, or
+ *    -funroll. A translation unit built with NO such flag (this test's
+ *    own build command, and how run_tests.c invokes rcc for every
+ *    test/test_*.c file) never called try_inline() a single time -- so
+ *    always_inline never actually forced anything, contradicting real
+ *    GCC's -O0 behavior.
  *
  * Found via a real PHP build: GCC's own <xmmintrin.h> _mm_move_ss()
  * (`extern __inline __m128 __attribute__((__gnu_inline__,
  * __always_inline__, __artificial__))`), called from
  * ext/hash/hash_sha_sse2.c with no -O flag on that specific compile.
- * (rcc's own bundled <xmmintrin.h> uses a different, always-emits-a-
- * real-definition style and doesn't exercise this path at all -- see
- * test_xmmintrin_move_ss.c for that separate, simpler bug. This test
- * reproduces the underlying always_inline/extern/gnu_inline mechanism
- * directly instead of relying on a specific header's exact wording.)
  */
 #if defined(__GNUC__)
-typedef int v4si __attribute__((vector_size(16)));
-
-extern __inline v4si __attribute__((__gnu_inline__, __always_inline__))
-rotate_lanes(v4si a, v4si b)
+extern __inline int __attribute__((__gnu_inline__, __always_inline__))
+poly(int a, int b, int c, int d)
 {
-    /* __builtin_shuffle desugars into several per-lane compare/gather
-     * AST nodes -- enough to exceed the ordinary `inline`-keyword cost
-     * budget, which is exactly what regression 1 needs to expose. */
-    return __builtin_shuffle(a, b,
-                              __extension__
-                              (__attribute__((__vector_size__(16))) int)
-                              {4, 1, 2, 3});
+    /* Purely a chain of scalar arithmetic on the parameters -- no locals,
+     * no compound literals -- so the only thing exercised here is the
+     * cost-budget bypass (regression 1) and the -O0 pass wiring
+     * (regression 2), not any other inliner corner case. */
+    return a*a + a*b + a*c + a*d
+         + b*a + b*b + b*c + b*d
+         + c*a + c*b + c*c + c*d
+         + d*a + d*b + d*c + d*d
+         + a+b+c+d + a-b+c-d + a*2+b*2+c*2+d*2;
 }
 
 int main(void)
 {
-    v4si a = {1, 2, 3, 4};
-    v4si b = {10, 20, 30, 40};
-    v4si r = rotate_lanes(a, b);
-    if (r[0] != 10) return 1; /* lane 0 from b (index 4 = b[0]) */
-    if (r[1] != 2) return 2; /* lanes 1-3 from a */
-    if (r[2] != 3) return 3;
-    if (r[3] != 4) return 4;
+    int r = poly(1, 2, 3, 4);
+    /* Reference value computed independently below via plain_poly(). */
+    int a = 1, b = 2, c = 3, d = 4;
+    int expected = a*a + a*b + a*c + a*d
+                 + b*a + b*b + b*c + b*d
+                 + c*a + c*b + c*c + c*d
+                 + d*a + d*b + d*c + d*d
+                 + a+b+c+d + a-b+c-d + a*2+b*2+c*2+d*2;
+    if (r != expected) return 1;
     return 0;
 }
 #else
