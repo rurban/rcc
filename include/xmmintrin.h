@@ -143,6 +143,9 @@ __rcc_inline __m128 _mm_movehl_ps(__m128 __a, __m128 __b) {
 __rcc_inline __m128 _mm_movelh_ps(__m128 __a, __m128 __b) {
     return (__m128){__a[0], __a[1], __b[0], __b[1]};
 }
+__rcc_inline __m128 _mm_move_ss(__m128 __a, __m128 __b) {
+    return (__m128){__b[0], __a[1], __a[2], __a[3]};
+}
 
 // Minimal __m64 support: just enough to store the low/high 64 bits (two
 // packed floats) of an __m128 through a `__m64 *` pointer, matching real
