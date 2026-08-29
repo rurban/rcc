@@ -547,6 +547,13 @@ static void cast_funcall_args(Node *call) {
         check_type(*arg);
         if (!(*arg)->ty)
             continue;
+        // C23: a nullptr_t parameter may only be passed a null pointer
+        // constant or another nullptr_t value (same rule as assigning to
+        // a nullptr_t object -- a function call is just parameter
+        // initialization). A float or an integer constant broken by an
+        // intervening non-integer cast doesn't qualify.
+        if (pt->kind == TY_NULLPTR_T && !is_null_value_or_nullptr(*arg))
+            error_tok((*arg)->tok, "incompatible type for argument (expected 'nullptr_t')");
         bool arg_float = is_flonum((*arg)->ty);
         bool param_float = is_flonum(pt);
         bool arg_int = is_integer((*arg)->ty);
@@ -9454,8 +9461,13 @@ static Node *stmt(Token **rest, Token *tok) {
 
             if (has_semi) {
                 node->init = declaration(&tok, tok);
-                if (!equalc(tok, ")"))
+                if (!equalc(tok, ")")) {
                     node->cond = expr(&tok, tok);
+                    check_type(node->cond);
+                    if (node->cond->ty && !is_integer(node->cond->ty))
+                        error_tok(node->cond->tok,
+                                  "switch quantity not an integer");
+                }
             } else {
                 VarAttr attr = {};
                 Type *base = declspec(&tok, tok, &attr);
@@ -9475,6 +9487,8 @@ static Node *stmt(Token **rest, Token *tok) {
                 }
                 node->init = head.next;
                 node->cond = new_var_node(var, tok);
+                if (!is_integer(var->ty))
+                    error_tok(node->cond->tok, "switch quantity not an integer");
             }
 
             tok = skip(tok, ")");
@@ -9501,6 +9515,9 @@ static Node *stmt(Token **rest, Token *tok) {
         EnumConst *saved_enum = enum_consts;
         EnumLog *saved_enum_log = enum_scope_checkpoint();
         node->cond = expr(&tok, tok);
+        check_type(node->cond);
+        if (node->cond->ty && !is_integer(node->cond->ty))
+            error_tok(node->cond->tok, "switch quantity not an integer");
         tok = skip(tok, ")");
         Node *saved = current_switch;
         Node *saved_ctrl = current_ctrl;
@@ -9766,6 +9783,19 @@ static Node *stmt(Token **rest, Token *tok) {
     }
     Node *node = new_node(ND_EXPR_STMT, tok);
     node->lhs = expr(&tok, tok);
+    // Type-check eagerly, during parsing, like virtually every other
+    // statement-constructing path already does (declarations,
+    // compound-assignment, casts, switch/ternary, ...) -- not deferred to
+    // main.c's post-parse "Type system / Semantic checks" pass, which is
+    // unconditionally skipped for the whole file the moment ANY earlier
+    // error was collected (GH #34: "the AST is incomplete, so skip
+    // typecheck/codegen for this file"). A bare expression statement
+    // (`m = 1;`, not a declaration) was the one construct relying solely
+    // on that best-effort pass, so any constraint violation in it went
+    // completely undiagnosed whenever the file had an earlier, unrelated
+    // error -- e.g. a nullptr_t assignment several statements after some
+    // other mistake silently compiled instead of being reported.
+    check_type(node->lhs);
     *rest = skip(tok, ";");
     return node;
 }
@@ -10668,6 +10698,25 @@ static Node *vector_lower(Node *node) {
         check_type(node->rhs);
     Type *lt = node->lhs ? node->lhs->ty : NULL;
     Type *rt = (!un && node->rhs) ? node->rhs->ty : NULL;
+    // C23: nullptr_t is neither an integer nor a pointer type, so it is
+    // never valid in ordered comparisons or arithmetic; == and != accept
+    // it only against a pointer, another nullptr_t value, or a null
+    // pointer constant (C23 6.5.9/6.5.10). Real GCC hard-errors every
+    // one of these -- postgres's snprintf.c `strerror_r` misdeclaration
+    // was masked by rcc silently accepting `switch (ptr_expr)`, a
+    // sibling gap in the same "reject invalid nullptr_t/non-integer
+    // uses" family; this is the arithmetic/comparison half.
+    if (lt && rt && (lt->kind == TY_NULLPTR_T || rt->kind == TY_NULLPTR_T)) {
+        if (k == ND_LT || k == ND_LE) {
+            error_tok(node->tok, "ordered comparison of nullptr_t");
+        } else if (k == ND_EQ || k == ND_NE) {
+            Node *other = (lt->kind == TY_NULLPTR_T) ? node->rhs : node->lhs;
+            if (other->ty->kind != TY_PTR && !is_null_value_or_nullptr(other))
+                error_tok(node->tok, "invalid operands to binary %s", k == ND_EQ ? "==" : "!=");
+        } else {
+            error_tok(node->tok, "invalid operands to binary expression");
+        }
+    }
     bool lv = lt && lt->is_vector;
     bool rv = rt && rt->is_vector;
     if (!lv && !rv)
@@ -12473,6 +12522,12 @@ static Node *unary(Token **rest, Token *tok) {
         Token *start = tok;
         Node *operand = unary(rest, tok->next);
         check_type(operand);
+        // C11 6.5.3.3p1: unary + requires an operand of arithmetic type.
+        // nullptr_t is neither arithmetic nor a pointer, so `+nullptr` is
+        // a constraint violation (unlike `+ptr`, which GNU/most compilers
+        // tolerate as an extension -- narrowly scoped to nullptr_t only).
+        if (operand->ty && operand->ty->kind == TY_NULLPTR_T)
+            error_tok(start, "wrong type argument to unary plus");
         if (operand->ty && is_integer(operand->ty) && operand->ty->kind != TY_BITINT &&
             operand->ty->size > 0 && operand->ty->size < ty_int->size) {
             Node *promoted = new_unary(ND_CAST, operand, start);
@@ -13193,6 +13248,14 @@ static Node *unary(Token **rest, Token *tok) {
 
         Node *lhs = unary(rest, tok);
         check_type(lhs);
+        // C23: an explicit cast to nullptr_t is only meaningful for a
+        // value that could already legally denote a null pointer -- a
+        // null pointer constant, or another nullptr_t value. Casting an
+        // arbitrary scalar (a float, or an integer constant expression
+        // broken by an intervening non-integer cast like
+        // `(int)(float)0.0`) to nullptr_t is a constraint violation.
+        if (ty->kind == TY_NULLPTR_T && !is_null_value_or_nullptr(lhs))
+            error_tok(start, "conversion to 'nullptr_t' from non-null value");
         // C11 6.5.4p2: a cast's type name must specify void or a scalar
         // type, and (unless the target is void) the operand must also
         // have scalar type -- struct/union values are never castable to

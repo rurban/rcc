@@ -1097,7 +1097,7 @@
   c23-null-pointer-constant-1         PASS (compile only)
   c23-nullptr-1                       PASS
   c23-nullptr-2                       PASS (compile only)
-  c23-nullptr-3                       PASS (compile only)
+  c23-nullptr-3                       PASS (expected error)
   c23-nullptr-4                       PASS (compile only)
   c23-nullptr-5                       PASS
   c23-nullptr-6                       PASS (expected error)
@@ -3966,4 +3966,4 @@
 
 Torture: 3605/3609 passed (100%), 0 failed, 354 skipped, 4 todo.
 
-Dg-error tests: 35/35 passed (caught expected error), 0 failed.
+Dg-error tests: 36/36 passed (caught expected error), 0 failed.

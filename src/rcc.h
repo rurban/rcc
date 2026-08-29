@@ -462,6 +462,7 @@ bool is_flonum(Type *ty);
 bool is_decimal(Type *ty);
 bool is_complex(Type *ty);
 bool is_number(Type *ty);
+bool is_null_value_or_nullptr(Node *n);
 Type *get_integer_type(int size, bool is_unsigned);
 Type *pointer_to(Type *base);
 Type *array_of(Type *base, int64_t len);

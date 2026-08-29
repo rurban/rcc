@@ -415,6 +415,22 @@ static bool is_null_pointer_constant(Node *n) {
     return eval_const_expr(n, &v) && v == 0;
 }
 
+// C23: a "null pointer constant" (is_null_pointer_constant() above, the
+// pre-C23 integer-0-based concept) OR an expression whose TYPE is
+// nullptr_t (the `nullptr` keyword, or any nullptr_t-typed lvalue) may
+// fill a pointer or nullptr_t object/parameter, or compare equal/unequal
+// against one. The two are deliberately distinct per the standard: a
+// nullptr_t-typed value is NOT itself a "null pointer constant" (that
+// term is reserved for the historical integer-constant-0 form), so
+// callers needing "either kind of compile-time null" must check both --
+// bundled here so every one of those call sites (assignment/
+// initialization, ==/!=, explicit cast to nullptr_t, argument passing
+// to a nullptr_t parameter, ?: combined with a pointer) uses the same
+// rule instead of re-deriving it.
+bool is_null_value_or_nullptr(Node *n) {
+    return is_null_pointer_constant(n) || (n && n->ty && n->ty->kind == TY_NULLPTR_T);
+}
+
 // Some __builtin_* functions are recognized by name in codegen and emit
 // values of a specific width/signedness regardless of the (absent) prototype,
 // which would otherwise default to plain `int`. Report their true return
@@ -1154,6 +1170,24 @@ static void add_type_internal(Node *node) {
         return;
     case ND_ASSIGN:
         if (node->lhs->ty && node->rhs->ty) {
+            // C23 6.5.16.1: an object of type nullptr_t may only be
+            // assigned a null pointer constant or another nullptr_t
+            // value; a pointer-typed object may be assigned nullptr_t
+            // (that's the whole point of the type); anything else
+            // mixing nullptr_t with a non-pointer, non-nullptr_t type
+            // on either side is a constraint violation.
+            bool lhs_np = node->lhs->ty->kind == TY_NULLPTR_T;
+            bool rhs_np = node->rhs->ty->kind == TY_NULLPTR_T;
+            if (lhs_np) {
+                if (!is_null_value_or_nullptr(node->rhs))
+                    error_tok(node->tok, "incompatible types when assigning to type 'nullptr_t'");
+            } else if (rhs_np && node->lhs->ty->kind != TY_PTR &&
+                       node->lhs->ty->kind != TY_BOOL) {
+                // C23 6.5.16.1p1: a _Bool (atomic, qualified, or not) is
+                // ALSO a valid nullptr_t assignment target -- converts to
+                // false, same rule as a pointer converting to _Bool.
+                error_tok(node->tok, "incompatible types when assigning to type from 'nullptr_t'");
+            }
             bool lf = is_flonum(node->lhs->ty);
             bool rf = is_flonum(node->rhs->ty);
             if (node->lhs->ty->kind == TY_BOOL && node->rhs->ty->kind != TY_BOOL) {
@@ -1274,6 +1308,27 @@ static void add_type_internal(Node *node) {
         // If either operand is void, the result is void
         if ((tty && tty->kind == TY_VOID) || (ety && ety->kind == TY_VOID)) {
             node->ty = ty_void;
+            return;
+        }
+        // C23 6.5.16p3: mixing nullptr_t with a pointer type is fine (the
+        // result is the pointer type); mixing nullptr_t with anything
+        // else -- even a traditional null pointer constant like a
+        // literal 0, whose TYPE is int, not nullptr_t -- is a
+        // constraint violation. Checked ahead of the classic
+        // null-pointer-constant handling below, which never matches a
+        // genuine nullptr_t operand anyway (is_null_pointer_constant()
+        // requires integer type).
+        bool then_is_np = tty && tty->kind == TY_NULLPTR_T;
+        bool els_is_np = ety && ety->kind == TY_NULLPTR_T;
+        if (then_is_np != els_is_np) {
+            Type *other = then_is_np ? ety : tty;
+            if (other && (other->kind == TY_PTR || other->kind == TY_ARRAY || other->kind == TY_VLA)) {
+                node->ty = (other->kind == TY_ARRAY || other->kind == TY_VLA) ? decay_to_ptr(other) : other;
+                return;
+            }
+            error_tok(node->tok, "type mismatch in conditional expression");
+        } else if (then_is_np && els_is_np) {
+            node->ty = tty;
             return;
         }
         // Null pointer constant: any integer constant expression with value 0
