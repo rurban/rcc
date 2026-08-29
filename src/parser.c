@@ -10256,6 +10256,41 @@ static Node *primary(Token **rest, Token *tok) {
             *rest = tok->next;
             return node;
         }
+        // __builtin___clear_cache(begin, end): flush the instruction cache
+        // so newly-written (JIT-generated) code is visible to the CPU's
+        // instruction fetch unit. rcc doesn't hand-encode the
+        // (architecture-specific) cache-invalidation instruction sequence
+        // itself; instead, like GCC's own ports for targets it doesn't
+        // inline this on, redirect to the real `__clear_cache(char*,
+        // char*)` runtime function libgcc already provides -- rcc's
+        // linker driver invokes the system's real `gcc` to link, which
+        // always pulls in libgcc, so this resolves on every target rcc
+        // supports. Verified on x86-64 against real GCC: a bare call
+        // compiles to nothing there (the architecture's instruction
+        // cache is coherent), and libgcc's own __clear_cache is equally
+        // a no-op on that target, so redirecting is correct everywhere,
+        // not just an x86-64-specific shortcut.
+        // Found via a real PHP build: ext/opcache/jit/ir/ir.c's
+        // ir_mem_flush(), which previously linked as "undefined
+        // reference to `__builtin___clear_cache`" -- rcc has no special
+        // recognition for that literal name at all, so it fell through
+        // to an ordinary (never-defined) direct call.
+        if (equalc(tok, "__builtin___clear_cache") && equalc(tok->next, "(")) {
+            Token *start = tok;
+            tok = skip(tok->next, "(");
+            Node *begin = assign(&tok, tok);
+            check_type(begin);
+            tok = skip(tok, ",");
+            Node *end = assign(&tok, tok);
+            check_type(end);
+            *rest = skip(tok, ")");
+            Node *fn = new_node(ND_FUNCALL, start);
+            fn->funcname = str_intern("__clear_cache", 13);
+            fn->args = begin;
+            begin->next = end;
+            fn->ty = ty_void;
+            return fn;
+        }
         // __builtin_clear_padding(ptr) — zero all padding bytes via memset
         if (equalc(tok, "__builtin_clear_padding")) {
             tok = skip(tok->next, "(");
