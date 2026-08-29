@@ -144,7 +144,28 @@ __rcc_inline __m128 _mm_movelh_ps(__m128 __a, __m128 __b) {
     return (__m128){__a[0], __a[1], __b[0], __b[1]};
 }
 __rcc_inline __m128 _mm_move_ss(__m128 __a, __m128 __b) {
-    return (__m128){__b[0], __a[1], __a[2], __a[3]};
+    // NOT `(__m128){__b[0], __a[1], __a[2], __a[3]}`: rcc keeps scalar
+    // float values in GP registers as double-precision bit patterns, so
+    // extracting `__a[1..3]`/`__b[0]` into GP registers and rebuilding
+    // the vector round-trips each lane through cvtss2sd/cvtsd2ss. Per
+    // the SSE spec those conversions MUST quiet a signaling NaN (set
+    // the mantissa's top bit) and can shift its exact payload between
+    // single/double precision's differently-positioned quiet bit --
+    // silently corrupting any lane that happens to hold a NaN-shaped
+    // bit pattern. SIMD code commonly reinterprets integer data as
+    // `__m128` purely to use this blend as a cheap lane-merge (real
+    // arithmetic never intended), so those "NaN" bit patterns are
+    // actually meaningful integer payloads. A real `movss` between two
+    // XMM registers merges the low lane of `__b` into `__a` (preserving
+    // `__a`'s upper 3 lanes) as a pure bit copy, matching hardware
+    // semantics exactly with no GP-register round trip at all.
+    // Found via a real PHP build: Zend/hash_sha_sse2.c's SHA256 SSE2
+    // transform uses this exact pattern (SPAN_ONE_THREE) to combine
+    // message-schedule words; the corrupted payload propagated into the
+    // hash state, breaking every hash()/hash_hmac() call project-wide
+    // for a subset of message-schedule values.
+    __asm__("movss %1, %0" : "+x"(__a) : "x"(__b));
+    return __a;
 }
 
 // Minimal __m64 support: just enough to store the low/high 64 bits (two
