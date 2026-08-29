@@ -5867,37 +5867,35 @@ static bool read_global_label_initializer(Token **rest, Token *tok, char **label
         *rest = tok->next;
 
         // Handle chained &identifier[N][M].member[N]... access
-        {
-            LVar *lv2 = find_global_name(*label);
-            Type *cur_ty = lv2 ? lv2->ty : NULL;
-            while (cur_ty) {
-                if (equalc(*rest, "[") && (cur_ty->kind == TY_ARRAY || cur_ty->kind == TY_PTR)) {
-                    Token *sub = (*rest)->next;
-                    Node *idx = assign(&sub, sub);
-                    check_type(idx);
-                    long long ival;
-                    if (sub->kind != TK_EOF && equalc(sub, "]") && eval_const_expr(idx, &ival)) {
-                        int elem_size = cur_ty->base ? cur_ty->base->size : 1;
-                        if (addend) *addend += (int)(ival * elem_size);
-                        cur_ty = cur_ty->base;
-                        *rest = sub->next;
-                    } else
-                        break;
-                } else if (equalc(*rest, ".") && cur_ty && (cur_ty->kind == TY_STRUCT || cur_ty->kind == TY_UNION)) {
-                    Token *member_tok = (*rest)->next;
-                    if (member_tok && member_tok->kind == TK_IDENT) {
-                        Member *mem = find_member(cur_ty, member_tok);
-                        if (mem) {
-                            if (addend) *addend += mem->offset;
-                            cur_ty = mem->ty;
-                            *rest = member_tok->next;
-                        } else
-                            break;
+        LVar *lv2 = find_global_name(*label);
+        Type *cur_ty = lv2 ? lv2->ty : NULL;
+        while (cur_ty) {
+            if (equalc(*rest, "[") && (cur_ty->kind == TY_ARRAY || cur_ty->kind == TY_PTR)) {
+                Token *sub = (*rest)->next;
+                Node *idx = assign(&sub, sub);
+                check_type(idx);
+                long long ival;
+                if (sub->kind != TK_EOF && equalc(sub, "]") && eval_const_expr(idx, &ival)) {
+                    int elem_size = cur_ty->base ? cur_ty->base->size : 1;
+                    if (addend) *addend += (int)(ival * elem_size);
+                    cur_ty = cur_ty->base;
+                    *rest = sub->next;
+                } else
+                    break;
+            } else if (equalc(*rest, ".") && cur_ty && (cur_ty->kind == TY_STRUCT || cur_ty->kind == TY_UNION)) {
+                Token *member_tok = (*rest)->next;
+                if (member_tok && member_tok->kind == TK_IDENT) {
+                    Member *mem = find_member(cur_ty, member_tok);
+                    if (mem) {
+                        if (addend) *addend += mem->offset;
+                        cur_ty = mem->ty;
+                        *rest = member_tok->next;
                     } else
                         break;
                 } else
                     break;
-            }
+            } else
+                break;
         }
 
         // Handle "identifier[...].member... + const" / "- const" — the
@@ -5912,7 +5910,17 @@ static bool read_global_label_initializer(Token **rest, Token *tok, char **label
             Node *n = assign(&op_next, op_next);
             long long v;
             if (eval_const_expr(n, &v)) {
-                if (addend) *addend += is_sub ? -(int)v : (int)v;
+                // Pointer arithmetic scaling: "table + N" advances by
+                // N elements of the pointee type, not N bytes (cur_ty
+                // is the array/pointer type at this point in the
+                // chain — its ->base is the pointee). Real bug: a
+                // `struct config_enum_entry table[]; = table + 1`
+                // reloc addend must be N*sizeof(struct entry), not N;
+                // without scaling every non-byte-sized array/pointer
+                // "+const" initializer (e.g. PostgreSQL's
+                // ssl_protocol_versions_info + 1) landed mid-element.
+                int elem_size = (cur_ty && cur_ty->base) ? cur_ty->base->size : 1;
+                if (addend) *addend += is_sub ? -(int)v * elem_size : (int)v * elem_size;
                 *rest = op_next;
             }
         }
