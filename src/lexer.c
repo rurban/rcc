@@ -478,6 +478,7 @@ static char get_escape_char(char c) {
     switch (c) {
     case 'a': return '\a';
     case 'b': return '\b';
+    case 'e': return '\x1b'; // GNU extension: ESC (0x1B), supported by GCC/Clang
     case 'f': return '\f';
     case 'n': return '\n';
     case 'r': return '\r';
