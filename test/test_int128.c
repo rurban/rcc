@@ -191,6 +191,42 @@ int test_truthiness_nested_int128_cond(void) {
     return 0;
 }
 
+/* Regression: ND_DO's own inline condition test (a `do {} while(cond)`
+ * loop) checked ONLY is_flonum for the IEEE/address-vs-value split;
+ * every OTHER truthiness site (ND_IF/ND_FOR via gen_cond_branch_inv,
+ * ND_COND in gen()/gen_addr()/gen_int128()) was fixed for __int128/
+ * _Decimal128 in the "testing slot address instead of value" session,
+ * but ND_DO's do-while was missed. `while (uval)` on a uint128 local
+ * compared the 16-byte stack slot's ADDRESS (never zero) instead of
+ * its value -- unconditionally "true", so the backward branch was
+ * always taken regardless of the actual value. Found via postgres
+ * numeric.c's int128_to_numericvar(): a Karatsuba-sqrt digit-extraction
+ * `do { *ptr-- = uval % NBASE; uval /= NBASE; } while (uval)` loop that
+ * never terminated, walking `ptr` off the front of the allocated
+ * NumericDigit buffer into unmapped memory (SIGSEGV). */
+int test_truthiness_do_while_int128(void) {
+    unsigned __int128 uval, newuval;
+    short buf[20];
+    short *ptr = buf + 20;
+    int ndigits = 0;
+
+    uval = (unsigned __int128)123456789012345ULL;
+    do {
+        ptr--;
+        ndigits++;
+        newuval = uval / 10000;
+        *ptr = (short)(uval - newuval * 10000);
+        uval = newuval;
+    } while (uval);
+
+    if (ndigits != 4) return 1;
+    if (ptr[0] != 123) return 2;
+    if (ptr[1] != 4567) return 3;
+    if (ptr[2] != 8901) return 4;
+    if (ptr[3] != 2345) return 5;
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     printf("test_post_inc: %s\n", test_post_inc() == 0 ? "PASS" : "FAIL");
@@ -221,6 +257,8 @@ int main(void) {
     if (test_truthiness_int128_funcall_cond()) failures++;
     printf("test_truthiness_nested_int128_cond: %s\n", test_truthiness_nested_int128_cond() == 0 ? "PASS" : "FAIL");
     if (test_truthiness_nested_int128_cond()) failures++;
+    printf("test_truthiness_do_while_int128: %s\n", test_truthiness_do_while_int128() == 0 ? "PASS" : "FAIL");
+    if (test_truthiness_do_while_int128()) failures++;
     printf("\n%d failures\n", failures);
     return failures;
 }

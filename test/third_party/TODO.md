@@ -5273,3 +5273,7 @@ its `.expect` file exactly (byte-for-byte) again.
 118/118, Compliance 15/15, C-testsuite 220/220, Torture 3605/3609 —
 0 failed, 354 skipped, Dg-error 34/34, Link 11/11). mingw cross: 0
 failed.
+
+### Fixed (2026-08-29, ND_DO int128/\_Decimal128 do-while truthiness session)
+
+`do {} while(cond)` tested a `__int128`/`_Decimal128` cond's slot ADDRESS not its value (unlike `ND_IF`/`ND_FOR`/`ND_COND`, already fixed in `335e2215`) — postgres's `numeric` SQRT crashed via `int128_to_numericvar()`'s never-terminating digit-extraction loop. Fixed in `ND_DO` (`src/codegen.c`); new test `test_truthiness_do_while_int128` in `test/test_int128.c`. `make check-all`: 0 failed.

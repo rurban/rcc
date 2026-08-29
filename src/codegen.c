@@ -12640,6 +12640,23 @@ VReg gen(Node *node) {
             gen_flonum_branch_if_zero_preloaded(NULL, fskip);
             asm_b_back(cg_sec, begin_pos); // b begin
             cg_def_label(fskip);
+        } else if (node->cond->ty && is_int128_like(node->cond->ty)) {
+            // int128/_Decimal128 truthiness: `r` holds the 16-byte slot
+            // ADDRESS (see gen_int128()/gen_decimal()'s calling
+            // convention), never zero -- the generic asm_cmp_zero path
+            // below would test the address, not the stored value
+            // (unconditionally truthy), and op_size() == 16 isn't a
+            // width asm_cmp_zero supports either. Mirrors the flonum
+            // branch above: skip the backward jump when zero, else loop
+            // back. Found via postgres numeric.c's `do { ... } while
+            // (uval)` int128/uint128 Karatsuba sqrt loop -- the runaway
+            // "always taken" backward branch walked `ptr` off the front
+            // of the allocated NumericDigit buffer into unmapped memory.
+            int c2 = ++rcc_label_count;
+            const char *fskip = format(".L.do.fskip.%d", c2);
+            gen_int128_branch_if_zero(r, false, NULL, fskip);
+            asm_b_back(cg_sec, begin_pos); // b begin
+            cg_def_label(fskip);
         } else {
 #ifdef ARCH_ARM64
             asm_cmp_zero(cg_sec, r, op_size(node->cond->ty)); // cmp $0, rr
