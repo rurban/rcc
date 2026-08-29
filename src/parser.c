@@ -2718,8 +2718,34 @@ static bool eval_const_expr_impl(Node *node, long long *val) {
         return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs && rhs), true);
     case ND_LOGOR:
         return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs || rhs), true);
-    case ND_NEG:
-        return eval_const_expr(node->lhs, &lhs) && ((*val = node->lhs->ty && node->lhs->ty->is_unsigned ? (long long)(-(unsigned long long)lhs) : -lhs), true);
+    case ND_NEG: {
+        if (!eval_const_expr(node->lhs, &lhs)) return false;
+        // C11 6.3.1.1p2 usual integer promotions: an unsigned operand
+        // narrower than int (char/short/bool, and any bitfield <32 bits)
+        // promotes to plain (signed) int before the negation -- the
+        // "else" branch's plain `-lhs` already gives that answer, since
+        // lhs already holds the correctly-sign-extended numeric value.
+        // Only an operand whose promoted type is STILL unsigned (rank >=
+        // int, e.g. unsigned int/uint32_t, unsigned long) negates with
+        // unsigned wraparound -- and that wraparound must happen at the
+        // operand's OWN width, not always 64 bits: negating a masked
+        // 32-bit value (e.g. `-(uint32_t)-2` == `-(uint32_t)0xfffffffe`)
+        // as a 64-bit unsigned quantity produced a huge 64-bit result
+        // instead of wrapping back to 2 within 32 bits, e.g. PHP's
+        // `ZendAccelerator.h`'s HT_MIN_MASK-derived array dimension
+        // `uint32_t uninitialized_bucket[-HT_MIN_MASK]` (HT_MIN_MASK is
+        // `(uint32_t) -2`) was rejected as "negative array size".
+        if (node->lhs->ty && node->lhs->ty->is_unsigned && node->lhs->ty->size >= 4) {
+            unsigned long long r = -(unsigned long long)lhs;
+            int sz = node->lhs->ty->size;
+            if (sz < 8)
+                r &= (1ULL << (sz * 8)) - 1;
+            *val = (long long)r;
+        } else {
+            *val = -lhs;
+        }
+        return true;
+    }
     case ND_NOT:
         return eval_const_expr(node->lhs, &lhs) && ((*val = !lhs), true);
     case ND_BITNOT:
