@@ -9156,7 +9156,7 @@ static Node *parse_asm_stmt(Token **rest, Token *tok) {
     // Validate matching constraint references for extended inline asm
     for (int i = nout; i < nops; i++) {
         const char *c = ops[i].constraint;
-        while (*c == '=' || *c == '+' || *c == '&') c++;
+        while (*c == '=' || *c == '+' || *c == '&' || *c == '%') c++;
         if (*c >= '0' && *c <= '9') {
             int ref = *c - '0';
             if (ref >= nops)

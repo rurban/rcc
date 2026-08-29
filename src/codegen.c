@@ -13053,7 +13053,7 @@ VReg gen(Node *node) {
             AsmOperand *op = &node->asm_ops[i];
             const char *c = op->constraint;
             // skip leading modifiers =, +, &
-            while (*c == '=' || *c == '+' || *c == '&') c++;
+            while (*c == '=' || *c == '+' || *c == '&' || *c == '%') c++;
 
             // Matching constraint: digit refers to another operand
             if (*c >= '0' && *c <= '9') {
@@ -13143,7 +13143,7 @@ VReg gen(Node *node) {
             if (op_regs[i] != -2) continue;
             AsmOperand *op = &node->asm_ops[i];
             const char *c = op->constraint;
-            while (*c == '=' || *c == '+' || *c == '&') c++;
+            while (*c == '=' || *c == '+' || *c == '&' || *c == '%') c++;
             int ref = *c - '0';
             if (ref >= 0 && ref < node->asm_noperands) {
                 VReg r = op_regs[ref];
@@ -13432,12 +13432,12 @@ VReg gen(Node *node) {
         unsigned x86_fixed_claimed = 0;
         for (int i = 0; i < node->asm_noperands; i++) {
             const char *c = node->asm_ops[i].constraint;
-            while (*c == '=' || *c == '+' || *c == '&') c++;
+            while (*c == '=' || *c == '+' || *c == '&' || *c == '%') c++;
             if (*c >= '0' && *c <= '9') {
                 int ref = *c - '0';
                 if (ref < 0 || ref >= node->asm_noperands) continue;
                 c = node->asm_ops[ref].constraint;
-                while (*c == '=' || *c == '+' || *c == '&') c++;
+                while (*c == '=' || *c == '+' || *c == '&' || *c == '%') c++;
             }
             X86Reg xreg = X86_RAX;
             bool is_x86_reg = false;
@@ -13464,7 +13464,7 @@ VReg gen(Node *node) {
         for (int i = 0; i < node->asm_noperands; i++) {
             AsmOperand *op = &node->asm_ops[i];
             const char *c = op->constraint;
-            while (*c == '=' || *c == '+' || *c == '&') c++;
+            while (*c == '=' || *c == '+' || *c == '&' || *c == '%') c++;
 
             // Check for x86-specific register constraints
             X86Reg xreg = X86_RAX;
@@ -13798,7 +13798,7 @@ VReg gen(Node *node) {
             if (op_regs[i] != -2) continue;
             AsmOperand *op = &node->asm_ops[i];
             const char *c = op->constraint;
-            while (*c == '=' || *c == '+' || *c == '&') c++;
+            while (*c == '=' || *c == '+' || *c == '&' || *c == '%') c++;
             int ref = *c - '0';
             if (ref >= 0 && ref < node->asm_noperands) {
                 int sz = op->expr->ty ? op->expr->ty->size : 4;
