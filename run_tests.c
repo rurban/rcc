@@ -4285,7 +4285,7 @@ static SkipReason torture_should_skip(const char *name, const char *content, con
     if (contains(content, "dg-error") || contains(content, "dg-warning")) {
         /* cc_name == NULL means rcc itself (only external compilers set it) */
         if (cc_name && !contains(cc_name, "rcc") && !contains(cc_name, "gcc") &&
-            !contains(cc_name, "clang"))
+            !contains(cc_name, "clang") && !contains(cc_name, "ccc"))
             return SKIP_ERROR;
     }
     if (contains(content, "dg-require-effective-target nested") ||

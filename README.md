@@ -71,9 +71,9 @@ didn't report every expected error line, `r` = runtime failure.
 | -------- | ------ | ------ | ------- | -------------------------- |
 | rcc      | 4195   | 0      | 354     | 100% pass rate             |
 | gcc      | 4271   | 86     | 196     | 98%, 39c/1r failures       |
-| ccc      | 3897   | 241    | 413     | 94%, 151c/31r failures     |
 | clang    | 3708   | 649    | 191     | 85%, 530c/36e/15r failures |
 | tcc      | 2676   | 480    | 1395    | 84%, 383c/17r failures     |
+| ccc      | 2659   | 598    | 1393    | 81%, 118c/47e/24r failures |
 | cake     | 2567   | 1637   | 396     | 79%, 1584c/53r failures    |
 | kefir    | 2989   | 996    | 566     | 74%, 892c/15r failures     |
 | antcc    | 1661   | 1040   | 1394    | 61%, 974c/23r failures     |
