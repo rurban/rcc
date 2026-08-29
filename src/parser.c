@@ -5844,7 +5844,20 @@ static bool read_global_label_initializer(Token **rest, Token *tok, char **label
         return true;
     }
 
-    // GCC label address: &&label
+    while (is_cast(tok))
+        parse_cast_type(&tok, tok);
+
+    // GCC label address: &&label -- checked AFTER stripping any leading
+    // casts (e.g. `(void*)&&label`, the shape a computed-goto dispatch
+    // table's initializer list always uses, since the table's element
+    // type is typically `void *` or a typedef'd function-pointer-ish
+    // handler type rather than the label's own implicit type). Checking
+    // this before cast-stripping (the previous position) only matched a
+    // bare, uncast `&&label`; found via a real PHP build:
+    // Zend/zend_vm_execute.h's HYBRID VM dispatch table
+    //   static zend_vm_opcode_handler_t const labels[] = {
+    //       (void*)&&ZEND_NOP_SPEC_LABEL, ...
+    //   };
     if (equalc(tok, "&&") && tok->next && tok->next->kind == TK_IDENT) {
         if (parser_current_fn)
             *label = format(".L.label.%s.%s", parser_current_fn, tok->next->name);
@@ -5854,9 +5867,6 @@ static bool read_global_label_initializer(Token **rest, Token *tok, char **label
         *rest = tok->next->next;
         return true;
     }
-
-    while (is_cast(tok))
-        parse_cast_type(&tok, tok);
 
     if (equalc(tok, "&"))
         tok = tok->next;
