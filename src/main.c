@@ -1253,6 +1253,12 @@ int main(int argc, char **argv) {
             if (opt_time)
                 fprintf(stderr, "  opt         %-20s: %6llu us\n", cur_path,
                         (unsigned long long)(now_us() - t0));
+        } else {
+            // optimize() itself won't run at all here, but real GCC's
+            // `__attribute__((always_inline))` forces inlining even at
+            // -O0 -- it's a linkage requirement, not an optimization
+            // (see always_inline_pass()'s own comment in opt.c).
+            always_inline_pass(prog);
         }
 
         // Not gated on -O1: omitting a never-referenced `static inline`

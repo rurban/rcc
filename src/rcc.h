@@ -936,6 +936,10 @@ Type *vla_of(Type *base, Node *expr, int64_t arr_len);
 
 // Optimizer (CTFE)
 void optimize(Program *prog);
+// Run when optimize() itself won't (no -O1/-finline/-funroll): expands
+// ONLY __always_inline__ calls, matching real GCC's -O0 behavior for
+// `extern inline ... __attribute__((always_inline))` header wrappers.
+void always_inline_pass(Program *prog);
 // Drop TL_FUNC entries for `static inline` functions that nothing in this
 // translation unit calls or takes the address of (see opt.c for the full
 // rationale) — matches real GCC/Clang, which never emit such a function's

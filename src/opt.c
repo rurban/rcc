@@ -570,9 +570,25 @@ static Node *try_inline(Program *prog, Node *call) {
     if (!ret_expr) return NULL;
     if (calls_name(ret_expr, fn->name)) return NULL; // directly recursive
 
-    int cost = expr_cost(ret_expr);
-    int budget = fn->is_inline ? INLINE_COST_INLINE : INLINE_COST_AUTO;
-    if (cost > budget) return NULL;
+    // __attribute__((always_inline)) means always -- real GCC has no cost
+    // budget escape hatch for it at all, it either inlines or errors.
+    // Without this exemption, a big-but-cheap-at-runtime desugared
+    // expression (e.g. __builtin_shuffle() lowers to a handful of
+    // per-lane ND_COND/compare/gather nodes, one AST node per output
+    // lane) could exceed the ordinary `inline`-keyword budget and
+    // silently refuse to inline -- leaving a real call to a function
+    // that (per its `extern __gnu_inline__` linkage) was deliberately
+    // never emitted as a standalone symbol, producing "undefined
+    // reference" at link time instead of a working inline expansion.
+    // Found via a real PHP build: GCC's xmmintrin.h `_mm_move_ss`
+    // (`extern __inline __m128 __attribute__((__gnu_inline__,
+    // __always_inline__, __artificial__))`), called from
+    // ext/hash/hash_sha_sse2.c.
+    if (!fn->is_always_inline) {
+        int cost = expr_cost(ret_expr);
+        int budget = fn->is_inline ? INLINE_COST_INLINE : INLINE_COST_AUTO;
+        if (cost > budget) return NULL;
+    }
 
     // Collect scalar parameters and match them to simple arguments.
     LVar *params[MAX_INLINE_PARAMS];
@@ -1320,6 +1336,74 @@ void optimize(Program *prog) {
                 o->next = NULL;
                 break;
             }
+        }
+    }
+}
+
+// Recursively expand calls to __always_inline__ functions ONLY, regardless
+// of optimization level. Real GCC's `always_inline` is not an
+// optimization-level-dependent hint like plain `inline` -- it forces
+// inlining even at -O0, since headers like GCC's own xmmintrin.h declare
+// their intrinsic wrappers `extern __inline ... __attribute__((__gnu_inline__,
+// __always_inline__))`: the "extern inline" linkage means NO standalone
+// definition is ever emitted for such a function, so a call that fails to
+// inline links as "undefined reference" instead of a working expansion.
+// try_inline() already gates itself correctly for this (its own check
+// permits an always_inline callee even when opt_finline is false) --
+// the missing piece was that optimize()/optimize_node() (which is where
+// every try_inline() call site lives) was itself gated on
+// `opt_O1 || opt_finline || opt_funroll`, so a translation unit compiled
+// with no -O/-finline flag at all never ran try_inline() a single time.
+// This walker performs NO other transformation (no constant folding, no
+// dead-branch elimination, no CTFE, no unrolling) so it's safe to run
+// unconditionally without changing any currently-correct -O0 behavior of
+// unrelated code. Found via a real PHP build: GCC's xmmintrin.h
+// `_mm_move_ss`, called from ext/hash/hash_sha_sse2.c with no -O flag at
+// all on that specific compile.
+static Node *always_inline_node(Program *prog, Node *node) {
+    if (!node) return NULL;
+    node->lhs = always_inline_node(prog, node->lhs);
+    node->rhs = always_inline_node(prog, node->rhs);
+    node->cond = always_inline_node(prog, node->cond);
+    node->then = always_inline_node(prog, node->then);
+    node->els = always_inline_node(prog, node->els);
+    node->init = always_inline_node(prog, node->init);
+    node->inc = always_inline_node(prog, node->inc);
+    Node *prev_body = NULL;
+    for (Node *n = node->body; n; n = n->next) {
+        Node *o = always_inline_node(prog, n);
+        if (prev_body) prev_body->next = o;
+        else
+            node->body = o;
+        prev_body = o;
+    }
+    Node *prev_arg = NULL;
+    for (Node *n = node->args; n; n = n->next) {
+        Node *o = always_inline_node(prog, n);
+        if (prev_arg) prev_arg->next = o;
+        else
+            node->args = o;
+        prev_arg = o;
+    }
+    if (node->kind == ND_FUNCALL) {
+        Node *inl = try_inline(prog, node);
+        if (inl) return inl;
+    }
+    return node;
+}
+
+void always_inline_pass(Program *prog) {
+    for (TLItem *item = prog->items; item; item = item->next) {
+        if (item->kind != TL_FUNC)
+            continue;
+        Function *fn = item->fn;
+        Node *prev = NULL;
+        for (Node *n = fn->body; n; n = n->next) {
+            Node *o = always_inline_node(prog, n);
+            if (prev) prev->next = o;
+            else
+                fn->body = o;
+            prev = o;
         }
     }
 }
