@@ -102,13 +102,23 @@ static void emit_mem(SecBuf *s, X86Reg base, X86Reg idx, int scale, int64_t disp
         return;
     }
     if (base == X86_NOREG) {
-        // Absolute disp32. In 64-bit mode mod=00 rm=101 means RIP-
-        // relative (not absolute), so a true absolute needs the SIB form:
-        // mod=00 rm=100 (SIB) with index=100 (no index) and base=101
-        // (no base). Correct in 32-bit mode too. Reached for e.g. a
-        // segment-relative absolute inline-asm operand ("%fs:0").
+        // Absolute disp32, optionally with a scaled index and no base
+        // register (GAS "disp(,index,scale)", e.g. "0x40(,%rcx,8)"): mod=00
+        // rm=100 (SIB) with base=101 (no base) and the SIB index/scale
+        // fields set from the caller's actual index/scale, or index=100
+        // (no index) when there truly is none (e.g. a plain absolute
+        // "%fs:0" segment operand). Previously this hardcoded "no index"
+        // unconditionally, silently discarding a real scaled index and
+        // collapsing "disp(,reg,scale)" to a bare `disp` -- e.g. Zend's
+        // hand-written zend_string_equal_val() SSE-free x86-64 asm
+        // ("lea 0x40(,%rcx,8), %rcx") always computed 0x40 instead of
+        // 0x40+rcx*8, corrupting its tail-byte comparison mask and making
+        // same-length-but-differently-padded equal strings compare
+        // unequal -- observed as PHP's own class table losing "Exception"
+        // on a hash lookup that iteration could still find.
         emit1(s, modrm(0, reg_f, 4));
-        emit1(s, sib(0, 4, X86_RBP));
+        int si = (idx == X86_NOREG) ? 4 : (int)idx;
+        emit1(s, sib(scale, si, X86_RBP));
         emit_imm32(s, (int32_t)disp);
         return;
     }
