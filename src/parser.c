@@ -13534,14 +13534,19 @@ static Node *conditional(Token **rest, Token *tok) {
 
 // Compound assignment: a op= b → (tmp=&a, *tmp = *tmp op b)
 // Evaluates the LHS exactly once, preventing double side-effects like a[i++] |= 1.
-// Falls back to ASSIGN(lhs, OP(lhs, rhs)) for bitfields (can't take address of bitfield).
+// Falls back to ASSIGN(lhs, OP(lhs, rhs)) for bitfields (can't take address of bitfield)
+// and for GCC global register variables (same reason: no address at all).
 static Node *to_assign(Node *binary) {
     check_type(binary->lhs);
     Token *tok = binary->tok;
     Node *lhs = binary->lhs;
-    // Bitfields can't be addressed; the old ASSIGN(lhs, OP(lhs, rhs)) is safe
-    // because bitfield member access has no side effects in the lhs path.
-    if (lhs->kind == ND_MEMBER && lhs->member && lhs->member->bit_width > 0)
+    // Bitfields and global register variables can't be addressed; the old
+    // ASSIGN(lhs, OP(lhs, rhs)) is safe for both because neither the
+    // member access nor a register read has any side effects in the lhs
+    // path (unlike e.g. `a[i++] |= 1`, the double-evaluation this
+    // rewrite exists to avoid).
+    if ((lhs->kind == ND_MEMBER && lhs->member && lhs->member->bit_width > 0) ||
+        (lhs->kind == ND_LVAR && lhs->var && lhs->var->is_global_reg))
         return new_binary(ND_ASSIGN, lhs, new_binary(binary->kind, lhs, binary->rhs, tok), tok);
     Type *lhs_ty = lhs->ty;
     if (lhs_ty->kind == TY_ARRAY || lhs_ty->kind == TY_VLA)

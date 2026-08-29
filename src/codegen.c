@@ -5994,6 +5994,24 @@ static bool gen_global_reg_read(VReg r, LVar *var) {
 #endif
     return true;
 }
+// Materialize a WRITE of `r`'s value into a GCC "global register variable"
+// (LVar.is_global_reg — see gen_global_reg_read() above; symmetric to it).
+// Used by assignment and increment/decrement codegen, since such a
+// variable has no memory address for the ordinary gen_addr()-based
+// store to target at all.
+static bool gen_global_reg_write(VReg r, LVar *var) {
+    int reg = global_reg_lookup(var->global_reg_name);
+    if (reg < 0) return false;
+#ifdef ARCH_ARM64
+    if (reg == ARM64_SP)
+        arm64_add_imm(cg_sec, 1, ARM64_SP, REG(r), 0, 0); // mov sp, r  (add sp, r, #0)
+    else
+        arm64_orr_reg(cg_sec, 1, (Arm64Reg)reg, ARM64_XZR, REG(r), ARM64_LSL, 0); // mov xN, r
+#else
+    x86_mov_rr(cg_sec, 8, (X86Reg)reg, REG(r));
+#endif
+    return true;
+}
 // GNU nested functions: walk `depth` levels up through saved static-chain
 // pointers, leaving the ancestor frame's own frame-pointer value in `r`.
 // depth==1 is a single load of the CURRENT function's own chain slot (its
@@ -10309,6 +10327,21 @@ VReg gen(Node *node) {
             }
             return r2;
         }
+        // GCC "global register variable" (LVar.is_global_reg): no memory
+        // address, so gen_addr()'s ordinary global-variable path (an
+        // rip-relative symbol lea) would reference a symbol that was
+        // deliberately never emitted for it -- an "undefined reference"
+        // at link time. Write the physical register directly instead.
+        // Found via a real PHP build: Zend's threaded VM interpreter
+        // assigns to `register const zend_op *opline __asm__("r15")`
+        // and `register zend_execute_data *execute_data __asm__("r14")`.
+        if (node->lhs->kind == ND_LVAR && !node->lhs->var->is_local && node->lhs->var->is_global_reg) {
+            VReg r2 = gen(node->rhs);
+            if (gen_global_reg_write(r2, node->lhs->var))
+                return r2;
+            // Unrecognized register name: fall through to the ordinary
+            // gen_addr() path below rather than silently drop the store.
+        }
         // Bitfield assignment: read-modify-write
         if (node->lhs->kind == ND_MEMBER && node->lhs->member &&
             node->lhs->member->bit_width > 0) {
@@ -10853,6 +10886,40 @@ VReg gen(Node *node) {
     case ND_PRE_DEC: {
         bool is_pre = (node->kind == ND_PRE_INC || node->kind == ND_PRE_DEC);
         bool is_inc = (node->kind == ND_POST_INC || node->kind == ND_PRE_INC);
+        // GCC "global register variable" (LVar.is_global_reg): no memory
+        // address at all, so the ordinary gen_addr()-based load/modify/
+        // store below (which every other branch here uses) cannot apply.
+        // Read the pinned physical register directly, compute the new
+        // value (scaled by pointee size for a pointer, matching the
+        // ordinary path's `delta` below), and write it straight back.
+        // Found via a real PHP build: Zend's threaded VM interpreter
+        // advances its `register const zend_op *opline __asm__("r15")`
+        // dispatch pointer with a plain `opline++` in ~12000 places.
+        if (node->lhs->kind == ND_LVAR && !node->lhs->var->is_local && node->lhs->var->is_global_reg) {
+            VReg old = alloc_reg();
+            if (gen_global_reg_read(old, node->lhs->var)) {
+                VReg newv = alloc_reg();
+                asm_mov_reg_reg(cg_sec, newv, old, 8);
+                int delta = 1;
+                if (node->lhs->ty->kind == TY_PTR || node->lhs->ty->kind == TY_ARRAY)
+                    delta = node->lhs->ty->base->size;
+                if (is_inc)
+                    asm_add_imm(cg_sec, newv, 8, delta);
+                else
+                    asm_sub_imm(cg_sec, newv, 8, delta);
+                gen_global_reg_write(newv, node->lhs->var);
+                if (is_pre) {
+                    free_reg(old);
+                    return newv;
+                }
+                free_reg(newv);
+                return old;
+            }
+            free_reg(old);
+            // Unrecognized register name: fall through to the ordinary
+            // gen_addr() path below rather than silently drop the op --
+            // it will fail the same way plain reads already do.
+        }
         // C11 6.5.3.1: for _Bool, ++/-- follow from the general "increment
         // is x=x+1" rule composed with the _Bool store normalization
         // (0/1, any nonzero -> 1): b++ always stores 1; b-- stores the
