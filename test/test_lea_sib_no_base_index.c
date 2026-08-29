@@ -25,6 +25,7 @@
  */
 #include <stdio.h>
 
+#if defined(__x86_64__) || defined(_M_X64)
 int main(void)
 {
     unsigned long x = 3;
@@ -49,3 +50,9 @@ int main(void)
     printf("OK lea disp(,index,scale) with no base register\n");
     return 0;
 }
+#else
+/* No x86-64 SIB addressing to exercise on non-x86-64 targets (e.g. macOS
+ * CI's arm64 runners): match test_asm_aesni_sse2.c/
+ * test_asm_sse_shift_shuffle.c's own convention of a trivial pass. */
+int main(void) { return 0; }
+#endif
