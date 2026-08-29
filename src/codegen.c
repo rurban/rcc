@@ -5934,8 +5934,18 @@ static bool try_const_int(Node *n, int64_t *val) {
 // need to resolve (x86-64's `current_stack_pointer asm("rsp")`, arm64's
 // `asm("sp")`) — anything else returns -1 so the caller can fall back
 // instead of silently mis-decoding a register it doesn't understand.
+// GCC accepts an optional leading '%' (AT&T register syntax) on the name
+// -- e.g. `asm("%r15")` -- treating it identically to the bare form;
+// real-world code uses both spellings interchangeably (found via a real
+// PHP build: Zend/zend_execute.c's ZEND_VM_IP_GLOBAL_REG on x86-64 is
+// literally the string "%r15", which never matched the table below,
+// silently disabling BOTH the read and write paths -- gen_global_reg_read/
+// write() returning false made every use of `opline`/`execute_data` fall
+// back to the ordinary global-variable codegen, referencing a linker
+// symbol that was deliberately never emitted for a register variable).
 #ifdef ARCH_ARM64
 static int global_reg_lookup(const char *name) {
+    if (name[0] == '%') name++;
     if (!strcmp(name, "sp")) return ARM64_SP;
     if (!strcmp(name, "fp") || !strcmp(name, "x29")) return ARM64_X29;
     if (!strcmp(name, "lr") || !strcmp(name, "x30")) return ARM64_X30;
@@ -5947,6 +5957,7 @@ static int global_reg_lookup(const char *name) {
 }
 #else
 static int global_reg_lookup(const char *name) {
+    if (name[0] == '%') name++;
     static const struct {
         const char *name;
         X86Reg reg;

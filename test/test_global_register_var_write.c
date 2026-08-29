@@ -4,7 +4,7 @@
  * at file scope pins `x` to a physical hardware register for the whole
  * program -- no memory address, no linker symbol at all.
  *
- * Regression: rcc already supported READING such a variable
+ * Regression 1: rcc already supported READING such a variable
  * (LVar.is_global_reg / gen_global_reg_read() in codegen.c), but every
  * WRITE (plain assignment, compound assignment, ++/--) fell through to
  * the ordinary global-variable codegen path, which computes an
@@ -13,11 +13,19 @@
  * Assigning to one therefore compiled cleanly but failed to LINK with
  * "undefined reference to `<name>`".
  *
+ * Regression 2: the register-name lookup only matched a bare name
+ * ("r15"), not GCC's equally-valid AT&T-syntax spelling with a leading
+ * '%' ("%r15") -- so even a plain READ of a variable declared with the
+ * '%' form silently fell back to the same broken symbol-based path,
+ * since gen_global_reg_read()/write() both look up the register by an
+ * exact string match.
+ *
  * Found via a real PHP build: Zend/zend_execute.c's threaded VM
  * interpreter dispatch pointer,
- *   register const zend_op* volatile opline __asm__("r15");
- * assigned, incremented, and decremented (`opline = ...`, `opline++`,
- * `opline += N`, ...) in roughly 12000 places across
+ *   register const zend_op* volatile opline __asm__(ZEND_VM_IP_GLOBAL_REG);
+ * where x86-64's ZEND_VM_IP_GLOBAL_REG literally expands to "%r15" (the
+ * '%' form) -- assigned, incremented, and decremented (`opline = ...`,
+ * `opline++`, `opline += N`, ...) in roughly 12000 places across
  * Zend/zend_vm_execute.h's generated opcode handlers.
  */
 #if (defined(__x86_64__) || defined(_M_X64)) && !defined(_WIN32)
@@ -27,7 +35,8 @@ struct op { int val; };
 static struct op prog[10];
 
 register const struct op *volatile opline __asm__("r15");
-register unsigned long ctr __asm__("r14");
+/* '%'-prefixed spelling, matching PHP's actual ZEND_VM_FP_GLOBAL_REG. */
+register unsigned long ctr __asm__("%r14");
 
 static void init_prog(void)
 {
