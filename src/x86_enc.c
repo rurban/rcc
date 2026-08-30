@@ -3171,6 +3171,17 @@ void x86_vbroadcastf128(SecBuf *s, X86XmmReg d, X86Mem m) {
 VEX256_NTSTORE(x86_vmovntps_m256, 0, 1, 0x2b)
 VEX256_NTSTORE(x86_vmovntpd_m256, 1, 1, 0x2b)
 VEX256_NTSTORE(x86_vmovntdq_m256, 1, 1, 0xe7)
+// vbroadcasti128 m128, ymm: VEX.256.66.0F38.W0 5A /r -- mem-only
+// broadcast (loads 128 bits from memory and replicates it to both
+// halves of the destination YMM register); no register-source AVX2
+// form exists for this opcode. Found via a real OpenSSL build:
+// crypto/sha/sha512-x86_64.s broadcasts a 128-bit round-constant mask
+// from memory this way.
+void x86_vbroadcasti128(SecBuf *s, X86XmmReg d, X86Mem m) {
+    vex3(s, 1, 2, 0, 1, d, X86_XMM0, (X86XmmReg)m.base);
+    emit1(s, 0x5a);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
+}
 // masked loads/stores: vpmaskmovd/q (0F38 8C-8F). Load: dst=reg, mem=rm, mask=vvvv.
 // vpmaskmovd (8C/8E) is W0, vpmaskmovq (8D/8F) is W1 (gcc: c4 e2 75 8e /
 // c4 e2 f5 8e).

@@ -201,7 +201,28 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
         idx = objfile_find_sym(as->obj, name);
         if (idx < 0) {
             SymBind bind = is_weak ? SB_WEAK : (is_global ? SB_GLOBAL : SB_LOCAL);
-            SymType type = is_func ? ST_FUNC : ST_OBJECT;
+            // Real GNU AS defaults every untyped label to STT_NOTYPE
+            // regardless of section -- it never auto-infers STT_OBJECT
+            // for a plain data-section label either, only an explicit
+            // `.type name, @object` directive does that (this
+            // function's caller already special-cases `.type ...,
+            // @function` into is_func; there is no equivalent "seen an
+            // explicit @object directive" state to preserve here,
+            // matching that this path is the *default*, not an
+            // override). Defaulting to ST_OBJECT instead wrongly typed
+            // every bare code label (e.g. perlasm-generated .Lloop:/
+            // .Lprologue: local labels inside a function body, with no
+            // .type directive at all) as STT_OBJECT in the final ELF
+            // symbol table. objdump -d (and other STT-aware tooling)
+            // then treats the code from that label onward as opaque
+            // data, rendering raw hex instead of decoding instructions
+            // -- purely a disassembly/introspection defect (the actual
+            // compiled machine code bytes are unaffected; ELF symbol
+            // type isn't consulted at runtime), but a real correctness
+            // gap for any STT-aware consumer. Found via a real OpenSSL
+            // build: crypto/sha/sha512-x86_64.s's hand-labeled loop
+            // bodies.
+            SymType type = is_func ? ST_FUNC : ST_NOTYPE;
             idx = objfile_add_sym(as->obj, name, sec, off, 0, bind, type);
             if (is_global) as->obj->syms[idx].bind_pinned = true;
         } else {
@@ -3640,6 +3661,18 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     if (!strcmp(mnem, "vpand")) {
         if (is_xmm(0) && is_xmm(1) && is_xmm(2))
             x86_vpand_rr(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "vpshufb")) {
+        // vpshufb src2, src1, dst (AT&T: ops[0]=src2, ops[1]=src1, ops[2]=dst)
+        if (is_xmm(0) && is_xmm(1) && is_xmm(2))
+            x86_vpshufb(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "vbroadcasti128")) {
+        // vbroadcasti128 mem, dst -- mem-only, no register-source form
+        if (is_mem(0) && is_xmm(1))
+            x86_vbroadcasti128(buf, parse_x86_xmm(ops[1]), M(0));
         return true;
     }
     if (!strcmp(mnem, "vpunpcklqdq")) {

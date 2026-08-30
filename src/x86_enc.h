@@ -1010,6 +1010,7 @@ void x86_vmovddup(SecBuf *s, X86XmmReg d, X86XmmReg rm);
 void x86_vmovmskpd(SecBuf *s, X86XmmReg dstGp, X86XmmReg src);
 void x86_vmovmskps(SecBuf *s, X86XmmReg dstGp, X86XmmReg src);
 void x86_vmovntdq_m256(SecBuf *s, X86Mem m, X86XmmReg sr);
+void x86_vbroadcasti128(SecBuf *s, X86XmmReg d, X86Mem m);
 void x86_vmovntpd_m256(SecBuf *s, X86Mem m, X86XmmReg sr);
 void x86_vmovntps_m256(SecBuf *s, X86Mem m, X86XmmReg sr);
 void x86_vmovshdup(SecBuf *s, X86XmmReg d, X86XmmReg rm);
