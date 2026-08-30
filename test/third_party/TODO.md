@@ -5277,3 +5277,116 @@ failed.
 ### Fixed (2026-08-29, ND_DO int128/\_Decimal128 do-while truthiness session)
 
 `do {} while(cond)` tested a `__int128`/`_Decimal128` cond's slot ADDRESS not its value (unlike `ND_IF`/`ND_FOR`/`ND_COND`, already fixed in `335e2215`) — postgres's `numeric` SQRT crashed via `int128_to_numericvar()`'s never-terminating digit-extraction loop. Fixed in `ND_DO` (`src/codegen.c`); new test `test_truthiness_do_while_int128` in `test/test_int128.c`. `make check-all`: 0 failed.
+
+### Reverified (2026-08-30, third_party checklist.txt final sweep session)
+
+Re-triaged every remaining unchecked project in `checklist.txt`
+(`liballegro5`, `libxo_chimerautils`, `lwan`, `micropython`, `nqp`,
+`openrc`, `openssl`, `pacman`, `python`, `rpmalloc`) against the current
+rcc build. Six real rcc bugs were found and fixed this session in
+`test_openssl` alone (vzeroupper/vzeroall AVX zeroing-idiom detection,
+missing AVX2 `vpblendd`/`vperm2i128`/`vpermq`/`vpshufb`/`vbroadcasti128`
+assembler support, `.comm`/`.lcomm` directive support, `mulx` BMI2
+wrongly dispatched through the generic `mul` prefix match, `movd`
+memory-source/dest forms silently dropped, and `.align`/`.balign`/
+`.p2align` on a built-in section — `.text`/`.data`/`.rodata`/... — never
+raising the section's own `sh_addralign`); see the git history on the
+`third_party` branch for each fix's commit and dedicated regression
+test. Remaining triage:
+
+- **openrc**: confirmed NOT an rcc bug. `misc.c` uses `unix` as a
+  `sockaddr_un` union member name; rcc's default (no `-std=` flag)
+  mode predefines the legacy compat macro `unix` as `1` (GNU CPP does
+  this too — confirmed empirically: `gcc -E -dM` defines `unix` under
+  its default `gnu17` dialect and ONLY undefines it under `-std=cNN`
+  strict-ISO modes). openrc's own meson build passes no `-std=` for
+  this file, so real gcc invoked identically fails on the exact same
+  line with the exact same error. Confirmed by compiling the real
+  `misc.c` with system gcc using openrc's own recorded flags.
+- **pacman**: builds and runs correctly (`pacman -Su` exits 0). The
+  two failing pactest subtests are missing-file assertions caused by
+  `WARNING: fakechroot not found!` in the harness environment — pacman
+  test env, not rcc.
+- **lwan**: builds and links 100% (the earlier `__builtin_alloca` fix
+  holds). `testsuite` target fails with `No rule to make target
+'techempower'` — a missing git submodule/benchmark suite in this
+  checkout, unrelated to compiled code.
+- **libxo_chimerautils**: `libstdbuf.so`'s link command has no
+  `-shared` at all. Root cause: the system `muon` binary mis-detects
+  `rcc` and falls back to its generic `posix` linker profile, which
+  has no `shared_module` handler (only the GNU-ld-derived profile
+  defines `shared_module -> ['-shared']`). muon bug, not rcc; rcc
+  correctly linked exactly what it was told (a plain executable).
+- **rpmalloc**: `main-override.cc` is genuine C++, linked via plain
+  `rcc` (a C compiler/linker) with no `-lstdc++`. rpmalloc's own
+  `configure.py`/`build/ninja/gcc.py` generator has a working
+  `runtime: 'c++'` opt-in that switches the link driver to
+  `self.cxxlinker`, but never passes it for the `rpmalloc-test`
+  target despite that target listing a `.cc` source. Upstream build
+  script bug; real `gcc` (not `g++`) would fail identically.
+- **micropython**: stale log. The recorded failure (`assert False` in
+  `py/makeqstrdata.py`'s `make_bytes()`, a qstr-length-limit check) is
+  pure Python tooling with no compiled/executed binary involved — rcc
+  is only invoked as `-E` (preprocess-only) in that step and exits 0.
+  Re-running the exact failing pipeline against the current rcc build
+  reproduces no failure.
+- **nqp** and **python**: BOTH confirmed genuine rcc codegen bugs, and
+  BOTH are independently traceable to the same class of C idiom: a
+  giant interpreter dispatch loop (`MVM_interp_run` in MoarVM's
+  `interp.c`, `_PyEval_EvalFrameDefault` in CPython's `ceval.c`) that
+  declares a local `static const void * const` "threaded dispatch"
+  array of `&&label` addresses (GCC computed-goto) where every label is
+  defined LATER in the same (huge, thousands-of-lines) function body.
+  Differential compilation (recompile ONLY `ceval.c` with system gcc,
+  relink the rest of the rcc-built tree with rcc) makes CPython's
+  crash disappear deterministically — conclusively isolating the fault
+  to rcc's own compilation of that one file. `nqp`'s crash bisects the
+  same way to MoarVM's `interp.c` alone (documented already in this
+  file's 2026-08-28 entry). **However**, this session's attempt to
+  reproduce the bug in isolation FAILED and narrows/revises the
+  previous "ROOT CAUSE IDENTIFIED" note above: a synthetic repro of the
+  _exact_ documented idiom (`static const void *const LABELS[] =
+{&&op_0, ..., &&op_2499}` declared before 2500 forward-referenced
+  labels, dispatched via `goto *LABELS[idx]`, in one large function, at
+  `-O0`/`-O2`/`-O3`) compiles and runs correctly with the current rcc
+  build — byte-for-byte matching gcc's output. A direct differential
+  disassembly of the ACTUAL crashing frame in a real build
+  (`test_liballegro5`'s unrelated crash, see below, plus manual
+  inspection of `_al_opengl_set_blender`'s codegen) also turned up no
+  base-address confusion between sibling local arrays. So the forward-
+  computed-goto-label theory, while plausible and consistent with the
+  crash _symptom_ (wild jump through a corrupted dispatch value), is
+  NOT yet proven as the precise mechanism for nqp/python specifically —
+  it needs a much more surgical bisection _within_ `ceval.c`/`interp.c`
+  (e.g. binary-search which of the file's other few-thousand lines,
+  possibly the inline-cache-skip/oparg-fetch macros rather than the
+  dispatch table itself, is responsible) than this session had time
+  for. Both stay on `unfixed.txt` pending that deeper bisection.
+- **liballegro5**: rcc-compiled `liballegro.so` builds correctly and
+  passes all 451 pixel-level, hash/signature-verified bitmap-drawing
+  tests in `test_bitmaps.ini` before segfaulting at the start of the
+  next `.ini` file's first `al_draw_bitmap()` call, inside Allegro's
+  own OpenGL backend (`_al_opengl_set_blender` -> `blend_modes
+[src_color]` with `src_color` apparently holding a huge/garbage
+  index). Direct differential disassembly of the exact crashing
+  function+offset (extracted the real `ogl_draw.c`, recompiled with
+  rcc using the project's exact `-O2 -g -DNDEBUG -fPIC` flags) shows
+  CORRECT codegen matching the source: the crashing instruction reads
+  `blend_modes[src_color]` using `blend_modes`'s genuine stack address,
+  not a confused/aliased one. So the fault is NOT in this function's
+  own codegen; `src_color`'s value must already be corrupt by the time
+  it arrives here, from some earlier point in an over-400-operation-long
+  test sequence spanning many bitmap/GL state transitions. Not isolated
+  this session — would need much deeper tracing (e.g. watchpoints on
+  the blend-state fields across the whole `.ini` batch) to find the
+  true origin. Previously noted in this file as "builds; test timeout
+  separate" — this crash is a distinct, newly-reproduced issue, not the
+  previously-tracked timeout.
+
+`checklist.txt`'s remaining unchecked entries (`rpmalloc`, `sdl3`,
+`tcl`, `valkey`, `wasm3`, `wget`, `yash`) plus the ones re-triaged here
+as genuine non-rcc issues (`openrc`, `pacman`, `lwan`,
+`libxo_chimerautils`, `micropython`) should stay unchecked/excluded —
+they are blocked on missing tools, upstream/build-tool bugs, or a test
+harness gap, not rcc correctness. `nqp` and `test_python` stay
+unchecked pending the deeper computed-goto-class bisection noted above.
