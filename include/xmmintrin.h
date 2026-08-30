@@ -187,6 +187,51 @@ __rcc_inline void _mm_storeh_pi(__m64 *__p, __m128 __a) {
     __fp[1] = __a[3];
 }
 
+// --- MMX-era SSE-extension intrinsics on __m64 -----------------------------
+// A handful of `<xmmintrin.h>` intrinsics operate on __m64 (they were
+// introduced alongside SSE to extend plain MMX): unsigned 16-bit multiply
+// high, an 8-bit byte-sign movemask, and a 16-bit lane shuffle. Real GCC/
+// Clang implement these via actual MMX registers/opcodes (pmulhuw, pmovmskb,
+// pshufw); rcc has no MMX register class, so these are implemented as plain
+// per-lane C operations over the same 8 bytes reinterpreted through a union
+// -- identical results (this is exactly what the hardware opcodes compute),
+// no MMX state (and so no _mm_empty()/EMMS pairing concern either). Needed
+// by pixman's legacy MMX pixel-combiner fallback (pixman-mmx.c).
+__rcc_inline __m64 _mm_mulhi_pu16(__m64 __A, __m64 __B) {
+    union {
+        __m64 v;
+        unsigned short u[4];
+    } __ua, __ub, __ur;
+    __ua.v = __A;
+    __ub.v = __B;
+    for (int __i = 0; __i < 4; __i++)
+        __ur.u[__i] = (unsigned short)(((unsigned)__ua.u[__i] * (unsigned)__ub.u[__i]) >> 16);
+    return __ur.v;
+}
+__rcc_inline int _mm_movemask_pi8(__m64 __A) {
+    union {
+        __m64 v;
+        unsigned char b[8];
+    } __u;
+    __u.v = __A;
+    int __mask = 0;
+    for (int __i = 0; __i < 8; __i++)
+        __mask |= (__u.b[__i] >> 7) << __i;
+    return __mask;
+}
+__rcc_inline __m64 _mm_shuffle_pi16(__m64 __A, int __N) {
+    union {
+        __m64 v;
+        unsigned short u[4];
+    } __ua, __ur;
+    __ua.v = __A;
+    __ur.u[0] = __ua.u[__N & 3];
+    __ur.u[1] = __ua.u[(__N >> 2) & 3];
+    __ur.u[2] = __ua.u[(__N >> 4) & 3];
+    __ur.u[3] = __ua.u[(__N >> 6) & 3];
+    return __ur.v;
+}
+
 // 4x4 single-precision transpose (SSE intrinsic macro, GCC/Clang-compatible).
 #define _MM_TRANSPOSE4_PS(row0, row1, row2, row3)                              \
     do {                                                                       \
