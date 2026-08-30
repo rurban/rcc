@@ -2355,6 +2355,29 @@ void x86_movd_xmm_r(SecBuf *s, X86Reg d, X86XmmReg sr) {
     maybe_rex(s, 0, (int)sr > 7 ? (int)sr : 0, 0, (int)d > 7 ? (int)d : 0);
     emit3(s, 0x0f, 0x7e, modrxmm(3, sr, (X86XmmReg)d));
 }
+// movd m32, xmm: 66 0F 6E /r (32-bit load into the low dword, upper bits
+// zeroed). Same opcode as the register-source form; a bare "movd" with
+// no size suffix was previously handled only for the reg<->xmm forms,
+// silently emitting nothing at all for either memory direction (dead
+// end: falls through with no matching branch, returns success with
+// zero bytes written). Found via a real OpenSSL build:
+// crypto/bn/asm/x86_64-mont5.pl's bn_mul_mont_gather5 opens with "movd
+// 8(%rsp),%xmm5"; the dropped load left %xmm5 uninitialized garbage,
+// corrupting a later stack-size computation and segfaulting deep
+// inside the function on a stack overrun.
+void x86_movd_rm(SecBuf *s, X86Mem m, X86XmmReg d) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)d > 7 ? (int)d : 0, m.index > 7 ? m.index : 0, m.base > 7 ? m.base : 0);
+    emit2(s, 0x0f, 0x6e);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
+}
+// movd xmm, m32: 66 0F 7E /r (32-bit store of the low dword)
+void x86_movd_mr(SecBuf *s, X86Mem m, X86XmmReg sr) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)sr > 7 ? (int)sr : 0, m.index > 7 ? m.index : 0, m.base > 7 ? m.base : 0);
+    emit2(s, 0x0f, 0x7e);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
+}
 // movmskpd r32, xmm: 66 0F 50 /r
 // pextrw r32, xmm, imm8: 66 0F C5 /r ib
 void x86_pextrw(SecBuf *s, X86Reg d, X86XmmReg sr, uint8_t imm) {

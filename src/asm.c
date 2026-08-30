@@ -3772,7 +3772,14 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     if (!strcmp(mnem, "movd")) {
         // GP<->xmm 32-bit forms. GAS also accepts a 64-bit GP register
         // here (byte-identical to "movq" with REX.W set) -- real
-        // hand-written asm (this file included) relies on that.
+        // hand-written asm (this file included) relies on that. Also
+        // the memory forms (mem<->xmm, e.g. "movd 8(%rsp),%xmm5") --
+        // previously unhandled here at all: neither the reg<->xmm
+        // branches below nor the generic mov dispatch (which explicitly
+        // excludes "movd") matched, so the whole instruction was
+        // silently dropped, emitting zero bytes. Found via a real
+        // OpenSSL build: crypto/bn/asm/x86_64-mont5.pl's
+        // bn_mul_mont_gather5 opens with exactly this memory-load form.
         if (is_xmm(0) && is_reg(1)) {
             if (reg_size_x86(ops[1]) == 8) x86_movq_xmm_r(buf, R(1), parse_x86_xmm(ops[0]));
             else
@@ -3781,6 +3788,10 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
             if (reg_size_x86(ops[0]) == 8) x86_movq_r_xmm(buf, parse_x86_xmm(ops[1]), R(0));
             else
                 x86_movd_r_xmm(buf, parse_x86_xmm(ops[1]), R(0));
+        } else if (is_mem(0) && is_xmm(1)) {
+            x86_movd_rm(buf, M(0), parse_x86_xmm(ops[1]));
+        } else if (is_xmm(0) && is_mem(1)) {
+            x86_movd_mr(buf, M(1), parse_x86_xmm(ops[0]));
         }
         return true;
     }

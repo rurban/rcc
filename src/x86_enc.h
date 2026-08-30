@@ -778,6 +778,8 @@ void x86_movq_rm(SecBuf *s, X86Mem srcm, X86XmmReg dst);
 void x86_movq_mr(SecBuf *s, X86Mem dstm, X86XmmReg src);
 void x86_movd_r_xmm(SecBuf *s, X86XmmReg dst, X86Reg src);
 void x86_movd_xmm_r(SecBuf *s, X86Reg dst, X86XmmReg src);
+void x86_movd_rm(SecBuf *s, X86Mem m, X86XmmReg d);
+void x86_movd_mr(SecBuf *s, X86Mem m, X86XmmReg sr);
 void x86_pextrw(SecBuf *s, X86Reg dst, X86XmmReg src, uint8_t imm);
 void x86_movntps_m(SecBuf *s, X86Mem dstm, X86XmmReg src);
 void x86_movntpd_m(SecBuf *s, X86Mem dstm, X86XmmReg src);
