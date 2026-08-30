@@ -189,6 +189,8 @@ void x86_rol_ri(SecBuf *s, int size, X86Reg r, uint8_t imm);
 void x86_shlx_rr(SecBuf *s, int size, X86Reg dst, X86Reg src, X86Reg count);
 void x86_shrx_rr(SecBuf *s, int size, X86Reg dst, X86Reg src, X86Reg count);
 void x86_sarx_rr(SecBuf *s, int size, X86Reg dst, X86Reg src, X86Reg count);
+void x86_mulx_rr(SecBuf *s, int size, X86Reg dst_high, X86Reg dst_low, X86Reg src);
+void x86_mulx_rm(SecBuf *s, int size, X86Reg dst_high, X86Reg dst_low, X86Mem m);
 // RCL/RCR (rotate-through-carry): opcode group 2, /r == 2/3. Real GAS
 // accepts both "rcr $imm, reg" (or the bare-register form implying
 // $1, e.g. GMP's own mpn/x86_64/*.asm) and "rcr %cl, reg".

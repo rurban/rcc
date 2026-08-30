@@ -3965,10 +3965,32 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 #undef ALU_SUFFIX_OK
 #undef ALU_OP
 
+    // MULX (BMI2 3-operand multiply, no flags): must be checked BEFORE
+    // the generic "mul" prefix dispatch below, whose condition
+    // prefix-matches only the first 3 characters ("mul" also matches
+    // "mulx") and would otherwise silently swallow this as the classic
+    // one-operand "mul %rax" form (implicit RDX:RAX = RAX * r/m),
+    // discarding two of MULX's three explicit operands and computing a
+    // completely different product into the wrong registers. AT&T:
+    // "mulx src, dst_low, dst_high" (RDX, implicit, times src ->
+    // dst_high:dst_low). Real crash: OpenSSL's x86_64-mont5.pl
+    // (mulx4x_mont/sqrx8x_mont) issues MULX in tight back-to-back
+    // ADCX/ADOX carry chains throughout its Montgomery multiplication
+    // inner loop; every miscompiled MULX call corrupted the running
+    // product, producing "carry bug"-shaped wrong results
+    // (test_modexp_mont5's regression vectors, named for exactly this
+    // historical class of bug in these routines).
+    if (!strcmp(mnem, "mulx")) {
+        if (is_mem(0) && is_reg(1) && is_reg(2))
+            x86_mulx_rm(buf, sz, R(2), R(1), M(0));
+        else if (is_reg(0) && is_reg(1) && is_reg(2))
+            x86_mulx_rr(buf, sz, R(2), R(1), R(0));
+        return true;
+    }
     // MUL (F6/F7 group /4): implicit RDX:RAX = RAX * r/m. Excludes the SSE
-    // mulss/mulsd/mulps/mulpd mnemonics (4th char 's' or 'p'), handled
-    // separately below.
-    if (!strncmp(mnem, "mul", 3) && mnem[3] != 's' && mnem[3] != 'p') {
+    // mulss/mulsd/mulps/mulpd mnemonics (4th char 's' or 'p') and the
+    // BMI2 MULX (4th char 'x', handled above).
+    if (!strncmp(mnem, "mul", 3) && mnem[3] != 's' && mnem[3] != 'p' && mnem[3] != 'x') {
         if (is_mem(0))
             x86_mul_m(buf, sz, M(0));
         else

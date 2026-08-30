@@ -2491,6 +2491,24 @@ static void bmi2_shift_rr(SecBuf *s, int size, int pp, X86Reg dst, X86Reg src, X
 void x86_shlx_rr(SecBuf *s, int size, X86Reg dst, X86Reg src, X86Reg count) { bmi2_shift_rr(s, size, 1, dst, src, count); }
 void x86_shrx_rr(SecBuf *s, int size, X86Reg dst, X86Reg src, X86Reg count) { bmi2_shift_rr(s, size, 3, dst, src, count); }
 void x86_sarx_rr(SecBuf *s, int size, X86Reg dst, X86Reg src, X86Reg count) { bmi2_shift_rr(s, size, 2, dst, src, count); }
+// MULX dst_high, dst_low, r/m: BMI2 VEX.LZ.F2.0F38.W1 F6 /r (AT&T: mulx
+// src, dst_low, dst_high). Reads RDX (implicit) * src -> dst_high:dst_low.
+// Unlike the ordinary one-operand MUL/IMUL, MULX writes no flags at all
+// and takes two *explicit* destination registers, so it can run back-
+// to-back with ADCX/ADOX along two independent carry chains without
+// clobbering CF/OF between iterations -- the classic BMI2/ADX
+// "MULX+ADCX+ADOX" dual-carry-chain trick real bignum code (e.g.
+// OpenSSL's x86_64-mont5.pl mulx4x_mont/sqrx8x_mont) relies on.
+// dst_high is ModRM.reg, dst_low is VEX.vvvv (the NDS operand), src is
+// ModRM.rm (or a memory operand, below).
+void x86_mulx_rr(SecBuf *s, int size, X86Reg dst_high, X86Reg dst_low, X86Reg src) {
+    vex_rr(s, 3, 2, size == 8, 0, 0xf6, (X86XmmReg)dst_high, (X86XmmReg)dst_low, (X86XmmReg)src);
+}
+void x86_mulx_rm(SecBuf *s, int size, X86Reg dst_high, X86Reg dst_low, X86Mem m) {
+    vex3(s, 3, 2, size == 8, 0, (X86XmmReg)dst_high, (X86XmmReg)dst_low, (X86XmmReg)m.base);
+    emit1(s, 0xf6);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)dst_high);
+}
 // VEX 128-bit XMM reg-reg load: pp=1(66)=vmovdqa, pp=2(F3)=vmovdqu.
 // Encoding: VEX.128.pp.0F.WIG 6F /r — dst=ModRM.reg, src=ModRM.rm.
 // v=XMM0 → inv(v)=15 (vvvv=1111, unused NDS).
