@@ -493,13 +493,7 @@ int main(int argc, char **argv) {
             return 0;
         }
         if (!strcmp(argv[i], "--version")) {
-            time_t t = time(NULL);
-            struct tm *lt = localtime(&t);
-            printf("rcc (GCC) %s %s\n", VERSION, MACHINE);
-            printf("Copyright (C) %d Free Software Foundation, Inc.\n",
-                   lt ? lt->tm_year + 1900 : 2026);
-            printf("This is free software; see the source for copying conditions.  There is NO\n"
-                   "warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n");
+            printf("rcc %s %s\n", VERSION, MACHINE);
             return 0;
         }
         if (!strcmp(argv[i], "-dumpversion")) {

@@ -21,9 +21,12 @@
  *
  * This test only exercises the *compile-time* relocation choice (readelf
  * on the .o), not a full PIE link/run, since the test harness's own
- * build may not itself be position-independent.
+ * build may not itself be position-independent. ELF-only: -fPIE/GOT/PLT
+ * relocations (and readelf itself) are an ELF ABI concept with no direct
+ * equivalent on Windows/mingw's PE-COFF or macOS's Mach-O, so this is
+ * skipped on those targets.
  */
-#if defined(__x86_64__) || defined(_M_X64)
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(_WIN32) && !defined(__CYGWIN__) && !defined(__APPLE__)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

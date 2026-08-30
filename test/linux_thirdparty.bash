@@ -2482,20 +2482,48 @@ toolchain.register_compiler(
 )
 toolchain.register_compiler(
     'rcc',
-    inherit: 'posix',
-    linker: 'ld',
+    # rcc is argv-syntax-compatible with GCC (same driver flags, same
+    # linker/archiver conventions), so inheriting 'gcc' rather than
+    # 'posix' is what actually matters here: it pulls in gcc's linker
+    # selection and, critically, muon's gcc-family linker driver wraps
+    # multi-archive link lines in -Wl,--start-group/--end-group, which
+    # 'posix' does not. Without it, any project linking more than one
+    # interdependent static archive (a test suite's own utility lib
+    # linked after the library archives it depends on, e.g. pixman's
+    # test/utils/libtestutils.a) fails at link time with "undefined
+    # reference" to symbols that are right there in the not-yet-rescanned
+    # .a. detect() only checks for rcc's own honest, unmodified identity
+    # string ('rcc <version> <machine>') -- no claim of being GCC or GCC-
+    # copyrighted is made anywhere, in muon or in rcc's own --version.
+    inherit: 'gcc',
     detect: func(out str) -> int
         return 'rcc' in out ? 100 : 0
     endfunc,
-    handlers: {
-        'print_search_dirs': ['-print-search-dirs'],
-    },
 )
 EOF
  sh ./bootstrap.sh build
  # shellcheck disable=SC2086
  build/muon-bootstrap setup -Dlibpkgconf=disabled ${1:-} build
  build/muon-bootstrap -C build samu
+}
+
+shared_meson() {
+ # Real (upstream, Python) meson, for projects whose build won't accept
+ # muon as a substitute. Its GCC-family detection gates on the exact
+ # same literal string muon's does (mesonbuild/compilers/detect.py:
+ # "if 'Free Software Foundation' in out or out.startswith('xt-'):") --
+ # rcc's own --version output is honest about not being GCC or FSF-
+ # copyrighted, so patch meson's detector to also recognize rcc's real,
+ # unmodified identity string ("rcc <version> <machine>") instead of
+ # making rcc lie about its own name. Once past this gate meson
+ # independently confirms the guess via _get_gnu_compiler_defines()
+ # (compiling with -E -dM and checking __GNUC__ is defined), which
+ # rcc genuinely does for header-compatibility reasons -- so this tells
+ # meson to run the very same GNU-compatibility verification it would
+ # for gcc/clang, not to skip it.
+ pip install --user --break-system-packages meson >/dev/null 2>&1 || pip install --user meson >/dev/null 2>&1
+ MESON_DETECT=$(python3 -c "import mesonbuild.compilers.detect as m; print(m.__file__)")
+ sed -i "s|if 'Free Software Foundation' in out or out.startswith('xt-'):|if 'Free Software Foundation' in out or out.startswith('xt-') or out.startswith('rcc '):|" "$MESON_DETECT"
 }
 
 shared_redis_valkey_rm_flaky() {
