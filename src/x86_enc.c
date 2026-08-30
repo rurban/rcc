@@ -2936,6 +2936,23 @@ void x86_vpermpd(SecBuf *s, X86XmmReg d, X86XmmReg rm, uint8_t imm) {
     vex_rr(s, 1, 3, 1, 1, 0x01, d, X86_XMM0, rm);
     emit1(s, imm);
 }
+// vzeroupper/vzeroall: VEX.0F.WIG 77 -- the only VEX-encoded instruction
+// with zero register operands (no ModRM byte at all): VEX.128 (L=0)
+// zeros the upper 128 bits of every YMM register, leaving the low XMM
+// half untouched; VEX.256 (L=1, vzeroall) zeros all of every YMM
+// register including the low half. d/v/rm are all unused (XMM0) since
+// there is nothing to select. Found via a real OpenSSL build:
+// crypto/sha/sha512-x86_64.s (perlasm-generated) uses vzeroupper to
+// exit its AVX2 code path cleanly before returning to SSE/scalar
+// callers.
+void x86_vzeroupper(SecBuf *s) {
+    vex2(s, 0, 0, X86_XMM0, X86_XMM0, X86_XMM0);
+    emit1(s, 0x77);
+}
+void x86_vzeroall(SecBuf *s) {
+    vex2(s, 0, 1, X86_XMM0, X86_XMM0, X86_XMM0);
+    emit1(s, 0x77);
+}
 // vpermilps/vpermilpd (variable): 0F38 0C/0D
 VEX256_38(x86_vpermilps, 0x0c)
 VEX256_38(x86_vpermilpd, 0x0d)

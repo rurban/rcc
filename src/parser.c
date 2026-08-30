@@ -1114,6 +1114,32 @@ static Node *declare_builtin_on_demand(Token *tok) {
         ret_ty = ty_ullong;
         param_tys[0] = ty_ullong;
         nparams = 1;
+    } else if (equalc(tok, "__builtin_alloca")) {
+        // Only reached when the preprocessor's own __builtin_alloca ->
+        // alloca object-macro alias (preprocess.c's define_pre) failed
+        // to apply: glibc's <alloca.h> defines the *opposite* direction
+        // as a function-like macro (`#define alloca(size)
+        // __builtin_alloca(size)`), and a TU that pulls it in (directly,
+        // or transitively via <stdlib.h>/<stdbit.h> under _GNU_SOURCE)
+        // before __builtin_alloca is used via another macro (e.g.
+        // <string.h>'s GNU strdupa/strndupa) hits a two-macro ping-pong
+        // that the standard's hide-set rule correctly halts, leaving the
+        // *original* "__builtin_alloca(...)" spelling unexpanded. With
+        // no declaration anywhere for a function literally named
+        // "__builtin_alloca" (only "alloca" is ever declared), this call
+        // fell through to an implicit-int-returning undeclared-function
+        // default; the surrounding `(char *)` cast then sign-extended
+        // the (actually 64-bit pointer) result as if it were a 32-bit
+        // int, corrupting it. Synthesize the real `void *(size_t)`
+        // signature here, matching <alloca.h>'s own prototype, so the
+        // call expression's type is correct regardless of which macro
+        // direction won the preprocessor ping-pong. codegen.c's
+        // gen_funcall separately normalizes call_target so this is
+        // still recognized as the alloca stack-adjustment intrinsic,
+        // not emitted as an ordinary external call.
+        ret_ty = pointer_to(ty_void);
+        param_tys[0] = ty_ulong;
+        nparams = 1;
     } else {
         return NULL;
     }

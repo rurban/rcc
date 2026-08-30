@@ -47,7 +47,7 @@ char *bi_s_printf, *bi_s_fprintf, *bi_s_vprintf, *bi_s_vfprintf;
 char *bi_s_puts, *bi_s_fputs;
 char *bi_s_sprintf, *bi_s_snprintf;
 char *bi_s_scanf, *bi_s_fscanf, *bi_s_sscanf;
-char *bi_s_alloca;
+char *bi_s_alloca, *bi_s_builtin_alloca;
 char *bi_chk_printf, *bi_chk_vprintf;
 char *bi_chk_fprintf, *bi_chk_vfprintf;
 char *bi_sqrtps, *bi_sqrtss, *bi_rsqrtps;
@@ -160,6 +160,7 @@ void init_builtin_names(void) {
     bi_s_fscanf = _BI("fscanf");
     bi_s_sscanf = _BI("sscanf");
     bi_s_alloca = _BI("alloca");
+    bi_s_builtin_alloca = _SI("__builtin_alloca");
     bi_chk_printf = _BI("__printf_chk");
     bi_chk_vprintf = _BI("__vprintf_chk");
     bi_chk_fprintf = _BI("__fprintf_chk");

@@ -888,6 +888,8 @@ void x86_vpbroadcastw(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm);
 void x86_vpbroadcastd(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm);
 void x86_vpbroadcastq(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm);
 void x86_vpermq(SecBuf *s, X86XmmReg d, X86XmmReg rm, uint8_t imm);
+void x86_vzeroupper(SecBuf *s);
+void x86_vzeroall(SecBuf *s);
 void x86_vphaddd(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm);
 void x86_vphaddsw(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm);
 void x86_vphaddw(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm);

@@ -1013,12 +1013,14 @@ static X86Reg parse_x86_reg64(const char *s) {
     return X86_NOREG;
 }
 
-// Parse "%xmmN" -> X86_XMM0+N.  parse_x86_reg64 only knows GP registers.
+// Parse "%xmmN"/"%ymmN" -> X86_XMM0+N. Both spellings share the same
+// register-number space; see X86_ISXMM's comment on why accepting
+// either is correct regardless of which VEX width the mnemonic uses.
 static X86XmmReg parse_x86_xmm(const char *s) {
     if (!s || *s != '%') return X86_XMM0;
     s++;
     while (isspace((unsigned char)*s)) s++; // see parse_x86_reg64()'s comment
-    if (strncmp(s, "xmm", 3) != 0) return X86_XMM0;
+    if (strncmp(s, "xmm", 3) != 0 && strncmp(s, "ymm", 3) != 0) return X86_XMM0;
     return (X86XmmReg)(X86_XMM0 + atoi(s + 3));
 }
 
@@ -3111,7 +3113,16 @@ static bool x86_op_is_seg(const char *s) {
 // mis-encoding, not erroring). Mnemonics with a genuine XMM operand
 // (MOVDQA/MOVDQU/MOVD/MOVQ's xmm forms) must check this and dispatch
 // separately instead of falling into the generic GP-register path.
-#define X86_ISXMM(i) ((i)<nops && ops[i][0]=='%' && !strncmp(ops[i]+1,"xmm",3))
+// AVX2's 256-bit VEX instructions (vpblendd, vperm2i128, vpermq, ...)
+// spell their operands "%ymmN", the identical register *numbers* as
+// "%xmmN" -- the 128-vs-256-bit width is fixed by which encoder
+// function the mnemonic dispatches to (VEX.L is a hardcoded literal in
+// each x86_enc.c wrapper), never by the operand's own name spelling,
+// so accepting either name here for any VEX-dispatched mnemonic is
+// correct.  Found via a real OpenSSL build: crypto/sha/sha512-x86_64.s
+// (perlasm-generated) uses `%ymmN` throughout its AVX2 code path.
+#define X86_ISXMM(i) ((i)<nops && ops[i][0]=='%' && \
+                      (!strncmp(ops[i]+1,"xmm",3) || !strncmp(ops[i]+1,"ymm",3)))
 #define X86_ISIMM(i) ((i)<nops && ops[i][0]=='$')
 #define X86_ISMEM(i) ((i)<nops && (strchr(ops[i],'(')!=NULL || x86_op_is_seg(ops[i])))
 #define X86_ISSYM(i) ((i)<nops && ops[i][0]!='%' && ops[i][0]!='$' && \
@@ -3377,6 +3388,14 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     }
     if (!strcmp(mnem, "endbr64")) {
         x86_endbr64(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "vzeroupper")) {
+        x86_vzeroupper(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "vzeroall")) {
+        x86_vzeroall(buf);
         return true;
     }
     if (!strcmp(mnem, "int3")) {
@@ -3652,6 +3671,24 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         // vblendps $imm, src2, src1, dst (AT&T: ops[0]=imm, ops[1]=src2, ops[2]=src1, ops[3]=dst)
         if (is_xmm(0) && is_xmm(1) && is_xmm(2) && is_xmm(3))
             x86_vblendps_128(buf, parse_x86_xmm(ops[3]), parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "vpblendd")) {
+        // vpblendd $imm, src2, src1, dst (AT&T: ops[0]=imm, ops[1]=src2, ops[2]=src1, ops[3]=dst)
+        if (is_xmm(1) && is_xmm(2) && is_xmm(3))
+            x86_vpblendd(buf, parse_x86_xmm(ops[3]), parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "vperm2i128")) {
+        // vperm2i128 $imm, src2, src1, dst (AT&T: ops[0]=imm, ops[1]=src2, ops[2]=src1, ops[3]=dst)
+        if (is_xmm(1) && is_xmm(2) && is_xmm(3))
+            x86_vperm2i128(buf, parse_x86_xmm(ops[3]), parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "vpermq")) {
+        // vpermq $imm, src, dst (AT&T: ops[0]=imm, ops[1]=src, ops[2]=dst) -- single source, no NDS operand
+        if (is_xmm(1) && is_xmm(2))
+            x86_vpermq(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
         return true;
     }
     if (!strcmp(mnem, "vbroadcastss")) {

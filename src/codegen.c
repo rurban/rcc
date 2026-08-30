@@ -2204,6 +2204,29 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     bool is_asm_call = false;
     if (!call_target && node->lhs && node->lhs->var && node->lhs->var->is_function)
         call_target = node->lhs->var->name;
+    // rcc implements __builtin_alloca as a plain preprocessor object
+    // macro aliasing to "alloca" (see preprocess.c's define_pre), unlike
+    // real GCC/clang where it's a genuine front-end-recognized
+    // identifier immune to macro rules. glibc's own <alloca.h> defines
+    // the *opposite* direction as a function-like macro:
+    // `#define alloca(size) __builtin_alloca(size)`. A TU that includes
+    // <alloca.h> (directly, or transitively via <stdlib.h> under
+    // _GNU_SOURCE) before using __builtin_alloca via another macro
+    // (e.g. <string.h>'s strdupa/strndupa) hits a two-macro ping-pong:
+    // __builtin_alloca -> alloca -> __builtin_alloca -- correctly
+    // halted by the standard's hide-set rule (blue-painting
+    // __builtin_alloca from the first expansion carries through the
+    // second), leaving the ORIGINAL "__builtin_alloca(...)" spelling
+    // unexpanded in the token stream. Real GCC never hits this because
+    // __builtin_alloca isn't a macro there in the first place. Found via
+    // lwan (any TU pulling in <stdbit.h>/<stdlib.h> before <string.h>):
+    // "undefined reference to `__builtin_alloca'" at link time, because
+    // codegen's own alloca-recognition below only matched the literal
+    // "alloca" spelling, silently falling through to an ordinary
+    // (unresolvable) external call. Recognize both spellings here,
+    // normalizing to bi_s_alloca so every check below stays untouched.
+    if (call_target == bi_s_builtin_alloca)
+        call_target = bi_s_alloca;
     // __asm__("sym") on a declaration (glibc __REDIRECT): call the renamed symbol.
     // asm_name already has the Mach-O prefix; skip sym_name() at call site.
     if (node->lhs && node->lhs->var && node->lhs->var->is_function &&

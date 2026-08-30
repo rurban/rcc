@@ -221,7 +221,7 @@ extern char *bi_s_printf, *bi_s_fprintf, *bi_s_vprintf, *bi_s_vfprintf;
 extern char *bi_s_puts, *bi_s_fputs;
 extern char *bi_s_sprintf, *bi_s_snprintf;
 extern char *bi_s_scanf, *bi_s_fscanf, *bi_s_sscanf;
-extern char *bi_s_alloca;
+extern char *bi_s_alloca, *bi_s_builtin_alloca;
 extern char *bi_chk_printf, *bi_chk_vprintf;
 extern char *bi_chk_fprintf, *bi_chk_vfprintf;
 extern char *bi_sqrtps, *bi_sqrtss, *bi_rsqrtps;
