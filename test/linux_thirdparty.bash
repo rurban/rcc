@@ -687,7 +687,7 @@ test_jerryscript() {
  python3 tools/run-tests.py --unittest
  python3 tools/run-tests.py --jerry-tests
  python3 tools/run-tests.py --test262
- python3 tools/build.py
+ python3 tools/build.py --lto=off # rcc has no LTO pass
 }
 
 test_jq() {
@@ -802,7 +802,7 @@ test_libgit2(){
 
  ${is_CI+ sed -i '/\-sonline/d' tests/libgit2/CMakeLists.txt } # flaky
  cmake_init
- make && ctest --verbose
+ make -j"$(nproc)" && ctest --verbose
 }
 
 test_libgmp() {
