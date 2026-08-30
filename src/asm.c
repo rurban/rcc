@@ -1519,6 +1519,46 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
         as->obj->syms[idx].visibility = !strcmp(dir, "hidden") ? STV_HIDDEN
             : !strcmp(dir, "protected")                        ? STV_PROTECTED
                                                                : STV_INTERNAL;
+    } else if (!strcmp(dir, "comm") || !strcmp(dir, "lcomm")) {
+        // .comm name, size[, align] / .lcomm name, size[, align]: an
+        // uninitialized global (.comm) or file-local (.lcomm) data
+        // object. Real .comm additionally participates in cross-
+        // object-file "common symbol" merging (multiple .o files may
+        // each declare the same name via .comm; the linker keeps only
+        // the largest, in one shared .bss slot) -- rcc's own C-compiler
+        // codegen sidesteps that entirely by never emitting tentative
+        // definitions as true SHN_COMMON symbols in the first place
+        // (always a concrete .bss allocation, -fcommon accepted as a
+        // no-op since a single strong .bss definition is safe whenever
+        // only one translation unit actually provides the real
+        // definition -- the overwhelmingly common real-world shape).
+        // The standalone assembler mirrors that: allocate real .bss
+        // space for `name` right here instead of emitting a genuine
+        // SHN_COMMON entry. Found via a real OpenSSL build:
+        // crypto/x86_64cpuid.pl's perlasm output declares `.hidden
+        // OPENSSL_ia32cap_P` / `.comm OPENSSL_ia32cap_P,40,4` at file
+        // scope (before any .bss/.text switch) -- .comm was entirely
+        // unrecognized, silently dropped, leaving the symbol
+        // permanently undefined and every one of
+        // OPENSSL_ia32cap_P's many C-file references (cpuid.c, info.c,
+        // ...) unresolved at final link.
+        char *sym = strtok(args, ",");
+        if (!sym) return;
+        sym = skip_ws(sym);
+        trim_end(sym);
+        char *sizestr = strtok(NULL, ",");
+        if (!sizestr) return;
+        int64_t size = eval_asm_expr_here(as, sizestr);
+        char *alignstr = strtok(NULL, ",");
+        int64_t align = alignstr ? eval_asm_expr_here(as, alignstr) : 1;
+        if (align > 1) {
+            size_t rem = as->obj->bss_size % (size_t)align;
+            if (rem) as->obj->bss_size += (size_t)align - rem;
+        }
+        size_t off = as->obj->bss_size;
+        as->obj->bss_size += (size_t)size;
+        SymBind bind = !strcmp(dir, "lcomm") ? SB_LOCAL : SB_GLOBAL;
+        objfile_add_sym(as->obj, sym, SEC_BSS, off, (uint64_t)size, bind, ST_OBJECT);
     } else if (!strcmp(dir, "type")) {
         // Real GAS's ".type sym, TYPE_DESC" accepts several spellings for
         // TYPE_DESC — "@function"/"%function" (the common hand-written
