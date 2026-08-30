@@ -428,7 +428,33 @@ int objfile_find_or_add_section(ObjFile *obj, const char *name,
 }
 
 void objfile_section_align(ObjFile *obj, int section, uint32_t align) {
-    if (section < SEC_NUM || section - SEC_NUM >= obj->extra_sec_count) return;
+    // Built-in sections (.text/.data/.rodata/.tdata/...) track their own
+    // sh_addralign directly on the SecBuf itself (elf_write.c reads
+    // e.g. obj->rodata.align when emitting the .rodata section header);
+    // only sections >= SEC_NUM are the dynamically-registered
+    // (GAS `.section NAME`) kind this function's own ExtraSection path
+    // below was written for. Previously this function unconditionally
+    // early-returned for section < SEC_NUM, silently dropping every
+    // `.align`/`.balign`/`.p2align` alignment request made against a
+    // built-in section: the requested padding was still correctly
+    // inserted *within* this object file's own buffer (a separate,
+    // already-working mechanism -- see asm.c's FIXUP_ALIGN resolution),
+    // but the section's own sh_addralign metadata never rose to match,
+    // so a linker merging this object with others had no reason to
+    // start the merged section at a matching boundary, and the
+    // within-file padding's effect vanished in the final binary. Found
+    // via a real OpenSSL build: crypto/bn/asm/x86_64-mont5.pl's
+    // `.section .rodata` + `.align 64` before its .Linc constant table
+    // (read by 16-byte-aligned-only MOVDQA loads in
+    // bn_mul_mont_gather5) -- the final linked .rodata section's own
+    // sh_addralign stayed 1, .Linc landed unaligned, and every MOVDQA
+    // against it segfaulted.
+    if (section < SEC_NUM) {
+        SecBuf *buf = objfile_section_buf(obj, section);
+        if (buf && align > buf->align) buf->align = align;
+        return;
+    }
+    if (section - SEC_NUM >= obj->extra_sec_count) return;
     ExtraSection *es = &obj->extra_secs[section - SEC_NUM];
     if (align > es->align) es->align = align;
 }
