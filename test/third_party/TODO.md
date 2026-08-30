@@ -5390,3 +5390,48 @@ as genuine non-rcc issues (`openrc`, `pacman`, `lwan`,
 they are blocked on missing tools, upstream/build-tool bugs, or a test
 harness gap, not rcc correctness. `nqp` and `test_python` stay
 unchecked pending the deeper computed-goto-class bisection noted above.
+
+### Reverified (2026-08-30, checklist.txt remaining-3 follow-up: libopus/php/tcl)
+
+Triaged the three `checklist.txt` entries not covered by the sweep
+above.
+
+- **libopus**: NOT an rcc bug. `tests/test_opus_api.c` uses glibc's
+  `__malloc_hook`, an API glibc removed entirely in 2.34 (2021).
+  Confirmed by compiling the exact same usage with system gcc on this
+  machine (glibc 2.43): identical `'__malloc_hook' undeclared` error.
+  opus's own test predates that glibc removal; nothing rcc can do
+  short of inventing a symbol glibc itself no longer provides.
+- **php**: mostly passing -- 16883/16904 non-skipped tests pass
+  (99.8%). All but 2 of the 21 failures cluster tightly around
+  OpenSSL/TLS (`ext/openssl/tests/tls_*`, `stream_crypto_flags_*`) and
+  Phar signing (`ext/phar/tests/*signaturealgo*`, which also goes
+  through OpenSSL hashing) plus 2 `ftps://` network-stream tests --
+  consistent with a system-OpenSSL-version/cert/network-environment
+  mismatch rather than a widespread rcc codegen issue (a real
+  code-generation bug would not spare 99.8% of a suite this size,
+  including the Zend engine's own extensive test corpus). Two
+  isolated non-OpenSSL failures (`lazy_objects/reset_as_lazy_while_
+init_exception.phpt`, `ext/ffi/tests/bug80847.phpt` "Nested
+  structs") were NOT individually root-caused this session and may be
+  worth a closer look if `php` becomes a priority.
+- **tcl**: NOT yet isolated; genuinely unclear. `tcltest` builds and
+  runs, but `make test` fails at the very first step:
+  `application-specific initialization failed: Cannot find a usable
+init.tcl`, then `//zipfs:/lib/tcl/tcl_library/init.tcl: bad level
+"#0"`. Tcl 9.0 defaults to `ZIPFS_BUILD=1` (embeds `library/` as a
+  zip appended to the binary, mounted at runtime as a `zipfs://`
+  virtual filesystem) -- confirmed the generated `libtcl9.0.4.zip` is
+  byte-valid (`unzip -t`: no errors) and is the right content, so the
+  archive itself isn't corrupt. The runtime error is a Tcl _script_-
+  level failure (`uplevel #0` failing with "bad level") while
+  bootstrapping from inside that zipfs-mounted `init.tcl`, which
+  points at the interpreter's own call-frame/level-tracking machinery
+  rather than a missing-file problem -- structurally similar in
+  _class_ to the nqp/python findings above (a deep interpreter-
+  internals divergence) but NOT confirmed as the same root cause, and
+  NOT confirmed as an rcc bug at all yet (could equally be a Tcl-9.0-
+  specific zipfs/build-environment quirk). Needs a real gcc-vs-rcc
+  differential build of the full `tcl` tree (not just the zip
+  contents) to determine whether this is rcc-caused before spending
+  more time bisecting it.
