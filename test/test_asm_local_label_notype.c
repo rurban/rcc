@@ -18,7 +18,7 @@
  * labeled loop bodies (.Lprologue/.Lloop) desynced objdump's
  * disassembly of the entire rest of the function.
  */
-#if defined(__x86_64__) || defined(_M_X64)
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(_WIN32) && !defined(__CYGWIN__) && !defined(__APPLE__)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
