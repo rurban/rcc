@@ -5,6 +5,17 @@ set -o pipefail
 # TOP="$(dirname "$0")"/third_party
 
 MUON=muon
+
+# muon's internal pkgconf reimplementation doesn't fall back to a
+# multilib system's actual default search dirs the way real pkg-config
+# does (verified: real pkg-config finds e.g. libacl.pc via its compiled-
+# in /usr/lib64/pkgconfig default even when PKG_CONFIG_PATH omits it;
+# muon's internal implementation does not) -- so any meson/muon project
+# depending on a lib64-only .pc file (libacl, libcap, libarchive,
+# gtest_main, ...) reported "dependency ... found: NO" even though the
+# -devel package was installed. Set it explicitly so muon sees the same
+# directories a real pkg-config invocation would.
+export PKG_CONFIG_PATH="/usr/lib64/pkgconfig:/usr/share/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 if [ "$CC" = ./slimcc ]; then
  is_CI=
  SRC_DIR="$(dirname "$(realpath "$CC")")"

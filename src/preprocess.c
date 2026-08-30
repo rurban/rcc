@@ -266,7 +266,7 @@ struct PPLvl {
     int reported_line, line_idx;
     int *counts;
     char *buf;
-    char *filename, *fpath;
+    char *filename, *fpath, *incbase;
     CondIncl *conds;
     bool bol, dead_in_comment, dead_in_string;
 };
@@ -733,14 +733,14 @@ static char *resolve_include_raw(char *curr_file, char *curr_display, char *spec
 // would a bare #include from this file actually resolve to") to
 // recognize that exact self-reference collision as its "already active"
 // signal in the first place.
-static char *resolve_include(char *curr_file, char *spec, bool is_angle,
+static char *resolve_include(char *curr_file, char *curr_display, char *spec, bool is_angle,
                              char **out_file, bool allow_cwd_fallback) {
     if (!is_angle) {
         char *dir = path_dirname(curr_file);
         char *path = path_join(dir, spec);
         if (file_exists(path)) {
             if (out_file)
-                *out_file = path_join(path_dirname(curr_file), spec);
+                *out_file = path_join(path_dirname(curr_display), spec);
             return canonical_path(path);
         }
     }
@@ -1157,6 +1157,7 @@ static void push_level(char *display, char *fpath, char *contents) {
     l->counts = sp.line_counts;
     l->buf = sp.text;
     l->filename = display;
+    l->incbase = display;
     l->fpath = fpath;
     l->bol = true;
     l->next = lvl;
@@ -2561,7 +2562,7 @@ static int64_t eval_primary_tok(Token **pp) {
             }
             if (ptok(t, ")")) t = t->next;
             *pp = t;
-            return spec ? resolve_include(lvl->filename, spec, is_angle, NULL, false) != NULL : 0;
+            return spec ? resolve_include(lvl->incbase, lvl->incbase, spec, is_angle, NULL, false) != NULL : 0;
         }
         if (nm == kw_has_c_attribute) {
             t = t->next;
@@ -3019,7 +3020,7 @@ static void do_directive(void) {
         if (!spec) return;
         char *disp = NULL;
         char *path = dn == dn_include_next ? resolve_include_next(lvl->fpath, spec, is_angle)
-                                           : resolve_include(lvl->filename, spec, is_angle, &disp, false);
+                                           : resolve_include(lvl->incbase, lvl->incbase, spec, is_angle, &disp, false);
         if (!path) {
             fprintf(stderr, "%s:%d: error: include file '%s' not found\n", lvl->fpath, lvl->reported_line, spec);
             exit(1);
@@ -3088,7 +3089,7 @@ static void do_directive(void) {
             }
             parm = parm->next;
         }
-        char *path = resolve_include(lvl->filename, spec, is_angle, NULL, true);
+        char *path = resolve_include(lvl->incbase, lvl->incbase, spec, is_angle, NULL, true);
         if (!path) {
             fprintf(stderr, "%s:%d: error: #embed file '%s' not found\n", lvl->fpath, lvl->reported_line, spec);
             exit(1);
