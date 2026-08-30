@@ -41,9 +41,17 @@ int main(void) {
         ".text\n"
         ".globl movd_roundtrip\n"
         "movd_roundtrip:\n"
+#ifdef _WIN32
+        /* Microsoft x64 ABI: first integer argument arrives in %rcx. */
+        "    movd (%rcx), %xmm0\n"
+        "    movd %xmm0, 4(%rcx)\n"
+        "    movl 4(%rcx), %eax\n"
+#else
+        /* SysV AMD64 ABI: first integer argument arrives in %rdi. */
         "    movd (%rdi), %xmm0\n"
         "    movd %xmm0, 4(%rdi)\n"
         "    movl 4(%rdi), %eax\n"
+#endif
         "    ret\n";
 
     FILE *f = fopen(srcf, "w");

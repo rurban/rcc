@@ -38,15 +38,38 @@ int main(void) {
     snprintf(objf, sizeof(objf), "%s/test_mulx_%d.o", td, pid);
     snprintf(exef, sizeof(exef), "%s/test_mulx_%d", td, pid);
 
-    /* unsigned __int128 mulx_test(unsigned long a, unsigned long b):
-     * rdx <- a (first arg), mulx computes rdx*rsi -> rdx:rax (high:low),
-     * matching the SysV __int128 return convention (rax=low,rdx=high). */
+    /* void mulx_test(unsigned long long a, unsigned long long b,
+     *                 unsigned long long *lo, unsigned long long *hi):
+     * writes a*b's low/high 64-bit halves through the two out-pointers.
+     * `long long` (not `long`) is required here: `long` is only 32 bits
+     * under Windows' LLP64 model, and this hand-written asm always
+     * moves/stores full 64-bit registers -- a `long`-typed out-pointer
+     * would have the callee overrun its 4-byte stack slot with an
+     * 8-byte store. (Not returned as a 128-bit value: SysV returns
+     * __int128 in rax:rdx, but Windows x64 has no such convention -- an
+     * out-pointer pair sidesteps the ABI divergence entirely and keeps
+     * this test focused on mulx's own encoding/semantics, not calling
+     * conventions.) */
     static const char src[] =
         ".text\n"
         ".globl mulx_test\n"
         "mulx_test:\n"
-        "    movq %rdi, %rdx\n"
-        "    mulx %rsi, %rax, %rdx\n"
+#ifdef _WIN32
+        /* Microsoft x64 ABI: a=%rcx, b=%rdx, lo=%r8, hi=%r9. */
+        "    movq %rdx, %r10\n"   /* save b (rdx is about to be overwritten) */
+        "    movq %rcx, %rdx\n"   /* rdx = a (mulx's implicit multiplicand) */
+        "    mulx %r10, %rax, %r11\n" /* r11:rax = a*b (src=b via %r10) */
+        "    movq %rax, (%r8)\n"
+        "    movq %r11, (%r9)\n"
+#else
+        /* SysV AMD64 ABI: a=%rdi, b=%rsi, lo=%rdx, hi=%rcx. */
+        "    movq %rdx, %r10\n"   /* save lo-ptr (rdx is about to be overwritten) */
+        "    movq %rcx, %r11\n"   /* save hi-ptr (rcx is mulx's dst_high) */
+        "    movq %rdi, %rdx\n"   /* rdx = a (mulx's implicit multiplicand) */
+        "    mulx %rsi, %rax, %rcx\n" /* rcx:rax = a*b (src=b via %rsi) */
+        "    movq %rax, (%r10)\n"
+        "    movq %rcx, (%r11)\n"
+#endif
         "    ret\n";
 
     FILE *f = fopen(srcf, "w");
@@ -72,15 +95,21 @@ int main(void) {
     }
     remove(srcf);
 
-    if (!strstr(out, "c4 e2") || !strstr(out, "mulx")) {
+    if (!strstr(out, "fb f6") || !strstr(out, "mulx")) {
         printf("FAIL: expected a VEX-encoded mulx instruction, got:\n%s\n", out);
         remove(objf);
         return 1;
     }
-    /* The old bug encoded this as a plain one-operand `mul %rsi`
-     * (48 f7 e6), never a VEX prefix at all -- if that shows up instead
-     * of the real mulx encoding, the dispatch regressed. */
+    /* The old bug encoded this as a plain one-operand `mul %reg`
+     * (a REX.W F7 /4 opcode), never a VEX prefix at all -- if that
+     * shows up instead of the real mulx encoding, the dispatch
+     * regressed. Check whichever source register this platform's
+     * variant above actually multiplies by. */
+#ifdef _WIN32
+    if (strstr(out, "49 f7 e2") || strstr(out, "mul    %r10")) {
+#else
     if (strstr(out, "48 f7 e6") || strstr(out, "mul    %rsi")) {
+#endif
         printf("FAIL: mulx mis-encoded as plain one-operand mul:\n%s\n", out);
         remove(objf);
         return 1;
@@ -89,15 +118,16 @@ int main(void) {
     char csrc[512];
     snprintf(csrc, sizeof(csrc),
              "#include <stdio.h>\n"
-             "extern unsigned __int128 mulx_test(unsigned long a, unsigned long b);\n"
+             "extern void mulx_test(unsigned long long a, unsigned long long b,\n"
+             "                      unsigned long long *lo, unsigned long long *hi);\n"
              "int main(void) {\n"
-             "    unsigned __int128 r = mulx_test(0xFFFFFFFFFFFFFFFFULL, 3);\n"
-             "    unsigned long lo = (unsigned long)r;\n"
-             "    unsigned long hi = (unsigned long)(r >> 64);\n"
-             "    printf(\"%%lx %%lx\\n\", hi, lo);\n"
+             "    unsigned long long lo, hi;\n"
+             "    mulx_test(0xFFFFFFFFFFFFFFFFULL, 3, &lo, &hi);\n"
+             "    printf(\"%%llx %%llx\\n\", hi, lo);\n"
              "    /* 0xFFFFFFFFFFFFFFFF * 3 = 0x2FFFFFFFFFFFFFFFD */\n"
              "    return !(hi == 0x2 && lo == 0xFFFFFFFFFFFFFFFDULL);\n"
              "}\n");
+
     char csrcf[128];
     snprintf(csrcf, sizeof(csrcf), "%s/test_mulx_main_%d.c", td, pid);
     FILE *fc = fopen(csrcf, "w");
