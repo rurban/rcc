@@ -9765,7 +9765,20 @@ VReg gen(Node *node) {
             else
                 emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
 #else
-            if (node->var->is_weak || var_needs_got(node->var))
+            // A function with no local definition in this TU (is_extern)
+            // may end up resolved from a shared library at load time.
+            // Its address-of must then match whatever GOT-relative
+            // address the *defining* module's own -fPIC code computes
+            // for the same function (var_needs_got() there is always
+            // true for a non-static global) -- a direct lea to this
+            // module's own PLT-style stub, used regardless of opt_pic
+            // whenever this TU merely declares (never defines) the
+            // function, gave two different values for "the same
+            // function's address" depending on which module took it
+            // (found via jq: main.c registers &jq_util_input_next_input_cb
+            // as a callback, libjq.so's own util.c later asserts the
+            // stored pointer == its own &jq_util_input_next_input_cb).
+            if (node->var->is_weak || node->var->is_extern || var_needs_got(node->var))
                 asm_mov_got_rip_reg(cg_sec, r, var_sym_label(node->var)); // mov sym@GOTPCREL(%rip), r
             else
                 asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var)); // lea rip, rr
