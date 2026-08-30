@@ -86,6 +86,106 @@ __rcc_inline __m128 _mm_cmple_ps(__m128 __a, __m128 __b) { return __a <= __b; }
 __rcc_inline __m128 _mm_cmpgt_ps(__m128 __a, __m128 __b) { return __a > __b; }
 __rcc_inline __m128 _mm_cmpge_ps(__m128 __a, __m128 __b) { return __a >= __b; }
 
+// Scalar compares (lane 0 only; lanes 1-3 pass through from __a unchanged).
+// `__a == __b` etc. on the vector type already yields a same-typed mask
+// (all-bits-set/all-bits-clear per lane, GCC vector-extension semantics --
+// see the packed compares above), so lane 0 of that mask copies straight
+// into lane 0 of the result with no reinterpretation needed. The "not"
+// forms use plain C float comparisons: IEEE 754 already makes `<`/`<=`/`>`/
+// `>=`/`==` false and `!=` true whenever either operand is NaN, so negating
+// the base predicate reproduces the hardware CMPNLTSS/CMPNLESS/CMPNGTSS/
+// CMPNGESS "true on unordered" behavior exactly.
+__rcc_inline __m128 _mm_cmpeq_ss(__m128 __a, __m128 __b) {
+    __m128 __m = (__a == __b);
+    __a[0] = __m[0];
+    return __a;
+}
+__rcc_inline __m128 _mm_cmplt_ss(__m128 __a, __m128 __b) {
+    __m128 __m = (__a < __b);
+    __a[0] = __m[0];
+    return __a;
+}
+__rcc_inline __m128 _mm_cmple_ss(__m128 __a, __m128 __b) {
+    __m128 __m = (__a <= __b);
+    __a[0] = __m[0];
+    return __a;
+}
+__rcc_inline __m128 _mm_cmpgt_ss(__m128 __a, __m128 __b) {
+    __m128 __m = (__a > __b);
+    __a[0] = __m[0];
+    return __a;
+}
+__rcc_inline __m128 _mm_cmpge_ss(__m128 __a, __m128 __b) {
+    __m128 __m = (__a >= __b);
+    __a[0] = __m[0];
+    return __a;
+}
+__rcc_inline __m128 _mm_cmpneq_ss(__m128 __a, __m128 __b) {
+    __m128 __m = (__a != __b);
+    __a[0] = __m[0];
+    return __a;
+}
+// Note: unlike the predicates above, `_mm_cmpXX_ss` here has no direct
+// vector-compare operator to invert (C has no "not-less-than" operator),
+// and the mask must be a genuine all-bits-set/all-bits-clear pattern (not
+// the numeric value -1.0f/1.0f, which callers routinely feed into
+// `_mm_and_ps`/`_mm_andnot_ps` as a bitwise selector) -- so invert the
+// base predicate's bits through a union rather than produce a float value.
+__rcc_inline __m128 _mm_cmpnlt_ss(__m128 __a, __m128 __b) {
+    __m128 __m = (__a < __b);
+    union {
+        float f;
+        unsigned u;
+    } __bits;
+    __bits.f = __m[0];
+    __bits.u = ~__bits.u;
+    __a[0] = __bits.f;
+    return __a;
+}
+__rcc_inline __m128 _mm_cmpnle_ss(__m128 __a, __m128 __b) {
+    __m128 __m = (__a <= __b);
+    union {
+        float f;
+        unsigned u;
+    } __bits;
+    __bits.f = __m[0];
+    __bits.u = ~__bits.u;
+    __a[0] = __bits.f;
+    return __a;
+}
+__rcc_inline __m128 _mm_cmpngt_ss(__m128 __a, __m128 __b) {
+    __m128 __m = (__a > __b);
+    union {
+        float f;
+        unsigned u;
+    } __bits;
+    __bits.f = __m[0];
+    __bits.u = ~__bits.u;
+    __a[0] = __bits.f;
+    return __a;
+}
+__rcc_inline __m128 _mm_cmpnge_ss(__m128 __a, __m128 __b) {
+    __m128 __m = (__a >= __b);
+    union {
+        float f;
+        unsigned u;
+    } __bits;
+    __bits.f = __m[0];
+    __bits.u = ~__bits.u;
+    __a[0] = __bits.f;
+    return __a;
+}
+__rcc_inline __m128 _mm_cmpord_ss(__m128 __a, __m128 __b) {
+    __m128 __m = (__a == __a) & (__b == __b);
+    __a[0] = __m[0];
+    return __a;
+}
+__rcc_inline __m128 _mm_cmpunord_ss(__m128 __a, __m128 __b) {
+    __m128 __m = (__a != __a) | (__b != __b);
+    __a[0] = __m[0];
+    return __a;
+}
+
 // --- Min / max -------------------------------------------------------------
 __rcc_inline __m128 _mm_min_ps(__m128 __a, __m128 __b) {
     __m128 __r;

@@ -639,8 +639,20 @@ int main(int argc, char **argv) {
             opt_ms_bitfields = true;
         } else if (!strcmp(argv[i], "-mno-ms-bitfields")) {
             opt_ms_bitfields = false;
-        } else if (!strcmp(argv[i], "-pie") || !strcmp(argv[i], "-fPIE") ||
-                   !strcmp(argv[i], "-fpie")) {
+        } else if (!strcmp(argv[i], "-fPIE") || !strcmp(argv[i], "-fpie")) {
+            // -fPIE/-fpie request position-independent CODE for an
+            // executable, same as -fPIC/-fpic for a shared object: taking
+            // the address of an external symbol (e.g. `write` used as a
+            // function pointer) must load it through the GOT rather than
+            // bake in a direct RIP-relative offset, or the linker rejects
+            // the resulting text relocation ("relocation R_X86_64_PC32
+            // against symbol `write@@GLIBC_2.2.5` can not be used when
+            // making a PIE object"). Plain `-pie` (link-only, no `-f`) is
+            // deliberately excluded: real GCC treats it as a linker-only
+            // switch that doesn't by itself change codegen.
+            opt_pie = true;
+            opt_pic = true;
+        } else if (!strcmp(argv[i], "-pie")) {
             opt_pie = true;
         } else if (!strcmp(argv[i], "-fPIC") || !strcmp(argv[i], "-fpic")) {
             opt_pic = true;

@@ -3317,7 +3317,27 @@ static bool eval_double_const_expr(Node *node, double *val) {
     case ND_DIV:
         if (fenv_access && node->ty && is_flonum(node->ty)) return false;
         if (!eval_double_const_expr(node->lhs, &lhs) || !eval_double_const_expr(node->rhs, &rhs)) return false;
-        *val = lhs / rhs;
+        if (node->ty && is_integer(node->ty)) {
+            // Integer division truncates toward zero (C11 6.5.5p6), unlike
+            // this function's usual double-precision arithmetic -- an
+            // int-typed sub-expression buried inside a larger float
+            // constant expression (e.g. a fixed-point "(A * B) / C"
+            // computed in integer math, then divided by a float literal
+            // to get a real-world unit) must discard its fractional part
+            // right here, or the caller folding the outer float division
+            // silently gets a materially different value: this exact
+            // pattern -- `((100 * 60 * 1000) / 1001) / 100.0f` computing
+            // an NTSC 59.94 fps constant -- previously folded the inner
+            // integer division as plain double math (6000000.0/1001.0 =
+            // 5994.0059..., never truncated to the correct 5994), then
+            // divided by 100.0f to land on a float noticeably off from
+            // the runtime-computed value of the identical expression.
+            if (rhs == 0.0) return false; // division by zero: not a valid constant expression
+            long long il = (long long)lhs, ir = (long long)rhs;
+            *val = (double)(il / ir);
+        } else {
+            *val = lhs / rhs;
+        }
         if (node->ty && node->ty->kind == TY_FLOAT) *val = (float)*val;
         return true;
     case ND_NEG:

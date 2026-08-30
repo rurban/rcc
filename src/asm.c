@@ -255,7 +255,8 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
         // all (and FIXUP_SKIP_MAXDIFF's `label` isn't even a branch target
         // to patch — it's just the first operand of a length expression).
         if (fx->kind == FIXUP_LABELDIFF || fx->kind == FIXUP_SKIP_MAXDIFF ||
-            fx->kind == FIXUP_ALIGN || fx->kind == FIXUP_REL32_DEFERRED) continue;
+            fx->kind == FIXUP_ALIGN || fx->kind == FIXUP_REL32_DEFERRED ||
+            fx->kind == FIXUP_REL8_DEFERRED) continue;
         if (strcmp(fx->label, name) != 0) continue;
         if (fx->kind == FIXUP_PCREL_DATA) {
             // Forward reference in a "(label) - ." data directive (e.g. the
@@ -4101,6 +4102,49 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
+    // LOOP/LOOPE/LOOPNE/JECXZ/JRCXZ: checked before Jcc below since jecxz/
+    // jrcxz would otherwise match Jcc's `mnem[0]=='j'` dispatch and parse
+    // "ecxz"/"rcxz" as a (nonexistent) condition code. Unlike Jcc/JMP,
+    // this family has no 32-bit-displacement encoding at all -- only an
+    // 8-bit relative branch -- so it needs its own deferred-patch fixup
+    // (FIXUP_REL8_DEFERRED) instead of reusing FIXUP_REL32_DEFERRED.
+    // Real-world uses (perlasm-generated crypto inner loops, e.g.
+    // OpenSSL's cmll-x86_64.s) always branch backward to an already-
+    // defined nearby label, so only that path is implemented; anything
+    // else is rejected below rather than silently mis-encoded.
+    if (!strcmp(mnem, "loop") || !strcmp(mnem, "loope") || !strcmp(mnem, "loopz") ||
+        !strcmp(mnem, "loopne") || !strcmp(mnem, "loopnz") ||
+        !strcmp(mnem, "jecxz") || !strcmp(mnem, "jrcxz")) {
+        uint8_t opcode;
+        if (!strcmp(mnem, "loopne") || !strcmp(mnem, "loopnz")) opcode = 0xe0;
+        else if (!strcmp(mnem, "loope") || !strcmp(mnem, "loopz"))
+            opcode = 0xe1;
+        else if (!strcmp(mnem, "loop"))
+            opcode = 0xe2;
+        else
+            opcode = 0xe3; // jecxz / jrcxz
+        char *lbl = ops[0];
+        strip_plt_suffix(lbl);
+        if (!strcmp(mnem, "jecxz")) emit1(buf, 0x67); // 32-bit address-size override
+        emit2(buf, opcode, 0); // placeholder displacement
+        int sec = 0;
+        int64_t toff = (op0_dir == 'f') ? -1 : lookup_local(as, lbl, &sec);
+        if (toff >= 0 && sec == as->cur_sec) {
+            struct Fixup *fx = fixups_next(as);
+            if (fx) {
+                fx->patch_off = buf->len - 1;
+                fx->section = as->cur_sec;
+                fx->kind = FIXUP_REL8_DEFERRED;
+                fx->size = lookup_local_idx(as, lbl);
+                fx->addend = 0;
+            }
+        } else {
+            fprintf(stderr, "rcc: error: %s %s: forward or external branch target not supported\n", mnem, lbl);
+            exit(1);
+        }
+        return true;
+    }
+
     // Jcc
     if (mnem[0] == 'j' && strlen(mnem) <= 6) {
         const char *cc_s = mnem + 1;
@@ -7094,6 +7138,27 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
         if (!sb) continue;
         int32_t delta = (int32_t)((int64_t)tls->offset - ((int64_t)fx->patch_off + 4));
         memcpy(sb->data + fx->patch_off, &delta, 4);
+    }
+
+    // Same as above, for the LOOP/LOOPcc/JECXZ family's 8-bit displacement
+    // (see FIXUP_REL8_DEFERRED's comment in obj.h). Real GAS would error
+    // out ("too far") rather than silently truncate; matching that keeps a
+    // target outside rel8 range loud instead of emitting a corrupt branch.
+    for (int i = 0; i < as.nfixups; i++) {
+        struct Fixup *fx = &as.fixups[i];
+        if (fx->kind != FIXUP_REL8_DEFERRED) continue;
+        if (fx->size < 0 || fx->size >= as.nlocals) continue;
+        struct LocalSym *tls = &as.locals[fx->size];
+        if (tls->section != fx->section) continue;
+        SecBuf *sb = objfile_section_buf(obj, fx->section);
+        if (!sb) continue;
+        int64_t delta = (int64_t)tls->offset - ((int64_t)fx->patch_off + 1);
+        if (delta < -128 || delta > 127) {
+            fprintf(stderr, "rcc: error: %s: branch target too far for 8-bit displacement\n", fx->label);
+            exit(1);
+        }
+        int8_t d8 = (int8_t)delta;
+        memcpy(sb->data + fx->patch_off, &d8, 1);
     }
 
     // Resolve forward fixups against existing symbols

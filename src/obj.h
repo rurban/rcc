@@ -203,6 +203,11 @@ struct ObjReloc {
 // see that later shift. `size` holds the as->locals[] index of the
 // disambiguated target occurrence (itself correctly shifted in step with
 // every insertion, same as any other label), not a byte width.
+#define FIXUP_REL8_DEFERRED 10 // identical to FIXUP_REL32_DEFERRED, for the
+// x86 LOOP/LOOPE/LOOPNE/JECXZ/JRCXZ family: these have no 32-bit-operand
+// encoding at all (unlike Jcc/JMP), only an 8-bit relative displacement,
+// so the deferred byte patch is 1 byte wide instead of 4. `size` holds
+// the as->locals[] index exactly as FIXUP_REL32_DEFERRED does.
 
 // ---------------------------------------------------------------------------
 // Win64 SEH unwind info (x86-64 only). Captured during codegen, emitted by
