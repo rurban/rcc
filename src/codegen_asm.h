@@ -2156,7 +2156,7 @@ static inline void asm_ldr_reg_off(SecBuf *s, VReg dst_r, VReg base_r, int size,
 #ifdef ARCH_ARM64
     switch (size) {
     case 1: arm64_ldrb_uoff(s, REG(dst_r), REG(base_r), uimm); break;
-    case 2: arm64_ldrh_uoff(s, REG(dst_r), REG(base_r), uimm); break;
+    case 2: arm64_ldrh_uoff(s, REG(dst_r), REG(base_r), uimm / 2); break;
     case 4: arm64_ldr_uoff(s, 2, REG(dst_r), REG(base_r), uimm / 4); break;
     default: arm64_ldr_uoff(s, 3, REG(dst_r), REG(base_r), uimm / 8); break;
     }
@@ -2170,7 +2170,7 @@ __attribute__((unused)) static void asm_str_reg_off(SecBuf *s, int src_r, int ba
 #ifdef ARCH_ARM64
     switch (size) {
     case 1: arm64_strb_uoff(s, REG(src_r), REG(base_r), uimm); break;
-    case 2: arm64_strh_uoff(s, REG(src_r), REG(base_r), uimm); break;
+    case 2: arm64_strh_uoff(s, REG(src_r), REG(base_r), uimm / 2); break;
     case 4: arm64_str_uoff(s, 2, REG(src_r), REG(base_r), uimm / 4); break;
     default: arm64_str_uoff(s, 3, REG(src_r), REG(base_r), uimm / 8); break;
     }
@@ -2185,7 +2185,7 @@ __attribute__((unused)) static void asm_str_reg_off(SecBuf *s, int src_r, int ba
 __attribute__((unused)) static void asm_str_reg_off_phy(SecBuf *s, Arm64Reg src_phy, VReg base_r, int size, uint32_t uimm) {
     switch (size) {
     case 1: arm64_strb_uoff(s, src_phy, REG(base_r), uimm); break;
-    case 2: arm64_strh_uoff(s, src_phy, REG(base_r), uimm); break;
+    case 2: arm64_strh_uoff(s, src_phy, REG(base_r), uimm / 2); break;
     case 4: arm64_str_uoff(s, 2, src_phy, REG(base_r), uimm / 4); break;
     default: arm64_str_uoff(s, 3, src_phy, REG(base_r), uimm / 8); break;
     }
