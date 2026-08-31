@@ -5503,3 +5503,57 @@ unfixed bug — likely the GC-liveness issue documented in the
 `test_nqp` and `test_python` are re-triaged: `test_python` should now
 be re-verified as passing (this fix resolves its root cause);
 `test_nqp` stays on `unfixed.txt`.
+
+### Investigated further, still open (2026-08-31, nqp/MoarVM differential trace)
+
+Applied the same rigorous methodology that found and fixed the real
+CPython bug (above) to MoarVM's `interp.c`, to check whether it's the
+same root cause. It is NOT.
+
+- **LABELS[] array verified byte-exact correct** (same technique as
+  CPython's `opcode_targets[256]`): extracted all 1997 relocations in
+  the compiled `interp.o`'s `.rela.data` and compared each against its
+  expected `.L.label.MVM_interp_run.OP_*` symbol -- zero mismatches.
+  Rules out the forward-label-array theory for MoarVM too, same as
+  CPython.
+- **Opcode-level differential trace**: instrumented `NEXT_OP` to log
+  every dispatched opcode, built two full `libmoar.so`s (interp.o
+  compiled with gcc vs. rcc, every other object rcc-compiled
+  identically in both), ran both against the exact failing bootstrap
+  command. The traces are **byte-identical for all ~5153 opcodes**
+  dispatched before the crash -- rcc's `interp.c` computes the exact
+  same sequence of opcodes as gcc's up to the crash point. The last
+  opcode dispatched is `OP_param_rp_s` (index 143), whose one-line
+  handler (`GET_REG(cur_op,0).s = MVM_args_get_required_pos_str(tc,
+&tc->cur_frame->params, GET_UI16(cur_op,2));`) does a plain 8-byte
+  pointer-returning call -- not a small-struct return, so NOT an
+  instance of the store-width bug fixed above. The crash is inside
+  `MVM_args_get_required_pos_str` -> `MVM_repr_get_str` (a REPR
+  vtable dispatch) in `src/core/args.c`/`src/6model/reprconv.h`,
+  neither of which differs between the two builds (only `interp.c`
+  was swapped) -- meaning the bug is `interp.c` writing **bad data**
+  into `tc->cur_frame->params` (or the object graph it references)
+  at some earlier point that both traces agree on opcode-sequence-
+  wise but which must differ in actual register/memory VALUES for
+  something not captured by the opcode-only trace.
+- **The gcc-interp.c swap does NOT fully fix nqp**: it gets ~40x
+  further (203526 opcodes vs. 5153) but then crashes differently, in
+  `get_facts_direct` <- `MVM_spesh_get_facts`, called from a
+  _background_ "spesh optimizer" thread doing concurrent JIT
+  compilation -- a completely different code path (the speculative
+  optimizer, not the interpreter loop), reached only because the
+  program survives long enough this time. Whether this second crash
+  is itself compiler-related or a MoarVM/upstream concurrency issue
+  exposed by different timing was not determined.
+- This is consistent with (and narrows, but does not yet resolve) the
+  2026-08-27 "GC-liveness" hypothesis above: a string object's `st`
+  (STable) pointer ends up pointing at a dead/moved collectable. The
+  crash's own signature (wild jump through `MVM_repr_get_str`'s own
+  REPR-vtable dispatch, landing at an address far outside any mapped
+  code) is consistent with a corrupted vtable/STable pointer, not a
+  simple wrong-immediate-value bug. Confirming the exact mechanism
+  needs live heap-object/GC-cycle tracing (e.g. a watchpoint on the
+  specific `MVMString`'s `st` field across however many collections
+  occur before this call), which is a substantially larger
+  investigation than the opcode-level tracing used here and was not
+  completed this session. `test_nqp` stays on `unfixed.txt`.
