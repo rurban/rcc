@@ -2044,6 +2044,45 @@ static bool struct_returns_in_gp_regs(Type *ty) {
 }
 #endif
 
+#ifdef ARCH_ARM64
+// Store the low `nbytes` (1..8) bytes of physical register `src` into
+// [addr_vreg + disp], using the minimal set of str/lsr instructions that
+// exactly covers those bytes -- never writing past them. A naive
+// "round size up to 4 or 8" store overruns any struct/union return
+// smaller than that (e.g. a 2-byte struct wrapping one uint16_t):
+// CPython's `_Py_BackoffCounter advance_backoff_counter(...)` return,
+// assigned back into a `_Py_CODEUNIT` bytecode array slot, clobbered
+// the very next bytecode instruction's opcode+arg byte this way.
+// Clobbers `src`.
+static void store_gp_bytes_exact_arm64(SecBuf *sec, VReg addr, ARM64Reg src, int64_t disp, int64_t nbytes) {
+    while (nbytes > 0) {
+        int sz = nbytes >= 8 ? 8 : nbytes >= 4 ? 4
+            : nbytes >= 2                      ? 2
+                                               : 1;
+        asm_str_reg_off_phy(sec, src, addr, sz, (uint32_t)disp);
+        nbytes -= sz;
+        if (nbytes <= 0) break;
+        disp += sz;
+        arm64_lsr_imm(sec, 1, src, src, sz * 8);
+    }
+}
+#else
+// x86-64 counterpart of store_gp_bytes_exact_arm64 (see its comment).
+// Clobbers `src`.
+static void store_gp_bytes_exact(SecBuf *sec, VReg addr, X86Reg src, int64_t disp, int64_t nbytes) {
+    while (nbytes > 0) {
+        int sz = nbytes >= 8 ? 8 : nbytes >= 4 ? 4
+            : nbytes >= 2                      ? 2
+                                               : 1;
+        x86_mov_mr(sec, sz, x86_mem(REG(addr), disp), src);
+        nbytes -= sz;
+        if (nbytes <= 0) break;
+        disp += sz;
+        x86_shr_ri(sec, 8, src, (uint8_t)(sz * 8));
+    }
+}
+#endif
+
 // Estimate the worst-case number of scratch registers a subexpression's
 // own codegen could hold live at once, to size gen_funcall's argument-
 // staging headroom (see use_staging below). A plain leaf costs nothing
@@ -3614,12 +3653,10 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     // function, so this is the actual reachable ARM64 call-site path).
     if (node->ty && struct_returns_in_gp_regs(node->ty)) {
         int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
-        int lo_sz = node->ty->size <= 4 ? 4 : 8;
-        asm_str_reg_off_phy(cg_sec, ARM64_X0, addr, lo_sz, 0); // str x0, [addr]
-        if (node->ty->size > 8) {
-            int hi_sz = node->ty->size - 8 <= 4 ? 4 : 8;
-            asm_str_reg_off_phy(cg_sec, ARM64_X1, addr, hi_sz, 8); // str x1, [addr, #8]
-        }
+        int64_t total = node->ty->size;
+        store_gp_bytes_exact_arm64(cg_sec, addr, ARM64_X0, 0, total <= 8 ? total : 8);
+        if (total > 8)
+            store_gp_bytes_exact_arm64(cg_sec, addr, ARM64_X1, 8, total - 8);
         return addr;
     }
     // int128 / _BitInt(65..128) return: spill x0:x1 to a 16-byte slot
@@ -4282,8 +4319,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         // The callee returns the struct value in RAX; store it into the
         // destination buffer pointed to by ret.
         if (node->ty->size <= 8 && node->ty->size > 0) {
-            int sz = node->ty->size <= 4 ? 4 : 8;
-            x86_mov_mr(cg_sec, sz, x86_mem(REG(ret), 0), X86_RAX); // movq %rax, (ret)
+            store_gp_bytes_exact(cg_sec, ret, X86_RAX, 0, node->ty->size);
         }
 #endif
         return ret;
@@ -4294,8 +4330,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     // The gen() caller expects an address; return a temp slot containing RAX.
     if (node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION || is_complex(node->ty)) && node->ty->size <= 8) {
         int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
-        int sz = node->ty->size <= 4 ? 4 : 8;
-        x86_mov_mr(cg_sec, sz, x86_mem(REG(addr), 0), X86_RAX); // mov rax, (addr)
+        store_gp_bytes_exact(cg_sec, addr, X86_RAX, 0, node->ty->size);
         return addr;
     }
 #endif
@@ -4306,12 +4341,10 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     // pointer. Mirrors the has_hidden_retbuf classification above.
     if (node->ty && struct_returns_in_gp_regs(node->ty)) {
         int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
-        int lo_sz = node->ty->size <= 4 ? 4 : 8;
-        x86_mov_mr(cg_sec, lo_sz, x86_mem(REG(addr), 0), X86_RAX); // mov %rax, (addr)
-        if (node->ty->size > 8) {
-            int hi_sz = node->ty->size - 8 <= 4 ? 4 : 8;
-            x86_mov_mr(cg_sec, hi_sz, x86_mem(REG(addr), 8), X86_RDX); // mov %rdx, 8(addr)
-        }
+        int64_t total = node->ty->size;
+        store_gp_bytes_exact(cg_sec, addr, X86_RAX, 0, total <= 8 ? total : 8);
+        if (total > 8)
+            store_gp_bytes_exact(cg_sec, addr, X86_RDX, 8, total - 8);
         return addr;
     }
 #endif
@@ -4331,13 +4364,22 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 x86_movsd_mr(cg_sec, x86_mem(REG(addr), base_sz), X86_XMM1);
             }
         } else {
-            // exact width: moving a 4-byte _Complex short as 8 bytes
-            // (movsd) over-stored into the neighboring stack slot
-            int lo_sz = node->ty->size <= 4 ? 4 : 8;
-            x86_mov_mr(cg_sec, lo_sz, x86_mem(REG(addr), 0), X86_RAX);
-            if (node->ty->size > 8) {
-                int hi_sz = node->ty->size - 8 <= 4 ? 4 : 8;
-                x86_mov_mr(cg_sec, hi_sz, x86_mem(REG(addr), 8), X86_RDX);
+            // <=8 bytes total: real+imag are packed together into a
+            // single register (RAX) -- e.g. `_Complex char`'s 1-byte
+            // real and 1-byte imag both live in RAX's low 2 bytes, so
+            // the store width is the *whole* complex value's size, not
+            // one component's size (an earlier version of this fix used
+            // base_sz here, which silently dropped the imaginary part
+            // for every complex-integer type under 8 bytes total).
+            // >8 bytes total: real is entirely in RAX, imag entirely in
+            // RDX, each exactly base_sz bytes wide (over-storing, e.g.
+            // treating a 4-byte _Complex short's real half as 8 bytes
+            // via movsd, clobbers the neighboring stack slot).
+            if (node->ty->size <= 8) {
+                x86_mov_mr(cg_sec, node->ty->size, x86_mem(REG(addr), 0), X86_RAX);
+            } else {
+                x86_mov_mr(cg_sec, base_sz, x86_mem(REG(addr), 0), X86_RAX);
+                x86_mov_mr(cg_sec, base_sz, x86_mem(REG(addr), 8), X86_RDX);
             }
         }
         return addr;

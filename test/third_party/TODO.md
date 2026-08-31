@@ -5435,3 +5435,71 @@ init.tcl`, then `//zipfs:/lib/tcl/tcl_library/init.tcl: bad level
   differential build of the full `tcl` tree (not just the zip
   contents) to determine whether this is rcc-caused before spending
   more time bisecting it.
+
+### Fixed (2026-08-31, small-struct-return store-width session — real root
+
+cause of the "computed-goto" crash class)
+
+Followed up on the nqp/python "computed-goto forward-label" theory from
+the 2026-08-28 entry above by trying to reproduce it directly — a
+synthetic 2500-label `static const void *const LABELS[]` array matching
+MoarVM/CPython's exact idiom compiled and ran correctly at `-O0`/`-O2`/
+`-O3`. Cross-checked the REAL compiled CPython `ceval.o`: extracted
+every one of `opcode_targets[256]`'s relocations via `readelf --wide -r`
+and compared each against its expected `.L.label._PyEval_
+EvalFrameDefault.TARGET_*` symbol — **all 256 entries were byte-exact
+correct**. The forward-label-array theory was wrong.
+
+**Real root cause**, found by differentially recompiling _only_
+`Python/ceval.c` with gcc vs. rcc (keeping every other `.o` rcc-built),
+adding a bounded opcode/oparg/offset trace to `NEXTOPARG()`, and diffing
+the two traces line-by-line: they matched exactly until `FOR_ITER`
+(opcode 70) executed and both advanced to the same bytecode offset —
+where gcc read the correct next opcode (`STORE_FAST`, 112) but rcc read
+opcode 0 (`CACHE`), triggering CPython's `assert(0 && "Executing a
+cache.")`/`Py_FatalError`. `FOR_ITER`'s adaptive-specialization counter
+update (`ADVANCE_ADAPTIVE_COUNTER(this_instr[1].counter)`) assigns a
+function's returned `_Py_BackoffCounter` (a struct wrapping one
+`uint16_t`, i.e. 2 bytes) back into a `_Py_CODEUNIT` union slot sitting
+**inside the bytecode array itself**, immediately before the next real
+instruction. `src/codegen.c`'s struct-in-GP-registers return path
+computed the store width as `ty->size <= 4 ? 4 : 8` — for a 2-byte
+struct this stores 4 bytes (`mov %eax, (addr)`), silently overwriting
+the next bytecode instruction's opcode+arg byte with the return
+register's garbage upper 16 bits (which happened to be 0 here). Minimal
+repro (`/tmp/backoff_repro.c` pattern, now `test/test_struct_return_
+exact_width.c`): a function returning a 2-byte struct, assigned into
+one slot of an array of 2-byte unions — the next union's bytes were
+corrupted to 0 on the buggy build, matching the crash signature (opcode
+0 = CACHE) exactly.
+
+**Fix**: added `store_gp_bytes_exact`/`store_gp_bytes_exact_arm64`
+helpers (`src/codegen.c`) that emit the minimal sequence of
+appropriately-sized stores (1/2/4/8-byte, splitting via shift+store for
+any in-between size) instead of rounding up to 4 or 8, and wired them
+into every SysV x86-64, Win64, and AAPCS64 small-struct/union return
+call site. One regression from the first pass of this fix: `_Complex
+char`/`_Complex short` (<=8 bytes total) pack **both** real and
+imaginary parts into a single register, so the store width there must
+be the whole complex value's size, not one component's size (using the
+per-component size silently dropped the imaginary part) — caught by
+`test/torture/20050121-1.c` regressing, fixed by special-casing the
+<=8-byte-total case in the `is_complex` branch. New test:
+`test/test_struct_return_exact_width.c`. `./run_tests --all`:
+3605/3609 torture (100%), 364/364 unit tests, 36/36 dg-error. Verified
+directly against the real `Python/ceval.c` (recompiled + relinked
+`_bootstrap_python`): `_freeze_module.py abc/codecs/io` all now exit 0
+(previously crashed with "Executing a cache."). Verified on Win64 via
+`mingw-test.sh`.
+
+**nqp/MoarVM is NOT fixed by this** — recompiled `interp.c` and
+relinked `libmoar.so` with the fixed rcc; the exact same bootstrap
+command (`moar --bootstrap ... gen/moar/stage1/nqpmo.nqp`) still
+segfaults with the **identical** crash signature (`MVM_repr_get_str`
+<- `MVM_args_get_required_pos_str` <- `MVM_interp_run`) as before this
+fix. This confirms MoarVM's crash is a genuinely different, still-
+unfixed bug — likely the GC-liveness issue documented in the
+2026-08-27 entry above, not a small-struct-return-store instance.
+`test_nqp` and `test_python` are re-triaged: `test_python` should now
+be re-verified as passing (this fix resolves its root cause);
+`test_nqp` stays on `unfixed.txt`.
