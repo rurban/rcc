@@ -58,6 +58,9 @@ LARGE_SRC_URL="https://sqlite.org/2026/sqlite-amalgamation-3530200.zip"
 LARGE_SO="bench/sqlite3.so"
 LARGE_CFLAGS="-shared -fPIC $LARGE_SRC -o $LARGE_SO"
 
+AWFY_DIR="bench/awfy"
+AWFY_SRCS="$AWFY_DIR/Benchmark.c $AWFY_DIR/Bounce.c $AWFY_DIR/CD.c $AWFY_DIR/DeltaBlue.c $AWFY_DIR/Havlak.c $AWFY_DIR/Json.c $AWFY_DIR/List.c $AWFY_DIR/Mandelbrot.c $AWFY_DIR/NBody.c $AWFY_DIR/Object.c $AWFY_DIR/Permute.c $AWFY_DIR/Queens.c $AWFY_DIR/RedBlackTree.c $AWFY_DIR/Richards.c $AWFY_DIR/Run.c $AWFY_DIR/Sieve.c $AWFY_DIR/Storage.c $AWFY_DIR/Towers.c $AWFY_DIR/main.c $AWFY_DIR/som/Dictionary.c $AWFY_DIR/som/Random.c $AWFY_DIR/som/Set.c $AWFY_DIR/som/Vector.c"
+
 # download_sqlite: fetch sqlite3.c amalgamation if missing (cached)
 download_sqlite() {
 	if [ -f "$LARGE_SRC" ]; then
@@ -232,6 +235,62 @@ run_bench() {
 	return 0
 }
 
+# run_bench_awfy LABEL COMPILER FLAGS EXE
+# Like run_bench, but for the multi-file Are-We-Fast-Yet suite
+# (bench/awfy): builds all 14 benchmarks + som/ support library into
+# one binary, times compile + best-of-N execute of the full suite
+# (main.c's runAll()), and additionally verifies none of the 14
+# benchmarks reported a self-check failure.
+run_bench_awfy() {
+	_label="$1"
+	_compiler="$2"
+	_flags="$3"
+	_exe="$4"
+	printf "\n--- %s ---\n" "$_label"
+	list_awfy="$list_awfy|$_label"
+
+	# Compile
+	# shellcheck disable=SC2086
+	_compile_ms=$(time_ms $_compiler $_flags $AWFY_SRCS -o "$_exe" -lm 2>/dev/null) || true
+	if [ ! -x "$_exe" ]; then
+		printf "  COMPILE FAILED\n"
+		return 1
+	fi
+	printf "  Compile : %6s ms\n" "$_compile_ms"
+
+	# Execute best of N
+	_best=100000
+	_output=""
+	_i=0
+	while [ $_i -lt $RUNS ]; do
+		_output="$("$_exe" 2>&1)"
+		_exec_ms=$(time_ms "$_exe")
+		if [ "$_exec_ms" -lt "$_best" ]; then
+		    _best=$_exec_ms
+		fi
+		_i=$((_i + 1))
+	done
+	if [ "$_best" = 100000 ]; then
+	    _best=$_exec_ms
+	fi
+	if printf '%s' "$_output" | grep -qi "failed with incorrect result"; then
+		printf "  RESULT  : INCORRECT\n"
+		rm -f "$_exe"
+		return 1
+	fi
+	printf "  Execute : %6s ms  (best of %d)\n" "$_best" "$RUNS"
+	printf "  Total   : %6s ms\n" $((_compile_ms + _best))
+
+	_vname="AWFY_$(echo "${_label%%(*}" | tr ' -' '__')"
+	eval "${_vname}_COMPILE=$_compile_ms"
+	eval "${_vname}_EXEC=$_best"
+	eval "${_vname}_TOTAL=$((_compile_ms + _best))"
+	rm -f "$_exe"
+	return 0
+}
+
+list_awfy=""
+
 list_c=""
 
 echo ""
@@ -330,6 +389,72 @@ IFS='|'
 for _c in $list_c; do
 	[ -z "$_c" ] && continue
 	_vname="$(echo "$_c" | tr ' -' '__')"
+	eval "_cm=\${${_vname}_COMPILE:-}"
+	eval "_em=\${${_vname}_EXEC:-}"
+	eval "_tm=\${${_vname}_TOTAL:-}"
+	[ -z "$_cm" ] && continue
+        # shellcheck disable=SC2154
+	printf "%-30s %8s ms %8s ms %8s ms\n" "$_c" "$_cm" "$_em" "$_tm"
+done
+IFS="$oldifs"
+
+echo ""
+echo "======================================"
+echo "  RCC vs TCC vs others  --  Are-We-Fast-Yet suite"
+echo "======================================"
+
+run_bench_awfy "RCC" "$RCC" "-std=c99" "bench/awfy_rcc"
+run_bench_awfy "RCC -O1" "$RCC" "-O1 -std=c99" "bench/awfy_rcc_o1"
+run_bench_awfy "RCC -O2" "$RCC" "-O2 -std=c99" "bench/awfy_rcc_o2"
+if [ -n "$TCC" ]; then
+    run_bench_awfy "TCC" "$TCC" "-std=c99" "bench/awfy_tcc" || true
+fi
+if [ -n "$SLIMCC" ]; then
+   run_bench_awfy "SLIMCC" "$SLIMCC" "-std=c99" "bench/awfy_slimcc" || true
+fi
+if [ -n "$XCC" ]; then
+   run_bench_awfy "XCC" "$XCC" "-std=c99" "bench/awfy_xcc" || true
+fi
+if [ -n "$KEFIR" ]; then
+   run_bench_awfy "KEFIR" "$KEFIR" "-std=c99" "bench/awfy_kefir" || true
+   run_bench_awfy "KEFIR -O1" "$KEFIR" "-O1 -std=c99" "bench/awfy_kefir_o1" || true
+fi
+if [ -n "$SCC" ]; then
+   run_bench_awfy "SCC" "$SCC" "-std=c99" "bench/awfy_scc" || true
+fi
+if [ -n "$LACC" ]; then
+   run_bench_awfy "LACC" "$LACC" "-std=c99" "bench/awfy_lacc" || true
+fi
+if [ -n "$CPROC" ]; then
+   run_bench_awfy "CPROC" "$CPROC" "-std=c99" "bench/awfy_cproc" || true
+fi
+if [ -n "$ANTCC" ]; then
+   run_bench_awfy "ANTCC" "$ANTCC" "-std=c99" "bench/awfy_antcc" || true
+fi
+if [ -n "$CAKE_CC" ]; then
+   run_bench_awfy "CAKE" "$CAKE_CC" "-std=c99" "bench/awfy_cake" || true
+fi
+if [ -n "$CCC" ]; then
+   run_bench_awfy "CCC" "$CCC" "-std=c99" "bench/awfy_ccc" || true
+fi
+run_bench_awfy "GCC -O0" "$GCC" "-O0 -w -std=c99 -Wno-error=incompatible-pointer-types" "bench/awfy_gcc" || true
+run_bench_awfy "GCC -O2" "$GCC" "-O2 -w -std=c99 -Wno-error=incompatible-pointer-types" "bench/awfy_gcc_o2" || true
+if [ -n "$CLANG" ]; then
+   run_bench_awfy "Clang -O0" "$CLANG" "-O0 -w -std=c99 -Wno-error=incompatible-pointer-types" "bench/awfy_clang" || true
+   run_bench_awfy "Clang -O2" "$CLANG" "-O2 -w -std=c99 -Wno-error=incompatible-pointer-types" "bench/awfy_clang_o2" || true
+fi
+
+echo ""
+echo "============================================="
+echo "        AWFY SCOREBOARD  (14-benchmark suite)"
+echo "============================================="
+printf "%-30s %10s %10s %10s\n" "Compiler " "Compile" "Execute" "Total"
+printf "%-30s %10s %10s %10s\n" "---------" "-------" "-------" "-----"
+oldifs="$IFS"
+IFS='|'
+for _c in $list_awfy; do
+	[ -z "$_c" ] && continue
+	_vname="AWFY_$(echo "$_c" | tr ' -' '__')"
 	eval "_cm=\${${_vname}_COMPILE:-}"
 	eval "_em=\${${_vname}_EXEC:-}"
 	eval "_tm=\${${_vname}_TOTAL:-}"
@@ -440,6 +565,20 @@ IFS='|'
 for _c in $list_c; do
 	[ -z "$_c" ] && continue
 	_vname="$(echo "$_c" | tr ' -' '__')"
+	eval "_cm=\${${_vname}_COMPILE:-}"
+	eval "_em=\${${_vname}_EXEC:-}"
+	eval "_tm=\${${_vname}_TOTAL:-}"
+	[ -z "$_cm" ] && continue
+	printf "| %-9s | %12s | %12s | %10s |\n" "$_c" "$_cm" "$_em" "$_tm"
+done
+IFS="$oldifs"
+printf "\n## Are-We-Fast-Yet Suite (14 benchmarks)\n\n"
+printf "| Compiler  | Compile (ms) | Execute (ms) | Total (ms) |\n"
+printf "| :-------- | -----------: | -----------: | ---------: |\n"
+IFS='|'
+for _c in $list_awfy; do
+	[ -z "$_c" ] && continue
+	_vname="AWFY_$(echo "$_c" | tr ' -' '__')"
 	eval "_cm=\${${_vname}_COMPILE:-}"
 	eval "_em=\${${_vname}_EXEC:-}"
 	eval "_tm=\${${_vname}_TOTAL:-}"

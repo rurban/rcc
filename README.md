@@ -55,6 +55,36 @@ rcc -O1 -time:
     codegen     bench.c:   1247 us
     link        bench_o1:   294 us
 
+### Are-We-Fast-Yet Suite
+
+A broader, real-world-style cross-check beyond the six-workload
+microbenchmark above: the full 14-benchmark ["Are We Fast
+Yet?"](https://github.com/rochus-keller/Are-we-fast-yet/tree/main/C)
+suite (`bench/awfy/`) — DeltaBlue (constraint solver), Richards (OS
+process scheduler), Json (parser), Havlak (loop-finding dataflow
+analysis), CD (collision detection), plus Bounce, List, Mandelbrot,
+NBody, Permute, Queens, Sieve, Storage and Towers — covering linked
+lists, tagged unions, vtable dispatch, hash maps, red-black trees,
+recursive descent and floating point. Every benchmark self-verifies
+its own result; all 14 pass at every optimization level with rcc.
+
+Linux, total time (compile + best-of-3 execute) for the whole suite:
+
+| Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
+| :-------- | -----------: | -----------: | ---------: |
+| RCC       |          347 |         8206 |       8553 |
+| RCC -O1   |          342 |         8778 |       9120 |
+| RCC -O2   |          343 |         8065 |       8408 |
+| TCC       |           58 |         7384 |       7442 |
+| GCC -O0   |          914 |         6624 |       7538 |
+| GCC -O2   |         2174 |         3475 |       5649 |
+| Clang -O0 |          829 |         6767 |       7596 |
+| Clang -O2 |         1439 |         3488 |       4927 |
+
+Run it yourself: `./bench/awfy/run.sh` (this benchmark alone) or
+`./bench/run_bench.sh` (both tables together, plus the large-file
+sqlite3.c compile-time comparison).
+
 ## Test Results
 
 Linux x86-64, combined across all test suites (TCC compatibility,
