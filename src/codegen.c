@@ -2054,7 +2054,7 @@ static bool struct_returns_in_gp_regs(Type *ty) {
 // assigned back into a `_Py_CODEUNIT` bytecode array slot, clobbered
 // the very next bytecode instruction's opcode+arg byte this way.
 // Clobbers `src`.
-static void store_gp_bytes_exact_arm64(SecBuf *sec, VReg addr, ARM64Reg src, int64_t disp, int64_t nbytes) {
+static void store_gp_bytes_exact_arm64(SecBuf *sec, VReg addr, Arm64Reg src, int64_t disp, int64_t nbytes) {
     while (nbytes > 0) {
         int sz = nbytes >= 8 ? 8 : nbytes >= 4 ? 4
             : nbytes >= 2                      ? 2
