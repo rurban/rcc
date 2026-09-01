@@ -2,7 +2,13 @@
 // https://en.cppreference.com/c/language/integer_constant
 
 #include <stdio.h>
+// rcc treats char8_t as a builtin keyword (no header needed), and its
+// own <uchar.h> isn't found on every target (e.g. Darwin) -- only a
+// REAL C23 compiler (this file compiled with -std=gnu23 against gcc/
+// clang in test-all-compilers.sh) needs the standard header.
+#ifndef __RCC__
 #include <uchar.h>
+#endif
 
 #warning "this is a test warning (expected)"
 

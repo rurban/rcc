@@ -99,20 +99,20 @@ didn't report every expected error line, `r` = runtime failure.
 
 | Compiler | Passed | Failed | Skipped | Notes                      |
 | -------- | ------ | ------ | ------- | -------------------------- |
-| rcc      | 4195   | 0      | 354     | 100% pass rate             |
-| gcc      | 4271   | 86     | 196     | 98%, 39c/1r failures       |
-| clang    | 3708   | 649    | 191     | 85%, 530c/36e/15r failures |
-| tcc      | 2676   | 480    | 1395    | 84%, 383c/17r failures     |
-| ccc      | 2659   | 598    | 1393    | 81%, 118c/47e/24r failures |
-| cake     | 2567   | 1637   | 396     | 79%, 1584c/53r failures    |
-| kefir    | 2989   | 996    | 566     | 74%, 892c/15r failures     |
-| antcc    | 1661   | 1040   | 1394    | 61%, 974c/23r failures     |
-| slimcc   | 2077   | 1397   | 1077    | 59%, 1324c/7r failures     |
-| lacc     | 1468   | 2018   | 1073    | 42%, 1771c/14r failures    |
+| rcc      | 4333   | 0      | 354     | 100% pass rate             |
+| gcc      | 4399   | 96     | 196     | 97%, 38c/2r failures       |
+| ccc      | 4169   | 316    | 201     | 92%, 151c/48e/31r failures |
+| clang    | 3831   | 664    | 191     | 85%, 529c/36e/15r failures |
+| tcc      | 2776   | 517    | 1396    | 84%, 383c/16r failures     |
+| kefir    | 3035   | 1089   | 566     | 73%, 960c/14r failures     |
+| antcc    | 2099   | 1196   | 1394    | 63%, 974c/23r failures     |
+| cake     | 2627   | 1666   | 396     | 61%, 1398c/53r failures    |
+| slimcc   | 2194   | 1418   | 1077    | 60%, 1315c/7r failures     |
+| lacc     | 1536   | 2079   | 1073    | 42%, 1771c/14r failures    |
 | compcert | 1674   | 2525   | 399     | 40%, 2336c/141r failures   |
-| scc      | 1457   | 2658   | 444     | 35%, 2389c/31r failures    |
-| xcc      | 641    | 2197   | 1256    | 22%, 2123c failures        |
-| cproc    | 344    | 3811   | 404     | 8%, 3347c failures         |
+| scc      | 1495   | 2749   | 444     | 35%, 2389c/31r failures    |
+| xcc      | 775    | 2657   | 1256    | 22%, 2123c failures        |
+| cproc    | 357    | 3927   | 404     | 8%, 3347c failures         |
 
 <!-- TEST_RESULTS_TABLE_END -->
 
