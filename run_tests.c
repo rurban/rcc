@@ -1677,10 +1677,34 @@ static const char *extra_ldflags(const char *base, const char *srcfile) {
             free(c);
         }
     }
-    if (lm && pt) return " -lm -pthread";
-    if (lm) return " -lm";
-    if (pt) return " -pthread";
-    return "";
+    // _c23_/_c29_-named unit tests exercise C23/C29-only syntax
+    // (enum fixed underlying type, 0o octal, _Countof, if-declarations,
+    // ...) that only rcc enables unconditionally (it always compiles the
+    // C23 language regardless of -std=). Run against a REAL compiler
+    // (test-all-compilers.sh's gcc/clang/etc.), the same source needs an
+    // explicit -std= to unlock that syntax at all -- without it these
+    // just fail to compile under whatever older default std the
+    // reference compiler ships. gnu (not plain c23/c2y) so GNU
+    // extensions the test bodies also happen to use (typeof, statement
+    // expressions, ...) stay available, matching rcc's own default mode.
+    const char *std_flag = "";
+    if (strstr(base, "_c29_")) std_flag = " -std=gnu2y";
+    else if (strstr(base, "_c23_"))
+        std_flag = " -std=gnu23";
+    if (!*std_flag) {
+        if (lm && pt) return " -lm -pthread";
+        if (lm) return " -lm";
+        if (pt) return " -pthread";
+        return "";
+    }
+    // Combined with -lm/-pthread: build a fresh buffer per call (this
+    // runs from parallel worker threads, so no shared/static buffer).
+    static const char *libs[] = {"", " -lm", " -pthread", " -lm -pthread"};
+    const char *lib = libs[(lm ? 1 : 0) | (pt ? 2 : 0)];
+    size_t n = strlen(std_flag) + strlen(lib) + 1;
+    char *buf = malloc(n);
+    snprintf(buf, n, "%s%s", std_flag, lib);
+    return buf;
 }
 
 static bool diff_strings(const char *expect, const char *actual, const char *label) {
