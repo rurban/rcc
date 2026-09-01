@@ -548,6 +548,27 @@ static uint64_t parse_int_literal(const char *q, const char *p, bool dsep) {
 static char read_escaped_char(char **new_pos, char *p) {
     if (*p == 'x') {
         p++;
+        // C2Y (N2785/N3353) delimited hex escape: \x{h...}, any number of
+        // hex digits up to the closing '}' -- unlike bare \x (unlimited,
+        // no terminator), this can't accidentally swallow a following
+        // hex-looking identifier char.
+        if (*p == '{') {
+            p++;
+            int val = 0;
+            int digit = from_hex(*p);
+            if (digit < 0)
+                error_at(p, "invalid hex escape");
+            while ((digit = from_hex(*p)) >= 0) {
+                val = val * 16 + digit;
+                p++;
+            }
+            if (*p == '}')
+                p++;
+            else
+                error_at(p, "delimited escape sequence missing closing '}'");
+            *new_pos = p;
+            return (char)val;
+        }
         int val = 0;
         int digit = from_hex(*p);
         if (digit < 0)
@@ -556,6 +577,29 @@ static char read_escaped_char(char **new_pos, char *p) {
             val = val * 16 + digit;
             p++;
         }
+        *new_pos = p;
+        return (char)val;
+    }
+
+    // C2Y delimited octal escape: \o{o...}, one or more octal digits --
+    // unlike bare \NNN (max 3 digits, ambiguous end per N3353's own
+    // "future directions"), the braces make the end unambiguous. There is
+    // no unbraced \o form.
+    if (*p == 'o' && p[1] == '{') {
+        p += 2;
+        int val = 0;
+        int n = 0;
+        while ('0' <= *p && *p <= '7') {
+            val = val * 8 + from_octal(*p);
+            p++;
+            n++;
+        }
+        if (n == 0)
+            error_at(p, "invalid octal escape");
+        if (*p == '}')
+            p++;
+        else
+            error_at(p, "delimited escape sequence missing closing '}'");
         *new_pos = p;
         return (char)val;
     }
@@ -842,6 +886,15 @@ Token *lex_one(char **pp, int *plineno) {
                 else if (dsep && q[2] == '\'')
                     lex_error_at(q + 2, "digit separator after base indicator");
             }
+            // C2Y (N3353): an unprefixed octal literal (leading zero
+            // followed by more digits, e.g. `0123`) is obsolescent -- 0o/0O
+            // is the new spelling. Same opt-in as the other C2Y-vs-C23
+            // compat diagnostics; plain "0" itself is exempt (still the
+            // only spelling of zero).
+            if (!is_float && !has_base_prefix && q[0] == '0' &&
+                (isdigit((unsigned char)q[1]) || (dsep && q[1] == '\'' && isdigit((unsigned char)q[2]))) &&
+                opt_pedantic && !opt_Wno_c23_c2y_compat)
+                lex_warn_at(q, "octal constants with a leading zero and no 'o'/'O' are obsolescent in C2Y; use 0o... instead");
             if (asm_local_label_ref) base_prefix_empty = false;
             // Check for float/imaginary suffix: f/F (incl. _FloatN forms),
             // l/L, i/I/j/J in any order
@@ -1106,7 +1159,24 @@ Token *lex_one(char **pp, int *plineno) {
                     p++;
                     uint32_t val = 0;
                     bool have_cp = false;
-                    if (*p == 'u' || *p == 'U') {
+                    if (*p == 'u' && p[1] == '{') {
+                        // C2Y delimited universal-character-name: \u{h...},
+                        // any number of hex digits (any codepoint, unlike
+                        // fixed-width \uXXXX/\UXXXXXXXX). No \U{ form.
+                        p += 2;
+                        int digit = from_hex(*p);
+                        if (digit < 0)
+                            lex_error_at(p, "invalid unicode escape");
+                        while ((digit = from_hex(*p)) >= 0) {
+                            val = val * 16 + digit;
+                            p++;
+                        }
+                        if (*p == '}')
+                            p++;
+                        else
+                            lex_error_at(p, "delimited escape sequence missing closing '}'");
+                        have_cp = true;
+                    } else if (*p == 'u' || *p == 'U') {
                         int n_digits = (*p == 'u') ? 4 : 8;
                         p++;
                         for (int i = 0; i < n_digits; i++) {
@@ -1120,7 +1190,7 @@ Token *lex_one(char **pp, int *plineno) {
                         }
                         have_cp = true;
                     } else if (prefix && prefix != '8' &&
-                               (*p == 'x' || ('0' <= *p && *p <= '7'))) {
+                               (*p == 'x' || *p == 'o' || ('0' <= *p && *p <= '7'))) {
                         // In L/u/U strings a numeric escape denotes a wide
                         // character value, not a byte. The buffer holds
                         // UTF-8 that the wide-string converter decodes, so
@@ -1128,12 +1198,39 @@ Token *lex_one(char **pp, int *plineno) {
                         // invalid UTF-8 sequence there.
                         if (*p == 'x') {
                             p++;
+                            // C2Y delimited \x{h...}
+                            bool braced = (*p == '{');
+                            if (braced) p++;
                             int digit = from_hex(*p);
                             if (digit < 0)
                                 lex_error_at(p, "invalid hex escape");
                             while ((digit = from_hex(*p)) >= 0) {
                                 val = val * 16 + digit;
                                 p++;
+                            }
+                            if (braced) {
+                                if (*p == '}') p++;
+                                else
+                                    lex_error_at(p, "delimited escape sequence missing closing '}'");
+                            }
+                        } else if (*p == 'o') {
+                            // C2Y delimited \o{o...} (no unbraced \o form)
+                            p++;
+                            if (*p != '{')
+                                lex_error_at(p, "expected '{' after '\\o'");
+                            else {
+                                p++;
+                                int n = 0;
+                                while ('0' <= *p && *p <= '7') {
+                                    val = val * 8 + (*p - '0');
+                                    p++;
+                                    n++;
+                                }
+                                if (n == 0)
+                                    lex_error_at(p, "invalid octal escape");
+                                if (*p == '}') p++;
+                                else
+                                    lex_error_at(p, "delimited escape sequence missing closing '}'");
                             }
                         } else {
                             int n = 0;
@@ -1220,7 +1317,26 @@ Token *lex_one(char **pp, int *plineno) {
                 nchars++;
                 if (*p == '\\') {
                     p++;
-                    if (char_prefix && (*p == 'u' || *p == 'U')) {
+                    if (char_prefix && *p == 'u' && p[1] == '{') {
+                        // C2Y delimited universal-character-name: \u{h...}
+                        p += 2;
+                        cval = 0;
+                        int digit = from_hex(*p);
+                        if (digit < 0)
+                            lex_error_at(p, "invalid unicode escape");
+                        while ((digit = from_hex(*p)) >= 0) {
+                            cval = cval * 16 + digit;
+                            p++;
+                        }
+                        if (*p == '}')
+                            p++;
+                        else
+                            lex_error_at(p, "delimited escape sequence missing closing '}'");
+                        // C23: u8'' holds one UTF-8 code unit (<= 0x7F)
+                        if (char_prefix == '8' && cval > 0x7f && !lex_in_directive)
+                            lex_error_at(start,
+                                         "character not encodable in a single code unit");
+                    } else if (char_prefix && (*p == 'u' || *p == 'U')) {
                         // Universal character name: full codepoint value
                         int n_digits = (*p == 'u') ? 4 : 8;
                         p++;
@@ -1239,18 +1355,45 @@ Token *lex_one(char **pp, int *plineno) {
                             lex_error_at(start,
                                          "character not encodable in a single code unit");
                     } else if (char_prefix &&
-                               (*p == 'x' || ('0' <= *p && *p <= '7'))) {
+                               (*p == 'x' || *p == 'o' || ('0' <= *p && *p <= '7'))) {
                         // Wide char literal: numeric escape is a full wide
                         // character value; (uint8_t) would truncate L'\x2219'
                         cval = 0;
                         if (*p == 'x') {
                             p++;
+                            // C2Y delimited \x{h...}
+                            bool braced = (*p == '{');
+                            if (braced) p++;
                             int digit = from_hex(*p);
                             if (digit < 0)
                                 lex_error_at(p, "invalid hex escape");
                             while ((digit = from_hex(*p)) >= 0) {
                                 cval = cval * 16 + digit;
                                 p++;
+                            }
+                            if (braced) {
+                                if (*p == '}') p++;
+                                else
+                                    lex_error_at(p, "delimited escape sequence missing closing '}'");
+                            }
+                        } else if (*p == 'o') {
+                            // C2Y delimited \o{o...} (no unbraced \o form)
+                            p++;
+                            if (*p != '{')
+                                lex_error_at(p, "expected '{' after '\\o'");
+                            else {
+                                p++;
+                                int n = 0;
+                                while ('0' <= *p && *p <= '7') {
+                                    cval = cval * 8 + (*p - '0');
+                                    p++;
+                                    n++;
+                                }
+                                if (n == 0)
+                                    lex_error_at(p, "invalid octal escape");
+                                if (*p == '}') p++;
+                                else
+                                    lex_error_at(p, "delimited escape sequence missing closing '}'");
                             }
                         } else {
                             int n = 0;

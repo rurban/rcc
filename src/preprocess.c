@@ -2580,7 +2580,7 @@ static int64_t eval_primary_tok(Token **pp) {
             *pp = t;
             return has_builtin_val(text);
         }
-        if (opt_std_version && strcmp(opt_std_version, "202311L") == 0) {
+        if (opt_std_version && strcmp(opt_std_version, "202311L") >= 0) {
             if (nm == kw_true) {
                 *pp = t->next;
                 return 1;
@@ -3685,7 +3685,7 @@ Token *preprocess(char *filename, char *p) {
         if (opt_strict_ansi)
             define_pre("__STRICT_ANSI__", "1");
         if (!find_macro("__STDC_FENV_ACCESS__")) define_pre("__STDC_FENV_ACCESS__", "1");
-        if (opt_std_version && strcmp(opt_std_version, "202311L") == 0) {
+        if (opt_std_version && strcmp(opt_std_version, "202311L") >= 0) {
             if (!find_macro("bool")) define_pre("bool", "_Bool");
             if (!find_macro("__bool_true_false_are_defined")) define_pre("__bool_true_false_are_defined", "1");
         }

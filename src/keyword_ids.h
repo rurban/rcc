@@ -299,6 +299,7 @@ enum {
     ID___VPRINTF_CHK,
     ID___FPRINTF_CHK,
     ID___VFPRINTF_CHK,
+    ID__COUNTOF,
     KW_COUNT
 };
 

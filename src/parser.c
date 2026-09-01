@@ -12814,6 +12814,50 @@ static Node *unary(Token **rest, Token *tok) {
         n2->ty = size_t_type(); // _Alignof returns size_t (unsigned)
         return n2;
     }
+    // C2Y (N3369/N3469) `_Countof`: yields the element count of its
+    // operand's outer array dimension as size_t. Non-array operand is a
+    // hard error (unlike sizeof/_Alignof, there's no "apply to anything"
+    // fallback -- `_Countof` only ever means "how many elements"). VLA
+    // dimensions reuse the same runtime vla_len_expr machinery ND_SIZEOF
+    // already relies on above, just without the *base->size multiply
+    // (a count, not a byte size).
+    if (equalc(tok, "_Countof")) {
+        Token *start = tok;
+        if (equalc(tok->next, "(") && is_typename(tok->next->next)) {
+            Token *cty_tok = tok->next->next;
+            Type *ty = parse_cast_type(&tok, tok->next);
+            *rest = tok;
+            if (ty->kind != TY_ARRAY && ty->kind != TY_VLA)
+                error_tok(cty_tok, "invalid application of '_Countof' to a non-array type");
+            if (ty->kind == TY_VLA) {
+                Node *len = ty->vla_len_expr ? ty->vla_len_expr : new_num(ty->array_len, start);
+                if (!ty->vla_len_expr) len->ty = size_t_type();
+                check_type(len);
+                return len;
+            }
+            Node *n = new_num(ty->size / ty->base->size, start);
+            n->ty = size_t_type();
+            return n;
+        }
+        Node *node = unary(&tok, tok->next);
+        check_type(node);
+        *rest = tok;
+        if (node->ty->kind != TY_ARRAY && node->ty->kind != TY_VLA)
+            error_tok(node->tok, "invalid application of '_Countof' to a non-array type");
+        if (node->ty->kind == TY_VLA) {
+            Node *len = node->ty->vla_len_expr ? node->ty->vla_len_expr : new_num(node->ty->array_len, start);
+            if (!node->ty->vla_len_expr) len->ty = size_t_type();
+            check_type(len);
+            // Operand must still run for its side effects (matches
+            // ND_SIZEOF's identical VLA rule, C11 6.5.3.4p2).
+            Node *seq = new_binary(ND_COMMA, node, len, start);
+            check_type(seq);
+            return seq;
+        }
+        Node *n = new_num(node->ty->size / node->ty->base->size, start);
+        n->ty = size_t_type();
+        return n;
+    }
     if (is_cast(tok)) {
         Token *start = tok;
         Type *ty = parse_cast_type(&tok, tok);

@@ -248,7 +248,7 @@ void help(void) {
            "-finline            inline tiny \"return EXPR;\" functions (-fno-inline to disable)\n"
            "-funroll            unroll const-sized for-loops (-fno-unroll to disable)\n"
            "-g                  emit DWARF line-number debug info\n"
-           "-std={c23,c17,c11,c99,c89,...}  sets __STDC_VERSION__\n"
+           "-std={c2y,c23,c17,c11,c99,c89,...}  sets __STDC_VERSION__\n"
            "-W                  enable more compiler warnings\n"
            "-Werror             treat all warnings as errors\n"
            "-pedantic-errors    treat pedantic warnings as errors\n"
@@ -815,7 +815,19 @@ int main(int argc, char **argv) {
             /* rcc always compiles the C23 language, but reflects the requested
              * standard in the __STDC_VERSION__ predefined macro so that library
              * headers expose the right version-gated content. */
-            if (!strcmp(std, "c23") || !strcmp(std, "gnu23") || !strcmp(std, "iso9899:2023")) {
+            if (!strcmp(std, "c2y") || !strcmp(std, "gnu2y") || !strcmp(std, "c29") ||
+                !strcmp(std, "gnu29") || !strcmp(std, "iso9899:2029")) {
+                // C2Y, formally renamed C29 by WG14: still a moving draft
+                // with no ratified __STDC_VERSION__ yet -- matches gcc's
+                // own placeholder (clang instead uses 202400L). rcc's
+                // parser already accepts the whole checklist unconditionally
+                // (0o/0O octal, delimited escapes, _Countof, if-declarations,
+                // case ranges, named loops, __COUNTER__); this flag only
+                // changes what __STDC_VERSION__ library headers see.
+                opt_std_version = "202500L";
+                opt_gnu_mode = !strncmp(std, "gnu", 3);
+                opt_strict_ansi = !opt_gnu_mode;
+            } else if (!strcmp(std, "c23") || !strcmp(std, "gnu23") || !strcmp(std, "iso9899:2023")) {
                 opt_std_version = "202311L";
                 opt_gnu_mode = !strncmp(std, "gnu", 3);
                 opt_strict_ansi = !opt_gnu_mode;
