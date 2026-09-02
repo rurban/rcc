@@ -248,6 +248,24 @@ jobs:
           sudo apt-get install -y gcc build-essential libc6-dev cppcheck
           pip install prek
 
+      - name: Install checkmake
+        env:
+          # Keep in sync with the checkmake/checkmake rev in
+          # .pre-commit-config.yaml. There's no apt/pip package; install
+          # the goreleaser-built binary from the pinned GitHub release,
+          # verified against its published checksum.
+          CHECKMAKE_VERSION: v0.3.2
+        run: |
+          asset="checkmake-${CHECKMAKE_VERSION}.linux.amd64"
+          base="https://github.com/checkmake/checkmake/releases/download/${CHECKMAKE_VERSION}"
+          curl -sSLO "$base/$asset"
+          curl -sSLO "$base/checksums.txt"
+          grep "$asset" checksums.txt | sed 's#\.release_artifacts/##' | sha256sum -c -
+          chmod +x "$asset"
+          sudo mv "$asset" /usr/local/bin/checkmake
+          rm -f checksums.txt
+          checkmake --version
+
       - name: Build
         run: make
 
