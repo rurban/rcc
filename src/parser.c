@@ -378,6 +378,16 @@ static PendingGoto *pending_gotos;
 // find_var()/goto resolution walk outward through when a name isn't found
 // in the current (innermost) scope — this is what lets a nested function
 // reference an enclosing function's locals and __label__ labels.
+// A `post(NAME: ...)` return-value binding: one real local per distinct
+// NAME used by a function's active postconditions (see
+// activate_function_contracts()), shared by every postcondition naming it.
+typedef struct PostBind PostBind;
+struct PostBind {
+    PostBind *next;
+    char *name;
+    LVar *var;
+};
+
 typedef struct FnCtx FnCtx;
 struct FnCtx {
     FnCtx *next;
@@ -393,10 +403,19 @@ struct FnCtx {
     Node *current_loop;
     bool fn_uses_vla;
     bool current_fn_is_inline;
+    Contract *current_fn_postconds;
+    PostBind *current_fn_postcond_binds;
 };
 static FnCtx *fn_ctx_stack;
 static int fn_ctx_depth;
 static int nested_fn_counter; // disambiguates same-named nested fns file-wide
+// pre(...)/post(...) contracts active for the function currently being
+// parsed (see activate_function_contracts()); NULL when none apply. Only
+// stmt()'s "return" handling (apply_postconds_to_return()) consults
+// these; preconditions are fully discharged once, at function entry, by
+// activate_function_contracts() itself.
+static Contract *current_fn_postconds;
+static PostBind *current_fn_postcond_binds;
 // Tentative declaration: the defining declaration (with tl_item_head)
 // lives much later in this file, alongside parse()'s toplevel loop that
 // initializes it; parse_nested_function_def() (defined earlier in the
@@ -419,6 +438,8 @@ static void push_fn_ctx(void) {
     c->current_loop = current_loop;
     c->fn_uses_vla = fn_uses_vla;
     c->current_fn_is_inline = current_fn_is_inline;
+    c->current_fn_postconds = current_fn_postconds;
+    c->current_fn_postcond_binds = current_fn_postcond_binds;
     c->next = fn_ctx_stack;
     fn_ctx_stack = c;
     fn_ctx_depth++;
@@ -433,6 +454,8 @@ static void push_fn_ctx(void) {
     current_loop = NULL;
     fn_uses_vla = false;
     current_fn_is_inline = false;
+    current_fn_postconds = NULL;
+    current_fn_postcond_binds = NULL;
 }
 
 // Restore the enclosing function's parser state after a nested function's
@@ -450,6 +473,8 @@ static void pop_fn_ctx(void) {
     current_loop = c->current_loop;
     fn_uses_vla = c->fn_uses_vla;
     current_fn_is_inline = c->current_fn_is_inline;
+    current_fn_postconds = c->current_fn_postconds;
+    current_fn_postcond_binds = c->current_fn_postcond_binds;
     fn_ctx_stack = c->next;
     fn_ctx_depth--;
 }
@@ -1616,6 +1641,247 @@ static int str_lit_elem_size(int prefix) {
     case 'U': return 4; // char32_t: always 32-bit
     default: return 1; // plain / u8
     }
+}
+
+// Reconstruct a contract condition's source text (best effort — only
+// meaningful when the condition wasn't itself produced by macro
+// expansion, i.e. its tokens are contiguous in one source buffer) for the
+// runtime-violation diagnostic built by make_contract_fail_block().
+static char *contract_cond_text(Token *start, Token *end) {
+    if (start == end || !start->ptr)
+        return "<condition>";
+    Token *last = start;
+    while (last->next && last->next != end)
+        last = last->next;
+    if (!last->ptr || last->ptr < start->ptr)
+        return "<condition>";
+    int len = (int)(last->ptr - start->ptr) + last->len;
+    if (len <= 0 || len > 2048)
+        return "<condition>";
+    return format("%.*s", len, start->ptr);
+}
+
+// { write(2, "<diagnostic>\n", N); abort(); } — a freestanding failure
+// action that needs neither <stdio.h> nor <stdlib.h> to be included by
+// the user's translation unit (unlike fprintf(stderr, ...), stderr is a
+// libc-specific macro/symbol on several targets this compiler supports;
+// write(2, ...) and abort() are plain, ABI-stable extern symbols on every
+// one of them, exactly like declare_builtin_on_demand()'s math-function
+// calls or __builtin_clear_padding's synthesized memset() call above).
+// Find (or declare) a plain `RET NAME(...)` extern function symbol by
+// name, for a compiler-synthesized call — the same pattern
+// declare_builtin_on_demand() uses for e.g. libm functions (proven
+// across every codegen backend), rather than a bare Node.funcname with
+// no Node.lhs (which only a couple of special-cased builtins rely on).
+static LVar *get_or_declare_extern_fn(const char *name, Type *ret_ty, Type **param_tys, int nparams) {
+    char *iname = str_intern(name, (int)strlen(name));
+    LVar *fn = find_global_name(iname);
+    if (fn)
+        return fn;
+    Type param_head = {0};
+    Type *pcur = &param_head;
+    for (int i = 0; i < nparams; i++) {
+        Type *pt = arena_alloc(sizeof(Type));
+        *pt = *param_tys[i];
+        pt->param_next = NULL;
+        pcur = pcur->param_next = pt;
+    }
+    Type *fty = func_type(ret_ty);
+    fty->param_types = param_head.param_next;
+    fn = arena_alloc(sizeof(LVar));
+    fn->name = iname;
+    fn->ty = pointer_to(fty);
+    fn->is_function = true;
+    fn->is_extern = true;
+    global_htab_add(fn);
+    return fn;
+}
+
+static Node *make_contract_fail_block(Contract *c, bool is_pre, char *fn_name, Token *tok) {
+    char *msg = format("rcc: %s '%s' violated in function '%s' at %s:%d\n",
+                       is_pre ? "precondition" : "postcondition",
+                       contract_cond_text(c->cond_start, c->cond_end),
+                       fn_name ? fn_name : "?",
+                       c->tok->filename ? c->tok->filename : "?", c->tok->lineno);
+    int msg_len = (int)strlen(msg);
+
+    Node *strnode = new_node(ND_STR, tok);
+    strnode->ty = array_of(ty_char, msg_len + 1);
+    StrLit *sl = new_str_lit(msg, msg_len, 0, 1);
+    strnode->str_id = sl->id;
+
+    Node *fd = new_num(2, tok);
+    fd->ty = ty_int;
+    Node *len = new_num(msg_len, tok);
+    len->ty = ty_long;
+    fd->next = strnode;
+    strnode->next = len;
+
+    Type *write_params[3] = {ty_int, pointer_to(ty_char), ty_long};
+    LVar *write_fn = get_or_declare_extern_fn("write", ty_long, write_params, 3);
+    Node *wcall = new_node(ND_FUNCALL, tok);
+    wcall->lhs = new_var_node(write_fn, tok);
+    wcall->args = fd;
+    wcall->ty = ty_long;
+
+    LVar *abort_fn = get_or_declare_extern_fn("abort", ty_void, NULL, 0);
+    Node *acall = new_node(ND_FUNCALL, tok);
+    acall->lhs = new_var_node(abort_fn, tok);
+    acall->ty = ty_void;
+
+    Node *s1 = new_unary(ND_EXPR_STMT, wcall, tok);
+    Node *s2 = new_unary(ND_EXPR_STMT, acall, tok);
+    s1->next = s2;
+
+    Node *blk = new_node(ND_BLOCK, tok);
+    blk->body = s1;
+    return blk;
+}
+
+// `if (!(cond)) { <fail> }` for one already-built, already-check_type'd
+// contract condition.
+static Node *make_contract_check(Node *cond, Contract *c, bool is_pre, char *fn_name, Token *tok) {
+    Node *notcond = new_unary(ND_NOT, cond, tok);
+    check_type(notcond);
+    Node *node = new_node(ND_IF, tok);
+    node->cond = notcond;
+    node->then = make_contract_fail_block(c, is_pre, fn_name, tok);
+    return node;
+}
+
+// Compile one contract condition (replaying its captured, still-unparsed
+// token span) and either discharge it statically (constant-true: no
+// runtime code at all; constant-false: a static_assert-style compile
+// error — Gustedt's proposal explicitly specifies this fast path) or
+// return its runtime `if (!(cond)) fail();` check. Returns NULL for the
+// constant-true case.
+static Node *compile_one_contract(Contract *c, bool is_pre, char *fn_name, Token *tok) {
+    Token *tmp;
+    Node *cond = conditional(&tmp, c->cond_start);
+    check_type(cond);
+    long long cval;
+    if (eval_const_expr(cond, &cval)) {
+        if (!cval)
+            error_tok(c->tok, "%s '%s' is never satisfied",
+                      is_pre ? "precondition" : "postcondition",
+                      contract_cond_text(c->cond_start, c->cond_end));
+        return NULL;
+    }
+    return make_contract_check(cond, c, is_pre, fn_name, tok);
+}
+
+// Called once per function DEFINITION (never for a prototype-only
+// declaration, which has nothing to instrument), right after its real,
+// final parameter LVars are established in `locals` and before its body
+// is parsed. Returns the precondition-check statement chain to prepend
+// to the body (NULL if none), and populates current_fn_postconds /
+// current_fn_postcond_binds for stmt()'s "return" handling
+// (apply_postconds_to_return()) to consult while parsing the body.
+//
+// Limitation (documented, not a bug): contracts are recognized only on
+// the declarator of the definition itself — a separate prototype
+// declaration's own pre()/post() clauses (e.g. in a header) are not
+// merged in. Repeat them on the definition to enforce them.
+static Node *activate_function_contracts(Type *fty, char *fn_name, Token *tok) {
+    current_fn_postconds = NULL;
+    current_fn_postcond_binds = NULL;
+    if (!fty->preconds && !fty->postconds)
+        return NULL;
+
+    // post(NAME: ...) return-value bindings: one real local per distinct
+    // NAME, created now (this definition's own stack_offset/locals are
+    // correctly set up at this point) and shared by every postcondition
+    // naming it.
+    PostBind bind_head = {0};
+    PostBind *bind_cur = &bind_head;
+    for (Contract *c = fty->postconds; c; c = c->next) {
+        if (!c->bind_name)
+            continue;
+        if (fty->return_ty && fty->return_ty->kind == TY_VOID)
+            error_tok(c->tok, "'post(%s: ...)' return-value binding on a function returning void",
+                      c->bind_name);
+        bool found = false;
+        for (PostBind *b = bind_head.next; b; b = b->next)
+            if (b->name == c->bind_name) {
+                found = true;
+                break;
+            }
+        if (found)
+            continue;
+        PostBind *b = arena_alloc(sizeof(PostBind));
+        b->name = c->bind_name;
+        b->var = new_var(c->bind_name, fty->return_ty, true);
+        b->next = NULL;
+        bind_cur = bind_cur->next = b;
+    }
+    current_fn_postcond_binds = bind_head.next;
+    current_fn_postconds = fty->postconds;
+
+    Node head = {0};
+    Node *cur = &head;
+    for (Contract *c = fty->preconds; c; c = c->next) {
+        Node *check = compile_one_contract(c, true, fn_name, tok);
+        if (check)
+            cur = cur->next = check;
+    }
+    return head.next;
+}
+
+// Rewrite a `return EXPR;` / `return;` / implicit-fallthrough ND_RETURN
+// (already built by the caller, with cleanup_begin/cleanup_end/
+// defer_retspill already set from ITS OWN lexical point — untouched here)
+// to check every active postcondition first. A named post(NAME: ...)
+// binding is assigned EXACTLY ONCE (from the primary — first distinct
+// name's — binding), copied to any other distinct binding, and the
+// return expression is swapped for a read of the primary binding so the
+// checked value, not a freshly re-evaluated one, is what's returned. A
+// no-op (returns `node` unchanged) when no postconditions are active.
+static Node *apply_postconds_to_return(Node *node, Token *tok) {
+    if (!current_fn_postconds)
+        return node;
+    Node head = {0};
+    Node *cur = &head;
+    if (node->lhs && current_fn_postcond_binds) {
+        LVar *primary = current_fn_postcond_binds->var;
+        Node *assign = new_binary(ND_ASSIGN, new_var_node(primary, tok), node->lhs, tok);
+        check_type(assign);
+        cur = cur->next = new_unary(ND_EXPR_STMT, assign, tok);
+        for (PostBind *b = current_fn_postcond_binds->next; b; b = b->next) {
+            Node *cp = new_binary(ND_ASSIGN, new_var_node(b->var, tok), new_var_node(primary, tok), tok);
+            check_type(cp);
+            cur = cur->next = new_unary(ND_EXPR_STMT, cp, tok);
+        }
+        node->lhs = new_var_node(primary, tok);
+    }
+    for (Contract *c = current_fn_postconds; c; c = c->next) {
+        Node *check = compile_one_contract(c, false, parser_current_fn, tok);
+        if (check)
+            cur = cur->next = check;
+    }
+    cur->next = node;
+    Node *blk = new_node(ND_BLOCK, tok);
+    blk->body = head.next;
+    return blk;
+}
+
+// Does the last top-level statement in `n` (unwrapping a synthetic
+// postcondition-check ND_BLOCK from apply_postconds_to_return()) already
+// return, so an implicit trailing return synthesized after it would be
+// dead code?
+static bool ends_in_return(Node *n) {
+    if (!n)
+        return false;
+    if (n->kind == ND_RETURN)
+        return true;
+    if (n->kind == ND_BLOCK) {
+        Node *last = n->body;
+        if (!last)
+            return false;
+        while (last->next)
+            last = last->next;
+        return ends_in_return(last);
+    }
+    return false;
 }
 
 static Node *make_cleanup_stmt(LVar *var, Token *tok) {
@@ -3553,6 +3819,77 @@ static bool eval_complex_const_expr(Node *node, double *real_out, double *imag_o
 
 static Type *declarator(Token **rest, Token *tok, Type *ty, char **name, VarAttr *attr);
 
+// Parse zero or more `pre(EXPR)` / `post([IDENT ':'] EXPR)` contract
+// specifiers trailing a function declarator's parameter list — Gustedt's
+// "Contracts for C" (https://gustedt.wordpress.com/2025/03/10/contracts-for-c/),
+// minus the pre()/post() *statement* forms (issue #45: no semicolon-
+// terminated pre()/post() statements, so the whole thing can be hidden
+// behind a feature-test macro for compilers without contract support —
+// `#define pre(...)` / `#define post(...)` on those compilers is enough,
+// since a specifier never needs its own terminating token).
+//
+// Deliberately captures only the raw token span here — no expr()/
+// conditional() call: the parameter placeholder LVars that would resolve
+// identifiers are about to go out of scope (see declarator_params'
+// `locals = saved_locals` below), and post()'s return-value binding has
+// no local to bind to yet. Conditions are compiled for real, once per
+// point of use, against that use's own parameter/binding locals — see
+// activate_function_contracts() and apply_postconds_to_return().
+//
+// `pre`/`post` are ordinary identifiers, not keywords: recognized only in
+// this exact trailing position, mirroring the pre-existing generic
+// `IDENT (...)` specifier skip for block-scope prototypes (e.g. GCC's
+// `__cond_acquires(...)`, see declaration()).
+static Token *parse_contract_specs(Token *tok, Contract **pre_out, Contract **post_out) {
+    Contract pre_head = {0}, post_head = {0};
+    Contract *pre_cur = &pre_head, *post_cur = &post_head;
+    for (;;) {
+        if (tok->kind != TK_IDENT || !equalc(tok->next, "(") ||
+            !(equalc(tok, "pre") || equalc(tok, "post")))
+            break;
+        bool is_post = equalc(tok, "post");
+        Token *kw_tok = tok;
+        Token *paren = tok->next;
+        int depth = 0;
+        Token *scan = paren;
+        for (;;) {
+            if (equalc(scan, "("))
+                depth++;
+            else if (equalc(scan, ")")) {
+                depth--;
+                if (depth == 0)
+                    break;
+            }
+            if (scan->kind == TK_EOF)
+                error_tok(scan, "unterminated '%s(...)' contract specifier", is_post ? "post" : "pre");
+            scan = scan->next;
+        }
+        // scan is now at the matching ')'
+        Token *cond_start = paren->next;
+        char *bind_name = NULL;
+        if (is_post && cond_start != scan && cond_start->kind == TK_IDENT && equalc(cond_start->next, ":")) {
+            bind_name = cond_start->name;
+            cond_start = cond_start->next->next;
+        }
+        if (cond_start == scan)
+            error_tok(cond_start, "expected a condition in '%s(...)'", is_post ? "post" : "pre");
+        Contract *c = arena_alloc(sizeof(Contract));
+        c->tok = kw_tok;
+        c->cond_start = cond_start;
+        c->cond_end = scan;
+        c->bind_name = bind_name;
+        c->next = NULL;
+        if (is_post)
+            post_cur = post_cur->next = c;
+        else
+            pre_cur = pre_cur->next = c;
+        tok = scan->next;
+    }
+    *pre_out = pre_head.next;
+    *post_out = post_head.next;
+    return tok;
+}
+
 static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
     Type param_head = {};
     Type *pcur = &param_head;
@@ -3562,12 +3899,14 @@ static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
     LVar *saved_locals = locals;
 
     if (equalc(tok, "void") && equalc(tok->next, ")")) {
-        *rest = tok->next->next;
+        tok = tok->next->next;
         locals = saved_locals;
         ty = func_type(ty);
         ty->param_types = NULL;
         ty->is_variadic = false;
         ty->is_void_params = true;
+        tok = parse_contract_specs(tok, &ty->preconds, &ty->postconds);
+        *rest = tok;
         return ty;
     } else {
         while (!equalc(tok, ")")) {
@@ -3665,6 +4004,7 @@ static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
     ty = func_type(ty);
     ty->param_types = param_head.param_next;
     ty->is_variadic = is_variadic;
+    tok = parse_contract_specs(tok, &ty->preconds, &ty->postconds);
     *rest = tok;
     return ty;
 }
@@ -9305,11 +9645,11 @@ static Node *stmt(Token **rest, Token *tok) {
         }
         if (equalc(tok->next, ";")) {
             *rest = tok->next->next;
-            return node;
+            return apply_postconds_to_return(node, tok);
         }
         node->lhs = expr(&tok, tok->next);
         *rest = skip(tok, ";");
-        return node;
+        return apply_postconds_to_return(node, tok);
     }
 
     if (equalc(tok, "if")) {
@@ -14991,6 +15331,7 @@ Program *parse(Token *tok) {
                     // external definition in some other TU instead).
                     current_fn_is_inline = attr.is_inline && !attr.is_static &&
                         !attr.is_gnu_inline && !attr.is_extern;
+                    Node *contract_pre_checks = activate_function_contracts(fty, name, tok);
                     Node *body = compound_stmt_ex(&tok, tok, &fn_locals, false);
                     current_fn_is_inline = false;
                     // Implicit return 0 for main if no explicit return
@@ -14999,17 +15340,38 @@ Program *parse(Token *tok) {
                         if (last) {
                             while (last->next)
                                 last = last->next;
-                            if (last->kind != ND_RETURN) {
+                            if (!ends_in_return(last)) {
                                 Node *ret = new_node(ND_RETURN, tok);
                                 ret->lhs = new_num(0, tok);
-                                last->next = ret;
+                                last->next = apply_postconds_to_return(ret, tok);
                             }
                         } else {
                             // Empty body: insert return 0
-                            body->body = new_node(ND_RETURN, tok);
-                            body->body->lhs = new_num(0, tok);
+                            Node *ret = new_node(ND_RETURN, tok);
+                            ret->lhs = new_num(0, tok);
+                            body->body = apply_postconds_to_return(ret, tok);
+                        }
+                    } else if (fty->return_ty && fty->return_ty->kind == TY_VOID && current_fn_postconds) {
+                        // Postconditions on a void function must also be
+                        // checked at the implicit end-of-body exit (a
+                        // fallthrough past the closing '}' with no
+                        // explicit `return;` — see
+                        // apply_postconds_to_return()).
+                        Node *last = body->body;
+                        if (!ends_in_return(last)) {
+                            Node *implicit_ret = new_node(ND_RETURN, tok);
+                            Node *wrapped = apply_postconds_to_return(implicit_ret, tok);
+                            if (last) {
+                                while (last->next)
+                                    last = last->next;
+                                last->next = wrapped;
+                            } else {
+                                body->body = wrapped;
+                            }
                         }
                     }
+                    current_fn_postconds = NULL;
+                    current_fn_postcond_binds = NULL;
                     Function *fn = arena_alloc(sizeof(Function));
                     fn->name = name;
                     LVar *fn_sym2 = find_global_name(name);
@@ -15034,6 +15396,15 @@ Program *parse(Token *tok) {
                                 ins = &s->next;
                             }
                         }
+                    }
+                    // Precondition checks run before everything else,
+                    // including the VLA parameter side effects just above.
+                    if (contract_pre_checks) {
+                        Node *tail = contract_pre_checks;
+                        while (tail->next)
+                            tail = tail->next;
+                        tail->next = fn->body;
+                        fn->body = contract_pre_checks;
                     }
                     fn->stack_size = align_to(stack_offset, 16);
                     fn->is_variadic = is_variadic;

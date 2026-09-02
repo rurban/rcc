@@ -275,7 +275,24 @@ typedef enum {
 typedef struct Node Node;
 typedef struct Type Type;
 typedef struct Member Member;
+typedef struct Contract Contract;
 
+// A single `pre(EXPR)` / `post([NAME:] EXPR)` contract-specifier trailing
+// a function declarator's parameter list (Gustedt's "Contracts for C":
+// https://gustedt.wordpress.com/2025/03/10/contracts-for-c/, minus the
+// pre()/post() *statement* forms — see parse_contract_specs() in
+// parser.c). Deliberately unresolved at parse time: `cond_start`/
+// `cond_end` bound the raw, unparsed condition tokens, replayed (via
+// conditional()) once per point of use against that use's own real
+// parameter/return-binding locals — see activate_function_contracts()
+// and apply_postconds_to_return() in parser.c.
+struct Contract {
+    Contract *next;
+    Token *tok; // the 'pre'/'post' keyword token, for diagnostics
+    Token *cond_start; // first token of the condition
+    Token *cond_end; // the matching ')' (condition tokens are [cond_start, cond_end))
+    char *bind_name; // post(NAME: ...) return-value binding, or NULL
+};
 
 enum {
     BF_MODE_DEFAULT,
@@ -359,6 +376,8 @@ struct Type {
     // tell those apart.
     Type *return_ty; // for function
     Type *param_types; // linked list of parameter types (for function)
+    Contract *preconds; // pre(...) contract specifiers (for function)
+    Contract *postconds; // post(...) contract specifiers (for function)
     Type *param_next; // next in parameter type list
     bool is_variadic; // for function
     bool is_oldstyle; // old-style (K&R) function definition / non-prototype ABI

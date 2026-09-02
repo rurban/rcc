@@ -9,6 +9,7 @@ beyond standard C23/C29.
 
 - [Synopsis](#synopsis)
 - [Supported standards and dialects](#supported-standards-and-dialects)
+- [Contracts (`pre`/`post` specifiers)](#contracts-prepost-specifiers)
 - [Options](#options)
 - [Warnings and diagnostics](#warnings-and-diagnostics)
 - [`__attribute__` / `[[...]]` attributes](#attribute--attributes)
@@ -65,6 +66,55 @@ delimited universal-character-name escapes (`\u{...}`, `\N{...}`),
 `_Countof`, `if`/`switch` init-declarations
 (`if (int x = f(); x > 0)`), `case` ranges (`case 1 ... 3:`), labeled
 `break`/`continue` on named loops, and `__COUNTER__`.
+
+## Contracts (`pre`/`post` specifiers)
+
+rcc accepts function contracts loosely following Jens Gustedt's
+["Contracts for C"](https://gustedt.wordpress.com/2025/03/10/contracts-for-c/)
+proposal — a C adaptation of C++26's contracts (`P2900`) — minus its
+`pre()`/`post()` _statement_ forms (`contract_assert`/`contract_assume`).
+This is an rcc-specific extension, not part of accepted C23/C29: a
+`pre(COND)` / `post([NAME:] COND)` contract-specifier trails a function
+declarator's parameter list, before the `{` of a definition or the `;`
+of a prototype-only declaration:
+
+    void *my_malloc(long size) pre(size > 0) post(r: r != 0) {
+        ...
+    }
+
+`pre(COND)` declares a precondition on the arguments; `post(COND)` and
+`post(NAME: COND)` declare a postcondition on the function's exit,
+optionally binding the return value to `NAME` for use inside `COND`.
+Both accept any scalar conditional-expression (no assignment, no
+top-level comma) and may repeat any number of times, in any order.
+
+`pre`/`post` are ordinary identifiers, not keywords — they are
+recognized only in this exact trailing position, so existing code
+using `pre`/`post` as ordinary function or variable names is
+unaffected. Because a contract-specifier needs no statement or
+terminating token of its own, it is trivially hidden behind a
+feature-test macro for other compilers (rcc predefines `__RCC__`):
+
+    #ifndef __RCC__
+    #define pre(...)
+    #define post(...)
+    #endif
+
+**Semantics**: a contract on a function _definition_ is compiled once
+against that definition's own parameters and (for a named `post`
+binding) its return value — contracts on a separate prototype-only
+declaration are not merged into a later definition; repeat them there
+to enforce them. If a condition is an integer constant expression
+(Gustedt's proposal draws the same line `static_assert` does), it is
+discharged entirely at compile time: constant-true elides the runtime
+check, constant-false is a compile error. Otherwise the condition is
+checked at runtime — a precondition at function entry, a postcondition
+at every `return` and, for a `void` function, at the implicit
+fallthrough exit — and a violation prints a diagnostic (kind,
+condition text, function, file:line) to stderr and calls `abort()`,
+matching `assert()`'s own failure behavior. A `post(NAME: ...)`
+binding on a function returning `void` is a compile error (there is no
+value to bind).
 
 ## Options
 
