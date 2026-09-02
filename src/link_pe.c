@@ -488,7 +488,11 @@ static int pe_dll_check_exports(const char *path, const char **names, bool *out,
         return -1;
     }
     uint8_t *img = malloc((size_t)sz);
-    if (!img || fread(img, 1, (size_t)sz, f) != (size_t)sz) {
+    if (!img) {
+        fclose(f);
+        return -1;
+    }
+    if (fread(img, 1, (size_t)sz, f) != (size_t)sz) {
         free(img);
         fclose(f);
         return -1;
@@ -581,7 +585,13 @@ static int build_pe_imports(LinkState *s, int *idata_sec_out,
         if (sym->sec >= 0 || sym->bind == 2 /* weak */ || !sym->name[0]) continue;
         if (n_undef == cap_undef) {
             cap_undef = cap_undef ? cap_undef * 2 : 16;
-            undef_idx = realloc(undef_idx, (size_t)cap_undef * sizeof(int));
+            int *tmp = realloc(undef_idx, (size_t)cap_undef * sizeof(int));
+            if (!tmp) {
+                free(undef_idx);
+                fprintf(stderr, "rcc: out of memory\n");
+                exit(1);
+            }
+            undef_idx = tmp;
         }
         undef_idx[n_undef++] = i;
     }
@@ -660,6 +670,10 @@ static int build_pe_imports(LinkState *s, int *idata_sec_out,
         size_t entlen = 2 + namelen + 1;
         if (entlen & 1) entlen++;
         uint8_t *ent = calloc(entlen, 1);
+        if (!ent) {
+            fprintf(stderr, "rcc: out of memory\n");
+            exit(1);
+        }
         memcpy(ent + 2, names[i], namelen);
         hintname_off[i] = link_sec_append(s, idata_sec, ent, entlen, 2);
         free(ent);
@@ -802,7 +816,13 @@ static int build_pe_exports(LinkState *s, const char *dll_name,
         if (excluded) continue;
         if (n_exp == cap_exp) {
             cap_exp = cap_exp ? cap_exp * 2 : 32;
-            exp_idx = realloc(exp_idx, (size_t)cap_exp * sizeof(int));
+            int *tmp = realloc(exp_idx, (size_t)cap_exp * sizeof(int));
+            if (!tmp) {
+                free(exp_idx);
+                fprintf(stderr, "rcc: out of memory\n");
+                exit(1);
+            }
+            exp_idx = tmp;
         }
         exp_idx[n_exp++] = i;
     }
@@ -967,7 +987,13 @@ static int build_pe_reloc(LinkState *s, uint64_t base) {
             if (r->type != RL_ABS64 && r->type != RL_ABS32 && r->type != RL_ABS32U) continue;
             if (n_sites == cap_sites) {
                 cap_sites = cap_sites ? cap_sites * 2 : 16;
-                site_rva = realloc(site_rva, (size_t)cap_sites * sizeof(uint32_t));
+                uint32_t *tmp = realloc(site_rva, (size_t)cap_sites * sizeof(uint32_t));
+                if (!tmp) {
+                    free(site_rva);
+                    fprintf(stderr, "rcc: out of memory\n");
+                    exit(1);
+                }
+                site_rva = tmp;
             }
             site_rva[n_sites++] = (uint32_t)(sec->addr + r->offset - base);
         }
@@ -995,6 +1021,10 @@ static int build_pe_reloc(LinkState *s, uint64_t base) {
         bool pad = (n_entries & 1) != 0;
         uint32_t block_size = 8 + (uint32_t)(n_entries + (pad ? 1 : 0)) * 2;
         uint8_t *block = calloc(block_size, 1);
+        if (!block) {
+            fprintf(stderr, "rcc: out of memory\n");
+            exit(1);
+        }
         pe_w32le_m(block, page);
         pe_w32le_m(block + 4, block_size);
         for (int k = 0; k < n_entries; k++) {
@@ -1449,7 +1479,13 @@ int link_pe(LinkState *s) {
     for (int i = 0; i < s->n_secs; i++) {
         LinkSec *sec = &s->secs[i];
         if (!sec->alloc || sec->is_bss || sec->len == 0) continue;
-        ws = realloc(ws, (size_t)(n_ws + 1) * sizeof(Wsec));
+        Wsec *tmp = realloc(ws, (size_t)(n_ws + 1) * sizeof(Wsec));
+        if (!tmp) {
+            free(ws);
+            fprintf(stderr, "rcc: out of memory\n");
+            exit(1);
+        }
+        ws = tmp;
         ws[n_ws].sec = sec;
         ws[n_ws].file_off = cur_file_off;
         cur_file_off += (uint32_t)pe_align_up(sec->len, PE_FILE_ALIGN);
@@ -1765,6 +1801,10 @@ static uint8_t *build_import_symbol_obj(const char *dllid, const char *sym_name,
     size_t hintname_len = 2 + symlen + 1;
     size_t hintname_padded = (hintname_len + 3) & ~(size_t)3; // 4-byte aligned, matches reference
     uint8_t *hintname = calloc(hintname_padded, 1);
+    if (!hintname) {
+        fprintf(stderr, "rcc: out of memory\n");
+        exit(1);
+    }
     hintname[0] = (uint8_t)hint;
     hintname[1] = (uint8_t)(hint >> 8);
     memcpy(hintname + 2, sym_name, symlen + 1);
@@ -1817,6 +1857,10 @@ static uint8_t *build_import_data_obj(const char *dllid, const char *sym_name,
     size_t hintname_len = 2 + symlen + 1;
     size_t hintname_padded = (hintname_len + 3) & ~(size_t)3;
     uint8_t *hintname = calloc(hintname_padded, 1);
+    if (!hintname) {
+        fprintf(stderr, "rcc: out of memory\n");
+        exit(1);
+    }
     hintname[0] = (uint8_t)hint;
     hintname[1] = (uint8_t)(hint >> 8);
     memcpy(hintname + 2, sym_name, symlen + 1);
@@ -1869,7 +1913,11 @@ int pe_write_out_implib(const char *dll_path, const char *implib_path) {
         return -1;
     }
     uint8_t *img = malloc((size_t)sz);
-    if (!img || fread(img, 1, (size_t)sz, f) != (size_t)sz) {
+    if (!img) {
+        fclose(f);
+        return -1;
+    }
+    if (fread(img, 1, (size_t)sz, f) != (size_t)sz) {
         free(img);
         fclose(f);
         return -1;

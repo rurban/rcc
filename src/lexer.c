@@ -1153,7 +1153,13 @@ Token *lex_one(char **pp, int *plineno) {
             while (*p && *p != '"' && *p != '\n') {
                 if (len + 4 > cap) { // room for the widest escape (4 UTF-8 bytes)
                     cap *= 2;
-                    buf = realloc(buf, cap);
+                    char *tmp = realloc(buf, cap);
+                    if (!tmp) {
+                        free(buf);
+                        fprintf(stderr, "rcc: out of memory\n");
+                        exit(1);
+                    }
+                    buf = tmp;
                 }
                 if (*p == '\\') {
                     p++;
