@@ -37,6 +37,19 @@ repos:
     hooks:
       - id: shellcheck
 
+  - repo: https://github.com/checkmake/checkmake
+    rev: v0.3.2
+    hooks:
+      # Lucas-C/pre-commit-hooks-go's checkmake hook is unmaintained since
+      # its checkmake.go source drifted from mrtazz/checkmake's own
+      # cmd/checkmake/main.go (broken as of pre-commit-hooks-go v1.0.1;
+      # see its README). Use checkmake's own hook instead: checkmake-system
+      # (language: system) runs the locally installed `checkmake` binary
+      # rather than pre-commit provisioning its own Go build, so it picks
+      # up ./checkmake.ini and any local fixes not yet released upstream.
+      - id: checkmake-system
+        exclude: tinycc/.*
+
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v22.1.8
     hooks:
