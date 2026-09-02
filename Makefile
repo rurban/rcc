@@ -249,92 +249,13 @@ src/keywords.h: src/keywords.gperf src/keyword_ids.h
 src/keywords$(OBJ_EXT): src/keywords.c src/keywords.h src/keyword_ids.h
 
 src/sysinc_paths.h: FORCE
-	@tmp=$$(mktemp); out=$$(mktemp); plat=$$(mktemp); \
-	$(CC) -dM -E - < /dev/null > $$plat; \
-	if grep -q '__APPLE__' $$plat; then \
-		echo '#ifndef __APPLE__' > $$out; \
-		echo '#error "sysinc_paths.h generated for Apple"' >> $$out; \
-		echo '#endif' >> $$out; \
-	elif grep -q '_WIN32' $$plat; then \
-		echo '#ifndef _WIN32' > $$out; \
-		echo '#error "sysinc_paths.h generated for Windows"' >> $$out; \
-		echo '#endif' >> $$out; \
-	elif grep -q '__linux__' $$plat; then \
-		echo '#ifndef __linux__' > $$out; \
-		echo '#error "sysinc_paths.h generated for Linux"' >> $$out; \
-		echo '#endif' >> $$out; \
-	elif grep -q '__FreeBSD__' $$plat; then \
-		echo '#ifndef __FreeBSD__' > $$out; \
-		echo '#error "sysinc_paths.h generated for FreeBSD"' >> $$out; \
-		echo '#endif' >> $$out; \
-	elif grep -q '__OpenBSD__' $$plat; then \
-		echo '#ifndef __OpenBSD__' > $$out; \
-		echo '#error "sysinc_paths.h generated for OpenBSD"' >> $$out; \
-		echo '#endif' >> $$out; \
-	elif grep -q '__NetBSD__' $$plat; then \
-		echo '#ifndef __NetBSD__' > $$out; \
-		echo '#error "sysinc_paths.h generated for NetBSD"' >> $$out; \
-		echo '#endif' >> $$out; \
-	elif grep -q '__DragonFly__' $$plat; then \
-		echo '#ifndef __DragonFly__' > $$out; \
-		echo '#error "sysinc_paths.h generated for DragonFly BSD"' >> $$out; \
-		echo '#endif' >> $$out; \
-	fi; \
-	RCC_CC="$(CC)"; \
-	if [ "$(CC)" = "aarch64-linux-gnu-gcc" ] || [ -n "$(ARM64_SYSROOT)" ]; then \
-		./tools/get-sysinc-paths.sh "$(CC) --sysroot=$(ARM64_SYSROOT)" >> $$out; \
-	else \
-		./tools/get-sysinc-paths.sh $(CC) >> $$out; \
-	fi; \
-	rm -f $$plat; \
-	if [ -f $@ ] && cmp -s $$out $@; then rm -f $$out; else mv $$out $@; fi
+	@./tools/gen-sysinc-paths.sh "$(CC)" "$(ARM64_SYSROOT)" $@
 
 src/bitint_rt.h: src/bitint_rt.c tools/embed-c.sh
-	@tmp=$$(mktemp); out=$$(mktemp); \
-	printf 'static const char bitint_rt_src[] =\n' > $$out; \
-	./tools/embed-c.sh src/bitint_rt.c >> $$out; \
-	printf ';\n' >> $$out; \
-	if [ -f $@ ] && cmp -s $$out $@; then rm -f $$out; else mv $$out $@; fi; \
-	rm -f $$tmp
+	@./tools/gen-bitint-rt-h.sh $@
 
 src/gcc_predefined.h: FORCE
-	@tmp=$$(mktemp); out=$$(mktemp); \
-	plat=$$(mktemp); \
-	$(CC) -dM -E - < /dev/null > $$tmp; \
-	if grep -q '__APPLE__' $$tmp; then \
-		echo '#ifndef __APPLE__' > $$out; \
-		echo '#error "gcc_predefined.h generated for Apple"' >> $$out; \
-		echo '#endif' >> $$out; \
-	elif grep -q '_WIN32' $$tmp; then \
-		echo '#ifndef _WIN32' > $$out; \
-		echo '#error "gcc_predefined.h generated for Windows"' >> $$out; \
-		echo '#endif' >> $$out; \
-	elif grep -q '__linux__' $$tmp; then \
-		echo '#ifndef __linux__' > $$out; \
-		echo '#error "gcc_predefined.h generated for Linux"' >> $$out; \
-		echo '#endif' >> $$out; \
-	elif grep -q '__FreeBSD__' $$tmp; then \
-		echo '#ifndef __FreeBSD__' > $$out; \
-		echo '#error "gcc_predefined.h generated for FreeBSD"' >> $$out; \
-		echo '#endif' >> $$out; \
-	elif grep -q '__OpenBSD__' $$tmp; then \
-		echo '#ifndef __OpenBSD__' > $$out; \
-		echo '#error "gcc_predefined.h generated for OpenBSD"' >> $$out; \
-		echo '#endif' >> $$out; \
-	elif grep -q '__NetBSD__' $$tmp; then \
-		echo '#ifndef __NetBSD__' > $$out; \
-		echo '#error "gcc_predefined.h generated for NetBSD"' >> $$out; \
-		echo '#endif' >> $$out; \
-	elif grep -q '__DragonFly__' $$tmp; then \
-		echo '#ifndef __DragonFly__' > $$out; \
-		echo '#error "gcc_predefined.h generated for DragonFly BSD"' >> $$out; \
-		echo '#endif' >> $$out; \
-	else \
-		: > $$out; \
-	fi; \
-	awk -f tools/get-gcc-predefined.awk $$tmp >> $$out; \
-	rm -f $$tmp; \
-	if [ -f $@ ] && cmp -s $$out $@; then rm -f $$out; else mv $$out $@; fi
+	@./tools/gen-gcc-predefined.sh "$(CC)" $@
 
 $(DARWIN_O): lib/rcc_darwin.c
 	$(CC) -arch arm64 -dynamiclib -install_name $(PWD)/lib/rcc_darwin.dylib -o $@ lib/rcc_darwin.c
@@ -371,9 +292,8 @@ compile_commands.json: $(SRCS)
 	bear -- make
 
 # Profile build: rcc compiled with -pg for gprof analysis
-rcc_prof: CFLAGS += -pg
 rcc_prof: $(SRCS) src/rcc.h src/sysinc_paths.h src/gcc_predefined.h
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(SRCS) -DGCC=\"$(RCC_GCC)\" $(DEF_INCDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\" -lm
+	$(CC) $(CFLAGS) -pg $(LDFLAGS) -o $@ $(SRCS) -DGCC=\"$(RCC_GCC)\" $(DEF_INCDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\" -lm
 
 # Run profile: compile a decent-sized file to generate gmon.out
 prof: rcc_prof
@@ -400,9 +320,10 @@ LINK_TEST = ./test/test-link.sh ./$(TARGET)
 else
 LINK_TEST = true
 endif
-test check: $(TARGET) $(RUN_TESTS)
+test: $(TARGET) $(RUN_TESTS)
 	rm -f bash.log; ulimit -f 1048576; $(TEST_RUNNER) --parallel
 	$(LINK_TEST)
+check: test
 test-all check-all: $(TARGET) $(RUN_TESTS) lint-changed
 	ulimit -f 2097152; $(TEST_RUNNER) --all --parallel
 	$(LINK_TEST)
@@ -419,14 +340,9 @@ test-torture check-torture: $(TARGET) $(RUN_TESTS)
 test-musl check-musl:
 	-$(MAKE) CC=musl-gcc && ./run_tests_musl ./rcc-musl --all --parallel
 test-full check-full:
-	$(MAKE) clean
-	$(MAKE) check-all
-	$(MAKE) check-musl
-	ulimit -f 2097152; $(TEST_RUNNER_O1) --parallel
-	$(TEST_RUNNER_O2) --parallel
-	-./mingw-test.sh
-	-./arm64-test.sh
-	-./darwin-test.sh
+	$(MAKE) clean && $(MAKE) check-all && $(MAKE) check-musl
+	ulimit -f 2097152; $(TEST_RUNNER_O1) --parallel && $(TEST_RUNNER_O2) --parallel
+	./mingw-test.sh || true; ./arm64-test.sh || true; ./darwin-test.sh || true
 
 # External project tests via test/linux_thirdparty.bash, built with rcc.
 # List of targets lives in test/third_party/targets.txt (regenerate with:
