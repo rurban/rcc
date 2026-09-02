@@ -51,6 +51,7 @@ BINDIR = $(PREFIX)/bin
 INCDIR = $(PREFIX)/include/rcc
 LIBDIR = $(PREFIX)/lib/rcc
 DOCDIR = $(PREFIX)/share/doc/rcc
+MANDIR = $(PREFIX)/share/man/man1
 SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/cg_builtins.c src/cg_vectors.c src/opt.c src/alloc.c src/unicode.c src/keywords.c src/obj.c src/asm.c src/link.c
 TARGET_EXT = $(OBJS)
 RUN_TESTS = run_tests
@@ -465,6 +466,13 @@ tinycc/lib/tcc/include:
 bench: $(TARGET)
 	$(BENCH_RUNNER)
 
+# rcc.1 man page, generated from docs/rcc.pod (see docs/rcc.md for the
+# prose reference both are kept in sync with).
+man: docs/rcc.1
+
+docs/rcc.1: docs/rcc.pod
+	pod2man --section=1 --center="RCC C Compiler" --release="rcc $(VERSION)" --name=RCC docs/rcc.pod docs/rcc.1
+
 # Rebuild with the installed include path so rcc finds its headers
 # without needing -I after installation.
 install: $(TARGET)
@@ -474,7 +482,7 @@ ifeq ($(OS),Windows_NT)
 	install -d "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(BINDIR)),$(BINDIR))" "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(INCDIR)),$(INCDIR))" "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(DOCDIR)),$(DOCDIR))"
 	install -m 755 $(TARGET) "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(BINDIR)),$(BINDIR))/"
 	install -m 644 include/* "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(INCDIR)),$(INCDIR))/"
-	install -m 644 README.md test/tcc_test*.md test_report*.md LICENSE bench/bench_report*.md "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(DOCDIR)),$(DOCDIR))/"
+	install -m 644 README.md docs/rcc.md test/tcc_test*.md test_report*.md LICENSE bench/bench_report*.md "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(DOCDIR)),$(DOCDIR))/"
 	install -d "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))"
 	install -m 755 $(RCC_LIB) "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))/"
 	if test -n "$(MINGW_O)"; then install -d "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))"; install -m 644 $(MINGW_O) "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))/"; fi
@@ -482,14 +490,21 @@ else
 	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(INCDIR)" "$(DESTDIR)$(DOCDIR)"
 	install -m 755 $(TARGET) "$(DESTDIR)$(BINDIR)/" || sudo install -m 755 $(TARGET) "$(DESTDIR)$(BINDIR)/"
 	install -m 644 include/* "$(DESTDIR)$(INCDIR)/"
-	install -m 644 README.md test/tcc_test*.md test_report*.md LICENSE bench/bench_report*.md "$(DESTDIR)$(DOCDIR)/"
+	install -m 644 README.md docs/*.md test/tcc_test*.md test_report*.md LICENSE bench/bench_report*.md "$(DESTDIR)$(DOCDIR)/"
 	install -d "$(DESTDIR)$(LIBDIR)"
 	install -m 644 $(RCC_LIB) "$(DESTDIR)$(LIBDIR)/"
 	@if test -n "$(MINGW_O)"; then install -m 644 $(MINGW_O) "$(DESTDIR)$(LIBDIR)/"; fi
 	@if test -n "$(DARWIN_O)"; then install -m 644 $(DARWIN_O) "$(DESTDIR)$(LIBDIR)/"; fi
+	@if command -v pod2man > /dev/null 2>&1; then \
+	  $(MAKE) man; \
+	  install -d "$(DESTDIR)$(MANDIR)"; \
+	  install -m 644 docs/rcc.1 "$(DESTDIR)$(MANDIR)/"; \
+	else \
+	  echo "pod2man not found: skipping rcc.1 man page install"; \
+	fi
 endif
 
-dist: $(TARGET)
+dist: $(TARGET) docs/rcc.1
 	@echo make dist on $(OS)
 	@rm -rf rcc-$(VERSION) || true
 ifeq ($(OS),Windows_NT)
@@ -518,7 +533,7 @@ leanclean:
 clean:
 	rm -f $(OBJS) $(TARGET) $(RUN_TESTS) $(RCC_LIB) rcc_prof \
 	      src/sysinc_paths.h src/gcc_predefined.h src/keywords.h.tmp \
-	      fred.txt *.s qemu*.core test/torture/core.* \
+	      fred.txt *.s qemu*.core test/torture/core.* docs/rcc.1 \
 	      src/*.obj src/*.darwin.o src/*.arm64.o src/*.musl.o \
 	      lib/rcc_mingw$(OBJ_EXT) lib/rcc_darwin$(OBJ_EXT) \
 	      test-tcc-*.summary test-ctest-*.summary test-compliance-*.summary
@@ -533,5 +548,5 @@ TAGS: $(SRCS) src/rcc.h
 .PHONY: clean leanclean test check check-full check-torture check-all test-all \
 	test-full test-torture test-unit check-unit test-compliance check-compliance test-ctest check-ctest test-link check-link \
 	test-thirdparty check-thirdparty thirdparty-list \
-        lint lint-changed bench install dist bench prof FORCE
+        lint lint-changed bench install dist bench prof man FORCE
 FORCE:

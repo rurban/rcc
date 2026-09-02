@@ -1,0 +1,754 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Source for rcc.1. Generate with: pod2man docs/rcc.pod > docs/rcc.1
+# (or `make man`). Keep in sync with `rcc --help` (src/main.c:help())
+# and docs/rcc.md whenever an option or warning is added or changed.
+
+=encoding utf8
+
+=head1 NAME
+
+rcc - a fast, self-contained C23/C29 compiler for x86-64 and ARM64
+
+=head1 SYNOPSIS
+
+B<rcc> [I<options>] [B<-o> I<outfile>] [B<-c>|B<-S>|B<-E>] I<infile>...
+
+=head1 DESCRIPTION
+
+B<rcc> (Regoshi C Compiler) is a self-contained, from-scratch C23 (and
+draft C29/C2y) compiler targeting x86-64 on Windows and Unix, and
+AArch64 (ARM64) on ELF and Darwin. It integrates a lexer, preprocessor,
+recursive-descent parser, register-based code generator with an
+inline peephole optimizer, and its own native assembler/linker
+(ELF, Mach-O and COFF/PE object and executable writers) — no external
+B<as>(1) or B<ld>(1) is required to produce a binary.
+
+It aims for close GCC/Clang command-line and language compatibility
+(most GNU C extensions, GCC builtins and attributes, and the SystemV
+and Windows x64 / AAPCS64 ABIs) while compiling and linking
+significantly faster than gcc/clang, at execution speed roughly on par
+with B<tcc>(1).
+
+B<rcc> is native-only: one binary targets one word width/ABI. It does
+not cross-compile to a different architecture or word width from a
+single invocation (see L</"-m32, -mx32, -m16"> below); separate
+cross-built binaries (e.g. F<rcc-arm64>, F<rcc.exe>) are produced for
+other targets.
+
+For the full extension/feature reference (supported C standards, GNU
+extensions, C<__attribute__>/C<[[...]]> attributes, C<__builtin_*>
+functions, C<#pragma> directives, predefined macros, ABI notes and
+known limitations) see F<docs/rcc.md>, installed alongside this manual
+page in the documentation directory (see L</FILES>).
+
+=head1 OPTIONS
+
+Unrecognized options are, by default, warned about and otherwise
+ignored (matching the tolerant behavior real build systems expect from
+a drop-in cc); pass B<-Werror> to turn that into a hard error. An
+unrecognized B<-W>I<name> warning-control flag is always merely warned
+about unless B<-Werror=unknown-warning-option> is given, matching
+Clang's convention for autoconf-style feature probing.
+
+=head2 Input, output and compilation mode
+
+=over 4
+
+=item B<-o> I<file>
+
+Set the output filename (object, assembly, executable or shared
+library, depending on the other flags given).
+
+=item B<-E>
+
+Preprocess only; write preprocessed source to stdout (or B<-o> file).
+
+=item B<-S>
+
+Compile only; emit assembly (F<.s>) instead of an object/executable.
+
+=item B<-c>
+
+Compile (and assemble) only; do not link. Produces a F<.o> (F<.obj> on
+Windows) per input file.
+
+=item B<-x c>, B<-x c-header>, B<-xc>, B<-xc-header>
+
+Treat subsequent input files as C source (or a C header, preprocessed
+the same way), regardless of file extension.
+
+=item B<-x none>
+
+Reset language selection to file-extension-based detection.
+
+=item B<-###>
+
+Dry run: print what would be executed (assembler/linker invocations)
+without actually running them.
+
+=back
+
+=head2 Preprocessor
+
+=over 4
+
+=item B<-I> I<path>
+
+Add a directory to the C<#include> search path (user headers).
+
+=item B<-isystem> I<path>, B<-iquote> I<path>, B<-idirafter> I<path>
+
+Accepted like B<-I> (system / quote-only / after search path). rcc
+does not distinguish system headers from user headers in dependency
+output (see B<-MMD> below).
+
+=item B<-nostdinc>
+
+Do not search the built-in system include directories.
+
+=item B<-D>I<name>[=I<value>]
+
+Define a preprocessor macro, optionally with a value (default C<1>).
+
+=item B<-U>I<name>
+
+Undefine a preprocessor macro.
+
+=item B<-include> I<file>
+
+Implicitly C<#include> I<file> before the start of the main source
+file, for every input file on the command line.
+
+=item B<-dM>
+
+Dump all macro definitions after preprocessing instead of the
+preprocessed source; only useful together with B<-E>.
+
+=item B<-fexec-charset=>I<charset>
+
+Set the execution character set used for string/char literal
+conversion (default: UTF-8). Requires rcc to be built with iconv
+support.
+
+=item B<-fmacro-prefix-map=>I<old>B<=>I<new>
+
+Remap a leading path prefix in diagnostics and in C<__FILE__>-derived
+output paths (reproducible-build support), the same as GCC.
+
+=back
+
+=head2 Language standard and dialect
+
+=over 4
+
+=item B<-std=>I<standard>
+
+Select the C standard dialect for the purpose of the
+C<__STDC_VERSION__> predefined macro and library header
+version-gating. rcc's parser accepts the full C23/C29 grammar
+unconditionally regardless of this flag (see F<docs/rcc.md> for what
+that includes); B<-std=> only changes what version-gated headers and
+C<__STDC_VERSION__>/C<__STRICT_ANSI__> see. Accepted values: C<c2y>,
+C<gnu2y>, C<c29>, C<gnu29>, C<iso9899:2029>, C<c23>, C<gnu23>,
+C<iso9899:2023>, C<c17>, C<gnu17>, C<iso9899:2017>, C<c11>, C<gnu11>,
+C<iso9899:2011>, C<c99>, C<gnu99>, C<iso9899:1999>, C<c90>, C<c89>,
+C<gnu90>, C<gnu89>, C<iso9899:1990>. A C<gnuNN> value keeps GNU
+extensions enabled; a bare C<cNN>/C<iso9899:*> value additionally
+defines B<__STRICT_ANSI__>. An unrecognized value warns and falls back
+to C23.
+
+=item B<-ansi>
+
+Not separately recognized; use B<-std=c89> or B<-std=c90> instead.
+
+=item B<-funsigned-char>, B<-fsigned-char>
+
+Make the plain (unqualified) C<char> type unsigned or signed by
+default (default: platform-dependent, signed on x86-64/ARM64 Linux
+and Windows).
+
+=item B<-fwrapv>, B<-fno-strict-overflow>
+
+Accepted (signed integer overflow already wraps in rcc's codegen; no
+behavioral effect, kept for build-system compatibility).
+
+=back
+
+=head2 Warnings and error handling
+
+See L</WARNINGS AND DIAGNOSTICS> below for the catalogue of messages
+these flags control.
+
+=over 4
+
+=item B<-W>
+
+Enable rcc's additional (non-default) compiler warnings: shadowed
+declarations, redundant/implicit-int and similar constructs, and (with
+B<-v>) register-spill and dead-code notices.
+
+=item B<-Werror>
+
+Treat every warning emitted by rcc as an error and increment the error
+count (also affects B<-fmax-errors>/B<-Wfatal-errors> exit behavior).
+
+=item B<-pedantic>, B<-Wpedantic>
+
+Enable pedantic ISO C diagnostics (currently: C2Y-only labeled
+C<break>/C<continue> used under an earlier B<-std=>).
+
+=item B<-pedantic-errors>, B<--pedantic-errors>
+
+Like B<-pedantic>, but also promotes those pedantic diagnostics (and
+only those) to errors, independent of a bare B<-Werror>.
+
+=item B<-Wfatal-errors>
+
+Stop at the first error instead of collecting and reporting every
+error in the translation unit.
+
+=item B<-fmax-errors=>I<N>
+
+Stop after I<N> errors (default 20; C<0> means unlimited).
+
+=item B<-Werror=unknown-warning-option>
+
+Make an unrecognized B<-W>I<name> flag a hard error instead of a
+warning. Used by autoconf/CMake/meson-style warning-flag probes.
+
+=item B<-Wno-unknown-warning-option>
+
+Explicitly restore the default lenient (warn, don't error) handling of
+an unrecognized B<-W>I<name> flag.
+
+=item B<-Wunknown-warning-option>
+
+Accepted as a no-op spelling for autoconf probes (mirrors Clang's own
+flag of the same name, which is on by default).
+
+=item B<-Wno-homoglyph>
+
+Disable Unicode identifier homoglyph/confusable warnings (see
+L</"Unicode identifier safety">).
+
+=item B<-Wno-c23-c2y-compat>
+
+Suppress the B<-pedantic> diagnostic for C2Y labeled
+C<break>/C<continue> statements used under an explicit B<-std=c23> (or
+earlier).
+
+=item B<-Wno->I<name>, B<-Werror=>I<name> (any other I<name>)
+
+Silently accepted: rcc has no corresponding named warning to
+enable/disable individually beyond the ones listed here, so both
+spellings are accepted and ignored for compatibility with third-party
+build systems that pass GCC/Clang warning flags unconditionally.
+
+=back
+
+=head2 Optimization
+
+=over 4
+
+=item B<-O0>
+
+Disable the peephole optimizer (default optimization level).
+
+=item B<-O1>
+
+Enable the peephole optimizer and the compile-time function execution
+(CTFE) AST interpreter, which evaluates pure functions called with
+constant arguments at compile time.
+
+=item B<-O2>, B<-O3>
+
+Everything B<-O1> does, plus B<-finline> (tiny C<return EXPR;>
+function inlining) and B<-funroll> (constant-trip-count C<for>-loop
+unrolling).
+
+=item B<-Os>, B<-Ofast>, B<-Og>, B<-Oz>
+
+Accepted as aliases for B<-O2> (rcc has no separate size/fast/debug
+optimization pipelines).
+
+=item B<-finline>, B<-finline-functions>, B<-finline-small-functions>
+
+Enable the tiny-function inliner independent of B<-O2>/B<-O3>.
+
+=item B<-fno-inline>, B<-fno-inline-functions>,
+B<-fno-inline-small-functions>
+
+Disable the tiny-function inliner.
+
+=item B<-funroll>, B<-funroll-loops>
+
+Enable the constant-trip-count loop unroller independent of
+B<-O2>/B<-O3>.
+
+=item B<-fno-unroll>, B<-fno-unroll-loops>
+
+Disable the loop unroller.
+
+=item B<-fno-builtin>, B<-fno-builtin->I<name>, B<-fno-common>,
+B<-fcommon>, B<-fdata-sections>, B<-ffunction-sections>
+
+Accepted as no-ops for build-system compatibility (rcc always uses the
+inline builtin lowering described in F<docs/rcc.md>; there is no
+separate C<-fcommon>/section-splitting codegen mode to toggle).
+
+=item B<-fdefer-ts>
+
+Defer C<thread_local> destructor-order edge cases (internal
+compatibility flag; see F<docs/rcc.md>).
+
+=back
+
+=head2 Debugging and diagnostics output
+
+=over 4
+
+=item B<-g>, B<-g1>, B<-g2>, B<-g3>, B<-ggdb>, B<-ggdb1>, B<-ggdb2>,
+B<-ggdb3>
+
+Emit DWARF line-number debug information (function/line mapping only;
+no variable-location or type debug info yet).
+
+=item B<-g0>
+
+Disable debug info generation (default).
+
+=item B<-time>
+
+Print wall-clock timing for each compilation substage (preprocess,
+parse, typecheck, optimize, codegen, link) to stderr.
+
+=item B<-v>
+
+Be more verbose (echoes assembler/linker invocations; combined with
+B<-W> also enables dead-code-elision notices).
+
+=item B<-fdump-ast>
+
+Dump the parsed AST to stderr, for compiler debugging.
+
+=item B<-print-search-dirs>
+
+Print the compiler's install, include and library search paths, then
+exit.
+
+=item B<-dumpmachine>
+
+Print the target triple, then exit.
+
+=item B<-dumpversion>
+
+Print a GCC-compatible version string, then exit.
+
+=item B<--help>
+
+Print the built-in option summary, then exit.
+
+=item B<--version>
+
+Print the rcc version and target triple, then exit.
+
+=back
+
+=head2 Code generation and ABI
+
+=over 4
+
+=item B<-mms-bitfields>
+
+Use MSVC-compatible bitfield layout (default on Windows targets).
+
+=item B<-mno-ms-bitfields>
+
+Use GCC-compatible (System V) bitfield layout (default on non-Windows
+targets).
+
+=item B<-fvisibility=>I<default>|I<hidden>|I<internal>|I<protected>
+
+Set the default ELF symbol visibility for definitions that don't
+specify one via C<__attribute__((visibility(...)))> (also accepts the
+two-argv form B<-fvisibility> I<value>). An unrecognized value warns
+and is ignored.
+
+=item B<-m64>
+
+Accepted as a no-op (rcc's x86-64 build is always 64-bit).
+
+=item B<-m32>, B<-mx32>, B<-m16>
+
+Rejected with a fatal error: rcc is native-only and does not
+cross-compile to a different word width from a single binary (see
+L</DESCRIPTION>).
+
+=back
+
+=head2 Position-independent code
+
+=over 4
+
+=item B<-pie>
+
+Generate a position-independent executable.
+
+=item B<-fPIE>, B<-fpie>
+
+Generate position-independent code suitable for a PIE (implies
+B<-pie> semantics for code generation, without forcing the linker
+output type).
+
+=item B<-fPIC>, B<-fpic>
+
+Generate position-independent code suitable for a shared library.
+
+=back
+
+=head2 Linking
+
+=over 4
+
+=item B<-L>I<path>
+
+Add a directory to the linker's library search path.
+
+=item B<-l>I<name>
+
+Link against library F<lib>I<name>B<.a>/F<.so>/F<.dylib>/F<.dll> (or
+F<.lib> on Windows).
+
+=item B<-pthread>
+
+Link with the pthreads library and define the appropriate feature-test
+macros.
+
+=item B<-shared>
+
+Produce a shared library (F<.so>/F<.dylib>/F<.dll>) instead of an
+executable.
+
+=item B<-static>
+
+Link statically.
+
+=item B<-rdynamic>
+
+Export all symbols to the dynamic symbol table (equivalent to
+B<-Wl,-E>).
+
+=item B<-nodefaultlibs>, B<-nostdlib>, B<-r>
+
+Do not link the default runtime libraries (libc/libgcc/etc).
+
+=item B<-s>
+
+Strip symbol/debug information from the linker output.
+
+=item B<-rpath> I<path>
+
+Equivalent to B<-Wl,-rpath,>I<path>.
+
+=item B<-soname> I<name>
+
+Equivalent to B<-Wl,-soname,>I<name> (ELF shared library SONAME).
+
+=item B<-Wl,>I<opt>[,I<opt>...]
+
+Pass one or more comma-separated options directly to the linker.
+Recognized sub-options include (among others) B<-Wl,--whole-archive>,
+B<-Wl,--no-whole-archive>, B<-Wl,--out-implib,>I<path> (Windows/mingw:
+write a PE import library for the produced DLL),
+B<-Wl,-undefined,dynamic_lookup> (Darwin), B<-Wl,-E>,
+B<-Wl,-rpath,>I<path> and B<-Wl,-soname,>I<name>.
+
+=item B<--as-needed>, B<--no-as-needed>
+
+Accepted as no-ops (rcc's linker does not defer/omit DT_NEEDED entries
+based on use).
+
+=item B<-z> I<keyword>
+
+Pass a linker C<-z> sub-option through (e.g. B<-z noexecstack>).
+
+=back
+
+=head2 Dependency generation (Make/Ninja integration)
+
+=over 4
+
+=item B<-M>, B<-MM>
+
+Emit a Make dependency rule for the input file to stdout (or B<-MF>
+file) instead of compiling. rcc does not distinguish system headers
+from user headers, so B<-MM> behaves identically to B<-M>.
+
+=item B<-MD>, B<-MMD>
+
+Generate a Make F<.d> dependency file as a side effect of ordinary
+compilation (identical caveat re: B<-MMD> as above).
+
+=item B<-MF> I<file>
+
+Set the dependency-rule output file (used with B<-M>/B<-MM>/B<-MD>/
+B<-MMD>).
+
+=item B<-MT> I<target>
+
+Set/append the Make rule's target name (default: derived from the
+output/source name). Repeatable; targets accumulate space-separated.
+
+=item B<-MQ> I<target>
+
+Like B<-MT>, additionally quoting Make metacharacters in I<target>
+(rcc's object-path targets never contain any, so this behaves
+identically to B<-MT>).
+
+=item B<-MP>
+
+Add a phony target for every prerequisite (avoids Make errors after a
+header is removed/renamed).
+
+=item B<-MG>
+
+Accepted as a no-op (rcc always resolves C<#include> directives; it
+has no "assume missing headers are generated" mode to suppress).
+
+=item B<-Wp,-MD,>I<file>, B<-Wp,-MMD,>I<file>
+
+Equivalent to B<-MD> B<-MF> I<file> / B<-MMD> B<-MF> I<file>, the
+spelling used by driver wrappers (e.g. the Linux kernel/BusyBox Kbuild
+C<scripts/Makefile.host>) that invoke the preprocessor directly.
+
+=back
+
+=head1 WARNINGS AND DIAGNOSTICS
+
+rcc has two diagnostic severities: fatal errors (B<error:>, always
+abort compilation of the translation unit; there are well over a
+thousand distinct constraint-violation/unsupported-construct checks
+across the lexer, parser, type checker and code generator — these are
+rcc's ordinary ISO-C error surface, not individually toggleable) and
+warnings (B<warning:>, printed to stderr, non-fatal unless
+B<-Werror>/B<-pedantic-errors> is given).
+
+Unlike GCC/Clang, rcc does not implement individually-named
+C<-Wsomething> warning categories; B<-W> is a single switch that
+enables the additional (non-default) diagnostics below. The following
+warnings are always active regardless of B<-W>:
+
+=over 4
+
+=item *
+
+Homoglyph/confusable Unicode identifiers (via the bundled libu8ident
+TR39 check) — disable with B<-Wno-homoglyph>.
+
+=item *
+
+C<[[attributes]]> used before C23 mode.
+
+=item *
+
+Implicit-C<int> declarations (C<type defaults to int>).
+
+=item *
+
+C<'%s' is static but used in inline function '%s' which is not
+static>.
+
+=item *
+
+Assignment diagnostics: C<assignment of read-only location>,
+C<assignment makes integer from pointer without a cast>, C<assignment
+from incompatible pointer type>, C<pointer/integer mismatch in
+conditional expression>.
+
+=item *
+
+C<'_Alignof' applied to a function type> / C<an incomplete type> / C<an
+expression>.
+
+=item *
+
+C<static_assert condition is not an integer constant expression> (a
+floating-point B<static_assert> condition — distinct from the
+B<-pedantic>-gated non-integer diagnostic below).
+
+=item *
+
+C<octal constants with a leading zero and no 'o'/'O' are obsolescent in
+C2Y; use 0o... instead>.
+
+=item *
+
+C<missing terminating "> character (unterminated string literal;
+lexer recovers and continues).
+
+=item *
+
+C<call to '%s': %s> — user-authored message from
+C<__attribute__((warning("...")))> at every call site (its fatal
+sibling, C<__attribute__((error("...")))>, always aborts compilation
+instead).
+
+=item *
+
+Assembler/linker-internal notices: C<asm: warning: %d unresolved
+fixups>, C<rcc: link warning: unhandled relocation %u>,
+C<rcc: warning: -Wl,--out-implib,%s: %s has no exports, ...>.
+
+=item *
+
+Driver-level notices: unrecognized B<-std=> value, unrecognized
+B<-fvisibility=> value, unrecognized command-line option (see
+L</OPTIONS>), C<#warning> preprocessor directive text.
+
+=back
+
+The following are gated on B<-W>:
+
+=over 4
+
+=item *
+
+C<declaration of '%s' shadows a global declaration>.
+
+=item *
+
+Register-spill notices from the codegen register allocator
+(C<spilling %s to stack in %s>) — informational; occurs when a
+function needs more live values than the fixed 8 (x86-64) / 12 (ARM64)
+general-purpose register set, and rcc must use a stack spill slot
+instead.
+
+=item *
+
+Dead-code notice C<unreachable statement elided> (also requires
+B<-v>).
+
+=back
+
+The following are gated on B<-pedantic> (and only promoted to an error
+by B<-pedantic-errors>, independent of a bare B<-Werror>):
+
+=over 4
+
+=item *
+
+C<ISO C does not support 'break'/'continue' statement with an
+identifier operand before C2Y> — suppress with B<-Wno-c23-c2y-compat>.
+
+=item *
+
+C<static_assert condition is not an integer> (non-constant-expression
+B<static_assert> condition, non-floating case).
+
+=back
+
+=head1 EXTENSIONS
+
+rcc supports most GNU C extensions, GCC/Clang C<__attribute__>
+specifiers and C23 C<[[...]]> attributes, C<__builtin_*>/C<__atomic_*>/
+C<__sync_*> functions, x86 SIMD intrinsics, a handful of C<#pragma>
+directives, computed C<goto>, IEEE 754-2008 C<_Decimal32/64/128>, and
+the full unratified C29/C2y checklist unconditionally. The complete,
+per-symbol reference lives in F<docs/rcc.md> (installed to the
+documentation directory, see L</FILES>) rather than duplicated here, to
+keep this manual page in sync with the implementation without drifting.
+
+=head1 ENVIRONMENT
+
+=over 4
+
+=item B<RCC_KEEP_TMP>
+
+If set, do not delete the temporary object files rcc creates for
+multi-file compile+link invocations (useful for debugging codegen/link
+failures).
+
+=item B<RCC_ASM_DEBUG>
+
+If set, dump the generated assembly text for each function to stderr
+as it is emitted.
+
+=item B<RCC_LINK_DEBUG>
+
+If set, print verbose diagnostics from the native ELF linker (archive
+member selection, symbol resolution) to stderr.
+
+=back
+
+=head1 FILES
+
+=over 4
+
+=item F<include/>
+
+rcc's bundled minimal C standard library headers, installed under
+I<PREFIX>F</include/rcc> and searched automatically unless
+B<-nostdinc> is given.
+
+=item F<rcc_lib.so>, F<rcc_lib.dll>, F<lib/libdfp*.a>, F<lib/libdfp.lib>
+
+Runtime support libraries (the C<_Decimal32/64/128> libbid/libdfp
+runtime, and the loadable-library form of rcc itself), installed under
+I<PREFIX>F</lib/rcc>.
+
+=item I<PREFIX>F</share/doc/rcc/> (Unix), I<PREFIX>F</doc/> (Windows)
+
+F<README.md>, F<docs/rcc.md> and the test/benchmark reports installed
+alongside the compiler.
+
+=back
+
+=head1 EXIT STATUS
+
+B<rcc> exits C<0> on success. It exits C<1> after a fatal error, or
+after B<-fmax-errors> errors have been collected (or the first error,
+under B<-Wfatal-errors>), or after B<-Werror> promotes any warning to
+an error.
+
+=head1 EXAMPLES
+
+  # Compile and link a single-file executable
+  rcc -O2 -o hello hello.c
+
+  # Compile only, C23 mode, extra warnings as errors
+  rcc -std=c23 -W -Werror -c -o hello.o hello.c
+
+  # Emit assembly for inspection
+  rcc -S -o hello.s hello.c
+
+  # Build a position-independent shared library
+  rcc -O2 -fPIC -shared -o libfoo.so foo.c
+
+  # Generate a Makefile dependency rule alongside a normal compile
+  rcc -c -MMD -MF hello.d -o hello.o hello.c
+
+=head1 SEE ALSO
+
+L<gcc(1)>, L<cc(1)>, L<tcc(1)>, L<ld(1)>, L<as(1)>. Project homepage
+and issue tracker: L<https://github.com/rurban/rcc>. Full feature
+reference: F<docs/rcc.md>.
+
+=head1 BUGS
+
+Report bugs at L<https://github.com/rurban/rcc/issues>. Known
+limitations (GNU nested functions with escaping pointers on
+Darwin/Windows, VLA struct member C<offsetof> layout,
+C<__attribute__((scalar_storage_order))>/C<__attribute__((mode(...)))>,
+C<-finstrument>) are listed in F<docs/rcc.md> and F<README.md>.
+
+=head1 AUTHORS
+
+Initially written by Hosokawa-t, and ported/extended by Reini Urban.
+
+=head1 COPYRIGHT
+
+Copyright 2026 Hosokawa-t and Reini Urban. Licensed under the GNU
+Lesser General Public License, version 2.1 or later
+(LGPL-2.1-or-later); see F<LICENSE>.
+
+=cut

@@ -10,6 +10,10 @@ compatibility and some inexpensive optimizations. We pass much more
 tests than all other C compilers, we do support all standards, just
 not the backwards incompatible ones. I.e. C11 `int nullptr;` is wrong.
 
+Full reference manual (every option, warning, and language
+extension): [docs/rcc.md](docs/rcc.md), also available as a man page
+via `make man` ([docs/rcc.pod](docs/rcc.pod)).
+
 ## Benchmark Results
 
 Six workloads: Fibonacci(38), Ackermann(3,10), Sieve of Eratosthenes (1M), 128×128 matrix multiply, floating-point math loop (500K), and bubble sort (5K).
@@ -193,6 +197,11 @@ now in the cross environment natively (qemu or wine), same as the
 compiler and tests, it is much faster now.
 
 ## Options
+
+Summary below; see the full reference — every option, every warning,
+every `__attribute__`/`__builtin_*`/`#pragma` extension — in
+[docs/rcc.md](docs/rcc.md), or as a man page via `make man`
+(generates `docs/rcc.1` from [docs/rcc.pod](docs/rcc.pod)).
 
     -I path            add include path
     -include file      pre-include header

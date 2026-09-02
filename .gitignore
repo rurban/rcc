@@ -83,6 +83,7 @@ test/*.out
 /tools/__pycache__
 /test/third_party/test_*
 /test/third_party/binutils
+/docs/rcc.1
 /muon
 /test/third_party/muon
 /test/third_party/libressl-install
