@@ -1,12 +1,14 @@
 /* GH issue #45: C contracts, following Jens Gustedt's "Contracts for C"
- * proposal (https://gustedt.wordpress.com/2025/03/10/contracts-for-c/),
- * minus the pre()/post() *statement* forms (contract_assert/contract_assume):
- * only the declarator-trailing `pre(EXPR)` / `post([NAME:] EXPR)`
- * contract-specifiers are supported, so the whole feature is hideable
+ * proposal (https://gustedt.wordpress.com/2025/03/10/contracts-for-c/):
+ * the declarator-trailing `pre(EXPR)` / `post([NAME:] EXPR)` contract-
+ * specifiers, and the statement forms `contract_assert(EXPR[, "msg"])`
+ * / `contract_assume(EXPR[, "msg"])`. The whole feature is hideable
  * behind a feature-test macro for other compilers with e.g.
  *   #ifndef __RCC__
  *   #define pre(...)
  *   #define post(...)
+ *   #define contract_assert(...)
+ *   #define contract_assume(...)
  *   #endif
  * (rcc already predefines __RCC__; see test_c23_features.c).
  *
@@ -86,6 +88,18 @@ static int no_merge(int x) pre(x >= 0) {
     return x;
 }
 
+/* contract_assert/contract_assume statement forms: an always-on assert
+ * (never disabled by NDEBUG) and an unchecked "trust me" promise. Both
+ * accept an optional string-literal message as the second argument. */
+static int div10(int x) {
+    contract_assert(x != 0, "divisor must not be zero");
+    return 10 / x;
+}
+static void set_via_ptr(int *p, int v) {
+    contract_assume(p != 0);
+    *p = v;
+}
+
 static int compile_capture(const char *rcc, const char *srcf, const char *objf,
                             const char *extra_flags, char *out, size_t outsz) {
     char cmd[1024];
@@ -162,6 +176,11 @@ int main(void) {
 
     if (always_ok(7) != 7) { printf("FAIL: always_ok() with constant-true contracts broken\n"); return 5; }
     if (no_merge(3) != 3) { printf("FAIL: no_merge() broken\n"); return 6; }
+
+    if (div10(2) != 5) { printf("FAIL: contract_assert()-guarded div10() rejected valid call\n"); return 7; }
+    int sv = 0;
+    set_via_ptr(&sv, 42);
+    if (sv != 42) { printf("FAIL: contract_assume()-guarded set_via_ptr() broken\n"); return 8; }
 
     /* --- violations: must abort() with a diagnostic naming the kind,
      * the condition, and the function --- */
@@ -259,6 +278,80 @@ int main(void) {
         if (!strstr(out, "void")) {
             printf("FAIL: void-binding compile error missing expected diagnostic: %s\n", out);
             return 23;
+        }
+    }
+
+    /* contract_assert(): violates -> abort() with a diagnostic, exactly
+     * like a violated pre()/post(). */
+    status = run_capture(rcc, td, pid,
+        "int f(int x) { contract_assert(x != 0, \"must be nonzero\"); return 10 / x; }\n"
+        "int main(void) { return f(0); }\n",
+        &compiled_ok);
+    if (!compiled_ok) { printf("FAIL: contract_assert-violation test source failed to compile\n"); return 30; }
+    if (!aborted_via_shell(status)) {
+        printf("FAIL: violated contract_assert did not abort() (status=%d)\n", status);
+        return 31;
+    }
+
+    /* the diagnostic text prefers the user-supplied message over the
+     * condition's own source text. */
+    {
+        char srcf[256], binf[256], out[512];
+        snprintf(srcf, sizeof(srcf), "%s/test_contracts_ca_diag_%d.c", td, pid);
+        snprintf(binf, sizeof(binf), "%s/test_contracts_ca_diag_%d.bin", td, pid);
+        write_src(srcf, "int f(int x) { contract_assert(x != 0, \"must be nonzero\"); return x; }\n"
+                        "int main(void) { return f(0); }\n");
+        char cbuf[512];
+        int rc = compile_capture(rcc, srcf, binf, "", cbuf, sizeof(cbuf));
+        remove(srcf);
+        if (rc != 0) { printf("FAIL: contract_assert diagnostic-text source failed to compile: %s\n", cbuf); return 32; }
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "%s 2>&1 " STDOUT_NULL_REDIRECT, binf);
+        FILE *rp = popen(cmd, "r");
+        char msg[512] = {0};
+        if (rp) {
+            size_t n = fread(msg, 1, sizeof(msg) - 1, rp);
+            msg[n] = '\0';
+            pclose(rp);
+        }
+        remove(binf);
+        if (!strstr(msg, "contract_assert") || !strstr(msg, "must be nonzero") || !strstr(msg, "f")) {
+            printf("FAIL: contract_assert violation message missing details: %s\n", msg);
+            return 33;
+        }
+    }
+
+    /* contract_assert(0): a constant-false condition is a compile error,
+     * exactly like pre(0)/static_assert. */
+    {
+        char srcf[256], objf[256], out[512];
+        snprintf(srcf, sizeof(srcf), "%s/test_contracts_ca_const_%d.c", td, pid);
+        snprintf(objf, sizeof(objf), "%s/test_contracts_ca_const_%d.o", td, pid);
+        write_src(srcf, "int main(void){ contract_assert(0); return 0; }\n");
+        int rc = compile_capture(rcc, srcf, objf, "-c", out, sizeof(out));
+        remove(srcf);
+        remove(objf);
+        if (rc == 0) { printf("FAIL: 'contract_assert(0)' should be a compile error\n"); return 34; }
+        if (!strstr(out, "never satisfied")) {
+            printf("FAIL: 'contract_assert(0)' compile error missing expected diagnostic: %s\n", out);
+            return 35;
+        }
+    }
+
+    /* contract_assume(0): defined as `if (!(COND)) unreachable();` --
+     * a constant-false condition still compiles cleanly (unlike
+     * contract_assert), matching a bare __builtin_unreachable() call. */
+    {
+        char srcf[256], objf[256], out[512];
+        snprintf(srcf, sizeof(srcf), "%s/test_contracts_cu_const_%d.c", td, pid);
+        snprintf(objf, sizeof(objf), "%s/test_contracts_cu_const_%d.o", td, pid);
+        write_src(srcf, "int main(void){ contract_assume(0); return 0; }\n");
+        int rc = compile_capture(rcc, srcf, objf, "-c", out, sizeof(out));
+        remove(srcf);
+        remove(objf);
+        if (rc != 0) {
+            printf("FAIL: 'contract_assume(0)' should compile (unreachable(), not an error): %s\n", out);
+            return 36;
         }
     }
 

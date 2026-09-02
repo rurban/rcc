@@ -1697,12 +1697,15 @@ static LVar *get_or_declare_extern_fn(const char *name, Type *ret_ty, Type **par
     return fn;
 }
 
-static Node *make_contract_fail_block(Contract *c, bool is_pre, char *fn_name, Token *tok) {
+// { write(2, "<diagnostic>\n", N); abort(); } for any contract-violation
+// kind (pre/post/contract_assert) — `detail` is either the condition's
+// own source text or a user-supplied message (contract_assert's
+// optional second argument).
+static Node *make_violation_block(const char *kind, const char *detail, char *fn_name,
+                                  Token *loc_tok, Token *tok) {
     char *msg = format("rcc: %s '%s' violated in function '%s' at %s:%d\n",
-                       is_pre ? "precondition" : "postcondition",
-                       contract_cond_text(c->cond_start, c->cond_end),
-                       fn_name ? fn_name : "?",
-                       c->tok->filename ? c->tok->filename : "?", c->tok->lineno);
+                       kind, detail, fn_name ? fn_name : "?",
+                       loc_tok->filename ? loc_tok->filename : "?", loc_tok->lineno);
     int msg_len = (int)strlen(msg);
 
     Node *strnode = new_node(ND_STR, tok);
@@ -1738,6 +1741,23 @@ static Node *make_contract_fail_block(Contract *c, bool is_pre, char *fn_name, T
     return blk;
 }
 
+static Node *make_contract_fail_block(Contract *c, bool is_pre, char *fn_name, Token *tok) {
+    return make_violation_block(is_pre ? "precondition" : "postcondition",
+                                contract_cond_text(c->cond_start, c->cond_end),
+                                fn_name, c->tok, tok);
+}
+
+// `__builtin_unreachable();` as a statement — reaching it is undefined
+// behaviour (codegen.c emits no code and treats what follows as dead).
+// This is contract_assume(COND)'s failure action: Gustedt's proposal
+// defines contract_assume as `if (!(COND)) unreachable();` verbatim.
+static Node *make_unreachable_stmt(Token *tok) {
+    Node *call = new_node(ND_FUNCALL, tok);
+    call->funcname = str_intern("__builtin_unreachable", 21);
+    call->ty = ty_void;
+    return new_unary(ND_EXPR_STMT, call, tok);
+}
+
 // `if (!(cond)) { <fail> }` for one already-built, already-check_type'd
 // contract condition.
 static Node *make_contract_check(Node *cond, Contract *c, bool is_pre, char *fn_name, Token *tok) {
@@ -1746,6 +1766,62 @@ static Node *make_contract_check(Node *cond, Contract *c, bool is_pre, char *fn_
     Node *node = new_node(ND_IF, tok);
     node->cond = notcond;
     node->then = make_contract_fail_block(c, is_pre, fn_name, tok);
+    return node;
+}
+
+// contract_assert(COND[, "msg"]); / contract_assume(COND[, "msg"]);
+// (Gustedt's "Contracts for C" primitives — issue #45's statement forms,
+// added alongside the declarator-trailing pre()/post() specifiers:
+// https://gustedt.wordpress.com/2025/03/10/contracts-for-c/).
+// contract_assert is an always-on assert(): true -> nothing; false ->
+// the same diagnostic-then-abort() as a violated pre()/post(). NDEBUG
+// never disables it (unlike <assert.h>'s assert()).
+// contract_assume promises COND holds without checking it: reaching
+// this point with COND false is undefined behaviour, defined verbatim
+// by the proposal as `if (!(COND)) unreachable();` — rcc has no
+// assumption-propagating optimizer to exploit this for, so it compiles
+// to exactly that check (a real branch to __builtin_unreachable(), not
+// a no-op), the correctly-defined fallback for a compiler that can't
+// yet use the promise.
+static Node *parse_contract_stmt(Token **rest, Token *tok, bool is_assert) {
+    const char *kw = is_assert ? "contract_assert" : "contract_assume";
+    Token *kw_tok = tok;
+    tok = skip(tok->next, "(");
+    Token *cond_start = tok;
+    Node *cond = conditional(&tok, tok);
+    check_type(cond);
+    Token *cond_end = tok;
+    char *msg = NULL;
+    if (equalc(tok, ",")) {
+        tok = tok->next;
+        if (tok->kind != TK_STR)
+            error_tok(tok, "expected a string literal message in '%s(...)'", kw);
+        msg = tok->str;
+        tok = tok->next;
+    }
+    tok = skip(tok, ")");
+    *rest = skip(tok, ";");
+
+    char *detail = msg ? msg : contract_cond_text(cond_start, cond_end);
+    long long cval;
+    if (eval_const_expr(cond, &cval)) {
+        if (cval)
+            return new_node(ND_NULL, kw_tok); // provably holds: no-op either way
+        if (is_assert)
+            error_tok(kw_tok, "%s(%s) is never satisfied", kw, detail);
+        // contract_assume with a constant-false condition: unconditionally
+        // unreachable, matching the macro's own unreachable() expansion --
+        // not a compile error (no more than a bare __builtin_unreachable()
+        // itself is).
+        return make_unreachable_stmt(kw_tok);
+    }
+
+    Node *notcond = new_unary(ND_NOT, cond, kw_tok);
+    check_type(notcond);
+    Node *node = new_node(ND_IF, kw_tok);
+    node->cond = notcond;
+    node->then = is_assert ? make_violation_block(kw, detail, parser_current_fn, kw_tok, kw_tok)
+                           : make_unreachable_stmt(kw_tok);
     return node;
 }
 
@@ -9562,6 +9638,16 @@ static Node *stmt(Token **rest, Token *tok) {
     if (equalc(tok, "[") && equalc(tok->next, "[") && tok->ptr + tok->len == tok->next->ptr) {
         tok = skip_attributes(tok);
         return stmt(rest, tok);
+    }
+    // contract_assert(COND[, "msg"]); / contract_assume(COND[, "msg"]);
+    // Ordinary identifiers, not keywords: recognized only immediately
+    // followed by '(', mirroring `defer`'s own disambiguation just below
+    // (an unrelated function genuinely named contract_assert/_assume is
+    // vanishingly unlikely, and this exact guard is what lets pre()/
+    // post() coexist with ordinary code using those names too).
+    if ((equalc(tok, "contract_assert") || equalc(tok, "contract_assume")) && equalc(tok->next, "(")) {
+        bool is_assert = equalc(tok, "contract_assert");
+        return parse_contract_stmt(rest, tok, is_assert);
     }
     // C23 `defer` (WG14 N3199 / TS 25755, `-fdefer-ts`): `defer
     // statement;` registers `statement` to run, LIFO with every other
