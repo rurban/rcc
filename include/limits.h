@@ -11,7 +11,7 @@
 #else
 #define CHAR_MIN (-128)
 #define CHAR_MAX 127
-#endif
+#endif // _WIN32
 #define SHRT_MIN (-32768)
 #define SHRT_MAX 32767
 #define USHRT_MAX 65535
@@ -46,7 +46,7 @@
 #else
 #define ULONG_MAX 0xffffffffUL
 #endif
-#endif
+#endif // !_WIN32
 #define LLONG_MIN (-9223372036854775807LL - 1LL)
 #define LLONG_MAX 9223372036854775807LL
 #define ULLONG_MAX 18446744073709551615ULL
@@ -56,7 +56,7 @@
 #else
 #define SSIZE_MAX 2147483647
 #endif
-#endif
+#endif // SSIZE_MAX
 
 #ifdef _WIN32
 #define MB_LEN_MAX 5
@@ -85,7 +85,7 @@
 /* C23 bool limits */
 #define BOOL_MAX 1
 #define BOOL_WIDTH 1
-#endif
+#endif // C23
 
 /* All limits (ISO C, POSIX/XSI, Linux kernel, GNU extensions) are defined
  * directly in this header. No need to chain to the platform's real
@@ -264,7 +264,6 @@
 #define LONG_BIT (__SIZEOF_LONG__ * 8)
 #endif
 #endif
-#endif
 
 /* Chain to the platform's real <limits.h> for the feature-macro-guarded
  * content this bundled copy doesn't track: glibc's _POSIX2_* / _XOPEN_* /
@@ -278,4 +277,4 @@
 #include_next <limits.h>
 #endif
 
-#endif
+#endif // RCC_LIMITS_H
