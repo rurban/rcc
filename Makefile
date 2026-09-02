@@ -446,6 +446,7 @@ check-bootstrap:
 lint:
 	if command -v prek; then prek run -a; \
         elif command -v pre-commit; then pre-commit run --all-files; fi
+	if command -v checkmake; then checkmake Makefile; fi
 
 lint-changed:
 	if command -v prek > /dev/null 2>&1; then prek run -s HEAD~1; \
@@ -531,12 +532,7 @@ leanclean:
 	  cd c-testsuite && git clean -dxf . && cd ..; \
 	fi
 clean:
-	rm -f $(OBJS) $(TARGET) $(RUN_TESTS) $(RCC_LIB) rcc_prof \
-	      src/sysinc_paths.h src/gcc_predefined.h src/keywords.h.tmp \
-	      fred.txt *.s qemu*.core test/torture/core.* docs/rcc.1 \
-	      src/*.obj src/*.darwin.o src/*.arm64.o src/*.musl.o \
-	      lib/rcc_mingw$(OBJ_EXT) lib/rcc_darwin$(OBJ_EXT) \
-	      test-tcc-*.summary test-ctest-*.summary test-compliance-*.summary
+	rm -f $(OBJS) $(TARGET) $(RUN_TESTS) $(RCC_LIB) rcc_prof src/sysinc_paths.h src/gcc_predefined.h src/keywords.h.tmp fred.txt *.s qemu*.core test/torture/core.* docs/rcc.1 src/*.obj src/*.darwin.o src/*.arm64.o src/*.musl.o lib/rcc_mingw$(OBJ_EXT) lib/rcc_darwin$(OBJ_EXT) test-tcc-*.summary test-ctest-*.summary test-compliance-*.summary
 	if command -v git > /dev/null 2>&1; then \
 	  cd tinycc && git reset --hard && git clean -dxf tests/tests2 && cd ..; \
 	  cd c-testsuite && git clean -dxf . && cd ..; \
@@ -545,8 +541,8 @@ clean:
 TAGS: $(SRCS) src/rcc.h
 	etags -a --language=c src/*.c src/*.h
 
-.PHONY: clean leanclean test check check-full check-torture check-all test-all \
-	test-full test-torture test-unit check-unit test-compliance check-compliance test-ctest check-ctest test-link check-link \
-	test-thirdparty check-thirdparty thirdparty-list \
-        lint lint-changed bench install dist bench prof man FORCE
+.PHONY: all clean leanclean test check check-full check-torture check-all test-all
+.PHONY: test-full test-torture test-unit check-unit test-compliance check-compliance test-ctest check-ctest test-link check-link
+.PHONY: test-thirdparty check-thirdparty thirdparty-list
+.PHONY: lint lint-changed bench install dist prof man tcc FORCE
 FORCE:
