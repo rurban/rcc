@@ -405,6 +405,7 @@ struct FnCtx {
     bool current_fn_is_inline;
     Contract *current_fn_postconds;
     PostBind *current_fn_postcond_binds;
+    LVar *current_fn_range_params; // for the -O3 contract range prover
 };
 static FnCtx *fn_ctx_stack;
 static int fn_ctx_depth;
@@ -416,6 +417,12 @@ static int nested_fn_counter; // disambiguates same-named nested fns file-wide
 // activate_function_contracts() itself.
 static Contract *current_fn_postconds;
 static PostBind *current_fn_postcond_binds;
+// Every parameter of the function currently being parsed, param_next-
+// linked (== the `params` local the file-scope function-definition path
+// already builds) — set unconditionally by activate_function_contracts()
+// so contract_assert()/contract_assume() (parse_contract_stmt(), which
+// has no other route to it) can also feed the -O3 range prover.
+static LVar *current_fn_range_params;
 // Tentative declaration: the defining declaration (with tl_item_head)
 // lives much later in this file, alongside parse()'s toplevel loop that
 // initializes it; parse_nested_function_def() (defined earlier in the
@@ -440,6 +447,7 @@ static void push_fn_ctx(void) {
     c->current_fn_is_inline = current_fn_is_inline;
     c->current_fn_postconds = current_fn_postconds;
     c->current_fn_postcond_binds = current_fn_postcond_binds;
+    c->current_fn_range_params = current_fn_range_params;
     c->next = fn_ctx_stack;
     fn_ctx_stack = c;
     fn_ctx_depth++;
@@ -456,6 +464,7 @@ static void push_fn_ctx(void) {
     current_fn_is_inline = false;
     current_fn_postconds = NULL;
     current_fn_postcond_binds = NULL;
+    current_fn_range_params = NULL;
 }
 
 // Restore the enclosing function's parser state after a nested function's
@@ -475,6 +484,7 @@ static void pop_fn_ctx(void) {
     current_fn_is_inline = c->current_fn_is_inline;
     current_fn_postconds = c->current_fn_postconds;
     current_fn_postcond_binds = c->current_fn_postcond_binds;
+    current_fn_range_params = c->current_fn_range_params;
     fn_ctx_stack = c->next;
     fn_ctx_depth--;
 }
@@ -1769,6 +1779,273 @@ static Node *make_contract_check(Node *cond, Contract *c, bool is_pre, char *fn_
     return node;
 }
 
+// -----------------------------------------------------------------------
+// Contract range prover (-O3 only; see docs/rcc.md and issue #45).
+//
+// A cheap, in-tree, no-external-dependency second pass beyond
+// eval_const_expr()'s literal-constant fold: propagates each in-scope
+// variable's *declared type's own* value range (never anything about
+// its actual runtime value — that's what makes this sound with zero
+// interprocedural/caller analysis: whatever a caller passes for e.g. an
+// `unsigned char` parameter is provably in [0,255], full stop) through
+// straight-line integer arithmetic via interval analysis (abstract
+// interpretation, interval domain). Deliberately does NOT reason about
+// floating point at all — NaN/inf make "obviously true" float facts
+// unsound without a real IEEE-754 SMT theory (see ESBMC's QF_FP/
+// bit-blasting split for what that actually takes) — matching the
+// original issue's "much less for floats". Also does not track
+// arbitrary local-variable dataflow beyond a variable's own declared
+// type: no SSA renaming, no escape/alias analysis, because neither is
+// needed for this scope (a real interprocedural SMT prover, e.g. an
+// opt-in Z3 backend, is a materially different and separate feature).
+//
+// Always conservative: "can't decide" (Range.valid == false, or a
+// decided-but-mixed [0,1] truth range) falls straight through to the
+// existing constant-fold-or-runtime-check path, exactly as if -O3 had
+// not been passed. A decided answer never changes program meaning, only
+// whether a no-longer-needed runtime check gets elided (provably true)
+// or promoted to the same static_assert-style compile error already
+// used for a literal `pre(0)` (provably false for every value the
+// operand's type can ever hold).
+typedef struct {
+    bool valid;
+    int64_t lo, hi;
+} Range;
+
+typedef struct RangeBind RangeBind;
+struct RangeBind {
+    RangeBind *next;
+    LVar *var;
+    Range range;
+};
+
+static const Range RANGE_UNKNOWN = {false, 0, 0};
+
+static Range range_point(int64_t v) {
+    Range r = {true, v, v};
+    return r;
+}
+
+// The full value range implied by an integer type's own width and
+// signedness alone. Bails out on non-integer types and >=64-bit widths
+// (unsigned 64-bit's true upper bound doesn't fit an int64_t; a wider
+// _BitInt similarly) rather than risk the analyzer's own bookkeeping
+// overflowing — never a soundness bug, just fewer conditions decided.
+static Range type_range(Type *ty) {
+    if (!ty || !is_integer(ty) || ty->size <= 0 || ty->size > 8)
+        return RANGE_UNKNOWN;
+    int bits = (int)ty->size * 8;
+    if (ty->is_unsigned) {
+        if (bits >= 64)
+            return RANGE_UNKNOWN;
+        Range r = {true, 0, ((int64_t)1 << bits) - 1};
+        return r;
+    }
+    if (bits >= 64) {
+        Range r = {true, INT64_MIN, INT64_MAX};
+        return r;
+    }
+    Range r = {true, -((int64_t)1 << (bits - 1)), ((int64_t)1 << (bits - 1)) - 1};
+    return r;
+}
+
+static Range lookup_range(RangeBind *env, LVar *var) {
+    for (RangeBind *b = env; b; b = b->next)
+        if (b->var == var)
+            return b->range;
+    return RANGE_UNKNOWN;
+}
+
+// Every parameter's own declared-type range (see type_range()). Sound
+// for ANY LVar regardless of whether it's a formal parameter or an
+// already-initialized local — "somewhere in [type-min, type-max]" holds
+// trivially either way — but only parameters (param_next-linked) are
+// ever passed in: locals aren't dataflow-tracked (see the section
+// comment above), so binding one would just waste an entry.
+static RangeBind *build_range_env(LVar *params) {
+    RangeBind head = {0};
+    RangeBind *cur = &head;
+    for (LVar *p = params; p; p = p->param_next) {
+        RangeBind *b = arena_alloc(sizeof(RangeBind));
+        b->var = p;
+        b->range = type_range(p->ty);
+        b->next = NULL;
+        cur = cur->next = b;
+    }
+    return head.next;
+}
+
+static Range range_neg(Range a) {
+    if (!a.valid)
+        return RANGE_UNKNOWN;
+    __int128 lo = -(__int128)a.hi, hi = -(__int128)a.lo;
+    if (lo < INT64_MIN || hi > INT64_MAX)
+        return RANGE_UNKNOWN;
+    Range r = {true, (int64_t)lo, (int64_t)hi};
+    return r;
+}
+
+static Range range_add(Range a, Range b) {
+    if (!a.valid || !b.valid)
+        return RANGE_UNKNOWN;
+    __int128 lo = (__int128)a.lo + b.lo, hi = (__int128)a.hi + b.hi;
+    if (lo < INT64_MIN || hi > INT64_MAX)
+        return RANGE_UNKNOWN;
+    Range r = {true, (int64_t)lo, (int64_t)hi};
+    return r;
+}
+
+static Range range_sub(Range a, Range b) {
+    if (!a.valid || !b.valid)
+        return RANGE_UNKNOWN;
+    __int128 lo = (__int128)a.lo - b.hi, hi = (__int128)a.hi - b.lo;
+    if (lo < INT64_MIN || hi > INT64_MAX)
+        return RANGE_UNKNOWN;
+    Range r = {true, (int64_t)lo, (int64_t)hi};
+    return r;
+}
+
+static Range range_mul(Range a, Range b) {
+    if (!a.valid || !b.valid)
+        return RANGE_UNKNOWN;
+    __int128 p1 = (__int128)a.lo * b.lo, p2 = (__int128)a.lo * b.hi;
+    __int128 p3 = (__int128)a.hi * b.lo, p4 = (__int128)a.hi * b.hi;
+    __int128 lo = p1, hi = p1;
+    if (p2 < lo) lo = p2;
+    if (p2 > hi) hi = p2;
+    if (p3 < lo) lo = p3;
+    if (p3 > hi) hi = p3;
+    if (p4 < lo) lo = p4;
+    if (p4 > hi) hi = p4;
+    if (lo < INT64_MIN || hi > INT64_MAX)
+        return RANGE_UNKNOWN;
+    Range r = {true, (int64_t)lo, (int64_t)hi};
+    return r;
+}
+
+// C truthiness of a range: 1 = every value in it is nonzero (definitely
+// true), -1 = it's exactly {0} (definitely false), 0 = straddles zero
+// or unknown (can't decide).
+static int range_truthiness(Range r) {
+    if (!r.valid)
+        return 0;
+    if (r.lo == 0 && r.hi == 0)
+        return -1;
+    if (r.lo > 0 || r.hi < 0)
+        return 1;
+    return 0;
+}
+
+// Interval abstract interpretation over one condition expression. Only
+// the node kinds relevant to a scalar conditional-expression are
+// handled (arithmetic +/-/*, unary -/!, relational/equality, &&/||,
+// casts, literals, variable reads); anything else — division, shifts,
+// bitwise ops, calls, member/array access, ?: — falls back to
+// RANGE_UNKNOWN rather than risk an unsound approximation (C's
+// truncating division and shift-of-negative UB in particular are not
+// worth the complexity for this budget).
+static Range compute_range(Node *n, RangeBind *env) {
+    if (!n)
+        return RANGE_UNKNOWN;
+    switch (n->kind) {
+    case ND_NUM:
+        return range_point(n->val);
+    case ND_LVAR:
+        return n->var ? lookup_range(env, n->var) : RANGE_UNKNOWN;
+    case ND_CAST: {
+        Range a = compute_range(n->lhs, env);
+        Range dst = type_range(n->ty);
+        if (a.valid && dst.valid && a.lo >= dst.lo && a.hi <= dst.hi)
+            return a; // value-preserving cast (e.g. widening)
+        return dst; // narrowing (or unknown source): fall back to the destination type's own range
+    }
+    case ND_NEG:
+        return range_neg(compute_range(n->lhs, env));
+    case ND_NOT: {
+        int t = range_truthiness(compute_range(n->lhs, env));
+        if (t == 1) return range_point(0);
+        if (t == -1) return range_point(1);
+        Range r = {true, 0, 1};
+        return r;
+    }
+    case ND_ADD:
+        return range_add(compute_range(n->lhs, env), compute_range(n->rhs, env));
+    case ND_SUB:
+        return range_sub(compute_range(n->lhs, env), compute_range(n->rhs, env));
+    case ND_MUL:
+        return range_mul(compute_range(n->lhs, env), compute_range(n->rhs, env));
+    case ND_LT: {
+        Range a = compute_range(n->lhs, env), b = compute_range(n->rhs, env);
+        if (!a.valid || !b.valid) return RANGE_UNKNOWN;
+        if (a.hi < b.lo) return range_point(1);
+        if (a.lo >= b.hi) return range_point(0);
+        Range r = {true, 0, 1};
+        return r;
+    }
+    case ND_LE: {
+        Range a = compute_range(n->lhs, env), b = compute_range(n->rhs, env);
+        if (!a.valid || !b.valid) return RANGE_UNKNOWN;
+        if (a.hi <= b.lo) return range_point(1);
+        if (a.lo > b.hi) return range_point(0);
+        Range r = {true, 0, 1};
+        return r;
+    }
+    case ND_EQ: {
+        Range a = compute_range(n->lhs, env), b = compute_range(n->rhs, env);
+        if (!a.valid || !b.valid) return RANGE_UNKNOWN;
+        if (a.hi < b.lo || a.lo > b.hi) return range_point(0);
+        if (a.lo == a.hi && b.lo == b.hi && a.lo == b.lo) return range_point(1);
+        Range r = {true, 0, 1};
+        return r;
+    }
+    case ND_NE: {
+        Range a = compute_range(n->lhs, env), b = compute_range(n->rhs, env);
+        if (!a.valid || !b.valid) return RANGE_UNKNOWN;
+        if (a.hi < b.lo || a.lo > b.hi) return range_point(1);
+        if (a.lo == a.hi && b.lo == b.hi && a.lo == b.lo) return range_point(0);
+        Range r = {true, 0, 1};
+        return r;
+    }
+    case ND_LOGAND: {
+        int lt = range_truthiness(compute_range(n->lhs, env));
+        if (lt == -1) return range_point(0);
+        int rt = range_truthiness(compute_range(n->rhs, env));
+        if (rt == -1) return range_point(0);
+        if (lt == 1 && rt == 1) return range_point(1);
+        Range r = {true, 0, 1};
+        return r;
+    }
+    case ND_LOGOR: {
+        int lt = range_truthiness(compute_range(n->lhs, env));
+        if (lt == 1) return range_point(1);
+        int rt = range_truthiness(compute_range(n->rhs, env));
+        if (rt == 1) return range_point(1);
+        if (lt == -1 && rt == -1) return range_point(0);
+        Range r = {true, 0, 1};
+        return r;
+    }
+    default:
+        return RANGE_UNKNOWN;
+    }
+}
+
+typedef enum { PROVE_UNKNOWN,
+               PROVE_TRUE,
+               PROVE_FALSE } ProveResult;
+
+// Entry point: try to decide `cond` from `env` alone. NULL/no-op unless
+// -O3 (opt_O3) is active — this whole pass costs nothing at any other
+// optimization level, matching -O3's existing "extra, slower analysis"
+// convention in real compilers.
+static ProveResult try_prove_range(Node *cond, RangeBind *env) {
+    if (!opt_O3)
+        return PROVE_UNKNOWN;
+    int t = range_truthiness(compute_range(cond, env));
+    if (t == 1) return PROVE_TRUE;
+    if (t == -1) return PROVE_FALSE;
+    return PROVE_UNKNOWN;
+}
+
 // contract_assert(COND[, "msg"]); / contract_assume(COND[, "msg"]);
 // (Gustedt's "Contracts for C" primitives — issue #45's statement forms,
 // added alongside the declarator-trailing pre()/post() specifiers:
@@ -1812,7 +2089,27 @@ static Node *parse_contract_stmt(Token **rest, Token *tok, bool is_assert) {
         // contract_assume with a constant-false condition: unconditionally
         // unreachable, matching the macro's own unreachable() expansion --
         // not a compile error (no more than a bare __builtin_unreachable()
-        // itself is).
+        // itself is), but worth flagging: everything after this point in
+        // the enclosing block is now dead code (see codegen.c's
+        // bi_unreachable handling) that silently vanishes at -O1+.
+        if (!opt_Wno_contract_assume_false)
+            warn_tok(kw_tok, "%s(%s) can never hold; code after this point is unreachable and will be eliminated",
+                     kw, detail);
+        return make_unreachable_stmt(kw_tok);
+    }
+
+    ProveResult pr = opt_O3 ? try_prove_range(cond, build_range_env(current_fn_range_params))
+                            : PROVE_UNKNOWN;
+    if (pr == PROVE_TRUE)
+        return new_node(ND_NULL, kw_tok);
+    if (pr == PROVE_FALSE) {
+        if (is_assert)
+            error_tok(kw_tok, "%s(%s) can never be satisfied for any in-range value", kw, detail);
+        if (!opt_Wno_contract_assume_false)
+            warn_tok(kw_tok,
+                     "%s(%s) can never hold for any in-range value; "
+                     "code after this point is unreachable and will be eliminated",
+                     kw, detail);
         return make_unreachable_stmt(kw_tok);
     }
 
@@ -1831,7 +2128,7 @@ static Node *parse_contract_stmt(Token **rest, Token *tok, bool is_assert) {
 // error — Gustedt's proposal explicitly specifies this fast path) or
 // return its runtime `if (!(cond)) fail();` check. Returns NULL for the
 // constant-true case.
-static Node *compile_one_contract(Contract *c, bool is_pre, char *fn_name, Token *tok) {
+static Node *compile_one_contract(Contract *c, bool is_pre, char *fn_name, Token *tok, RangeBind *range_env) {
     Token *tmp;
     Node *cond = conditional(&tmp, c->cond_start);
     check_type(cond);
@@ -1843,6 +2140,13 @@ static Node *compile_one_contract(Contract *c, bool is_pre, char *fn_name, Token
                       contract_cond_text(c->cond_start, c->cond_end));
         return NULL;
     }
+    ProveResult pr = try_prove_range(cond, range_env);
+    if (pr == PROVE_TRUE)
+        return NULL;
+    if (pr == PROVE_FALSE)
+        error_tok(c->tok, "%s '%s' can never be satisfied for any in-range value",
+                  is_pre ? "precondition" : "postcondition",
+                  contract_cond_text(c->cond_start, c->cond_end));
     return make_contract_check(cond, c, is_pre, fn_name, tok);
 }
 
@@ -1858,9 +2162,10 @@ static Node *compile_one_contract(Contract *c, bool is_pre, char *fn_name, Token
 // the declarator of the definition itself — a separate prototype
 // declaration's own pre()/post() clauses (e.g. in a header) are not
 // merged in. Repeat them on the definition to enforce them.
-static Node *activate_function_contracts(Type *fty, char *fn_name, Token *tok) {
+static Node *activate_function_contracts(Type *fty, char *fn_name, LVar *params, Token *tok) {
     current_fn_postconds = NULL;
     current_fn_postcond_binds = NULL;
+    current_fn_range_params = params;
     if (!fty->preconds && !fty->postconds)
         return NULL;
 
@@ -1893,10 +2198,11 @@ static Node *activate_function_contracts(Type *fty, char *fn_name, Token *tok) {
     current_fn_postcond_binds = bind_head.next;
     current_fn_postconds = fty->postconds;
 
+    RangeBind *param_env = opt_O3 ? build_range_env(params) : NULL;
     Node head = {0};
     Node *cur = &head;
     for (Contract *c = fty->preconds; c; c = c->next) {
-        Node *check = compile_one_contract(c, true, fn_name, tok);
+        Node *check = compile_one_contract(c, true, fn_name, tok, param_env);
         if (check)
             cur = cur->next = check;
     }
@@ -1915,6 +2221,22 @@ static Node *activate_function_contracts(Type *fty, char *fn_name, Token *tok) {
 static Node *apply_postconds_to_return(Node *node, Token *tok) {
     if (!current_fn_postconds)
         return node;
+    // Must be captured from the ORIGINAL return expression before the
+    // rewrite below swaps node->lhs for a read of the bound temp.
+    RangeBind *range_env = NULL;
+    if (opt_O3) {
+        range_env = build_range_env(current_fn_range_params);
+        if (node->lhs && current_fn_postcond_binds) {
+            Range ret_range = compute_range(node->lhs, range_env);
+            for (PostBind *b = current_fn_postcond_binds; b; b = b->next) {
+                RangeBind *rb = arena_alloc(sizeof(RangeBind));
+                rb->var = b->var;
+                rb->range = ret_range;
+                rb->next = range_env;
+                range_env = rb;
+            }
+        }
+    }
     Node head = {0};
     Node *cur = &head;
     if (node->lhs && current_fn_postcond_binds) {
@@ -1930,7 +2252,7 @@ static Node *apply_postconds_to_return(Node *node, Token *tok) {
         node->lhs = new_var_node(primary, tok);
     }
     for (Contract *c = current_fn_postconds; c; c = c->next) {
-        Node *check = compile_one_contract(c, false, parser_current_fn, tok);
+        Node *check = compile_one_contract(c, false, parser_current_fn, tok, range_env);
         if (check)
             cur = cur->next = check;
     }
@@ -15417,7 +15739,7 @@ Program *parse(Token *tok) {
                     // external definition in some other TU instead).
                     current_fn_is_inline = attr.is_inline && !attr.is_static &&
                         !attr.is_gnu_inline && !attr.is_extern;
-                    Node *contract_pre_checks = activate_function_contracts(fty, name, tok);
+                    Node *contract_pre_checks = activate_function_contracts(fty, name, params, tok);
                     Node *body = compound_stmt_ex(&tok, tok, &fn_locals, false);
                     current_fn_is_inline = false;
                     // Implicit return 0 for main if no explicit return

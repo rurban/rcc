@@ -237,6 +237,15 @@ Suppress the B<-pedantic> diagnostic for C2Y labeled
 C<break>/C<continue> statements used under an explicit B<-std=c23> (or
 earlier).
 
+=item B<-Wno-contract-assume-false>
+
+Suppress the (on-by-default) warning issued when a C<contract_assume()>
+condition is proven never-satisfiable — by C<eval_const_expr> (a
+literal condition) or, at B<-O3>, the contract range prover — and so
+compiles to an unconditional C<__builtin_unreachable()>, silently
+discarding whatever code follows it in the same block at B<-O1>+ (see
+L</"Contracts">).
+
 =item B<-Wno->I<name>, B<-Werror=>I<name> (any other I<name>)
 
 Silently accepted: rcc has no corresponding named warning to
@@ -260,15 +269,28 @@ Enable the peephole optimizer and the compile-time function execution
 (CTFE) AST interpreter, which evaluates pure functions called with
 constant arguments at compile time.
 
-=item B<-O2>, B<-O3>
+=item B<-O2>
 
 Everything B<-O1> does, plus B<-finline> (tiny C<return EXPR;>
 function inlining) and B<-funroll> (constant-trip-count C<for>-loop
 unrolling).
 
+=item B<-O3>
+
+Everything B<-O2> does, plus the contract range prover: propagates
+each in-scope variable's own declared-type range through straight-line
+integer arithmetic (no floating point, no SSA, no interprocedural
+analysis — see L</"Contracts">) to statically decide C<pre>/C<post>/
+C<contract_assert>/C<contract_assume> conditions eval_const_expr's
+literal-constant fold alone can't: a provably-true condition's runtime
+check is elided; a provably-false one is a compile error (C<pre>/
+C<post>/C<contract_assert>) or an unconditional
+C<__builtin_unreachable()> with a B<-Wno-contract-assume-false>-able
+warning (C<contract_assume>). Never runs below B<-O3>.
+
 =item B<-Os>, B<-Ofast>, B<-Og>, B<-Oz>
 
-Accepted as aliases for B<-O2> (rcc has no separate size/fast/debug
+Accepted as aliases for B<-O1> (rcc has no separate size/fast/debug
 optimization pipelines).
 
 =item B<-finline>, B<-finline-functions>, B<-finline-small-functions>

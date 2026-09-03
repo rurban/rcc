@@ -10,7 +10,11 @@
  *   #define contract_assert(...)
  *   #define contract_assume(...)
  *   #endif
- * (rcc already predefines __RCC__; see test_c23_features.c).
+ * (rcc already predefines __RCC__; see test_c23_features.c). At `-O3`
+ * and above, an additional in-tree range prover statically decides
+ * conditions the literal-constant fold alone can't, from each in-scope
+ * variable's own declared-type range (see docs/rcc.md's Contracts
+ * section) -- never runs below `-O3`.
  *
  * A satisfied contract has zero *observable* effect: this file directly
  * exercises the happy paths (compiled and executed as ordinary rcc
@@ -352,6 +356,123 @@ int main(void) {
         if (rc != 0) {
             printf("FAIL: 'contract_assume(0)' should compile (unreachable(), not an error): %s\n", out);
             return 36;
+        }
+    }
+
+    /* contract_assume(0): on by default, must WARN that the resulting
+     * __builtin_unreachable() makes what follows dead code -- and the
+     * warning must be suppressible via -Wno-contract-assume-false. */
+    {
+        char srcf[256], objf[256], out[512];
+        snprintf(srcf, sizeof(srcf), "%s/test_contracts_cu_warn_%d.c", td, pid);
+        snprintf(objf, sizeof(objf), "%s/test_contracts_cu_warn_%d.o", td, pid);
+        write_src(srcf, "int main(void){ contract_assume(0); return 0; }\n");
+        int rc = compile_capture(rcc, srcf, objf, "-c", out, sizeof(out));
+        if (rc != 0 || !strstr(out, "can never hold") || !strstr(out, "unreachable")) {
+            printf("FAIL: 'contract_assume(0)' should warn about dead code: %s\n", out);
+            remove(srcf); remove(objf);
+            return 37;
+        }
+        char out2[512];
+        rc = compile_capture(rcc, srcf, objf, "-c -Wno-contract-assume-false", out2, sizeof(out2));
+        remove(srcf);
+        remove(objf);
+        if (rc != 0 || strstr(out2, "can never hold")) {
+            printf("FAIL: -Wno-contract-assume-false did not suppress the warning: %s\n", out2);
+            return 38;
+        }
+    }
+
+    /* --- -O3 range prover: statically decides conditions from each
+     * parameter's own declared-type range that eval_const_expr's
+     * literal-constant fold alone can't -- never runs below -O3. --- */
+
+    /* An unsigned char can never exceed 255: a precondition requiring
+     * more is unsatisfiable for every possible caller, at -O3 only. */
+    {
+        char srcf[256], objf[256], out[512];
+        snprintf(srcf, sizeof(srcf), "%s/test_contracts_range_pre_%d.c", td, pid);
+        snprintf(objf, sizeof(objf), "%s/test_contracts_range_pre_%d.o", td, pid);
+        write_src(srcf, "int g(unsigned char c) pre(c > 300) { return c; }\nint main(void){ return g(1); }\n");
+
+        int rc = compile_capture(rcc, srcf, objf, "-c", out, sizeof(out));
+        remove(objf);
+        if (rc != 0) {
+            printf("FAIL: unsatisfiable-by-type precondition should still compile below -O3: %s\n", out);
+            remove(srcf);
+            return 39;
+        }
+
+        char out2[512];
+        rc = compile_capture(rcc, srcf, objf, "-O3 -c", out2, sizeof(out2));
+        remove(srcf);
+        remove(objf);
+        if (rc == 0) { printf("FAIL: -O3 should reject an unsatisfiable-by-type precondition\n"); return 40; }
+        if (!strstr(out2, "can never be satisfied for any in-range value")) {
+            printf("FAIL: -O3 range-prover error missing expected diagnostic: %s\n", out2);
+            return 41;
+        }
+    }
+
+    /* A precondition that's a tautology for the parameter's own type
+     * elides its runtime check at -O3 -- observably, the function must
+     * still compile, link, and return the right value either way. */
+    status = run_capture(rcc, td, pid,
+        "int f(unsigned char c) pre(c < 256) { return c * 2; }\n"
+        "int main(void) { return f(21) == 42 ? 0 : 1; }\n",
+        &compiled_ok);
+    if (!compiled_ok) { printf("FAIL: -O3 tautology-elision test source failed to compile\n"); return 42; }
+    /* run_capture() doesn't take extra flags; re-run directly at -O3. */
+    {
+        char srcf[256], binf[256], out[512];
+        snprintf(srcf, sizeof(srcf), "%s/test_contracts_range_elide_%d.c", td, pid);
+        snprintf(binf, sizeof(binf), "%s/test_contracts_range_elide_%d.bin", td, pid);
+        write_src(srcf, "int f(unsigned char c) pre(c < 256) { return c * 2; }\n"
+                        "int main(void) { return f(21) == 42 ? 0 : 1; }\n");
+        int rc = compile_capture(rcc, srcf, binf, "-O3", out, sizeof(out));
+        remove(srcf);
+        if (rc != 0) { printf("FAIL: -O3 tautology-elision source failed to compile: %s\n", out); remove(binf); return 43; }
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "%s " DISCARD_ALL_REDIRECT, binf);
+        int run_rc = system(cmd);
+        remove(binf);
+        if (run_rc != 0) { printf("FAIL: -O3 tautology-elided precondition broke a valid call (status=%d)\n", run_rc); return 44; }
+    }
+
+    /* contract_assume() proven false from a parameter's own type range
+     * (not a literal constant) warns only at -O3, same wording as the
+     * literal case, and is likewise suppressible. */
+    {
+        char srcf[256], objf[256], out[512];
+        snprintf(srcf, sizeof(srcf), "%s/test_contracts_range_assume_%d.c", td, pid);
+        snprintf(objf, sizeof(objf), "%s/test_contracts_range_assume_%d.o", td, pid);
+        write_src(srcf, "int f(unsigned char c) { contract_assume(c > 300); return c; }\n"
+                        "int main(void){ return f(1); }\n");
+
+        int rc = compile_capture(rcc, srcf, objf, "-c", out, sizeof(out));
+        remove(objf);
+        if (rc != 0 || strstr(out, "can never hold")) {
+            printf("FAIL: range-provable contract_assume() should be silent below -O3: %s\n", out);
+            remove(srcf);
+            return 45;
+        }
+
+        char out2[512];
+        rc = compile_capture(rcc, srcf, objf, "-O3 -c", out2, sizeof(out2));
+        remove(objf);
+        if (rc != 0 || !strstr(out2, "can never hold for any in-range value")) {
+            printf("FAIL: -O3 contract_assume() range-prover warning missing: %s\n", out2);
+            remove(srcf);
+            return 46;
+        }
+
+        char out3[512];
+        rc = compile_capture(rcc, srcf, objf, "-O3 -c -Wno-contract-assume-false", out3, sizeof(out3));
+        remove(srcf);
+        remove(objf);
+        if (rc != 0 || strstr(out3, "can never hold")) {
+            printf("FAIL: -Wno-contract-assume-false did not suppress the -O3 range-prover warning: %s\n", out3);
+            return 47;
         }
     }
 

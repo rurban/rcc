@@ -436,6 +436,11 @@ Type *size_t_type(void);
 
 extern bool opt_O0;
 extern bool opt_O1;
+// -O3-only: NOT a real extra codegen optimization tier (rcc's own passes
+// don't distinguish -O2/-O3 otherwise) -- gates the contract range
+// prover (parser.c) alone, so it never runs at the default fast-compile
+// levels. See parser.c's "Contract range prover" section.
+extern bool opt_O3;
 extern bool opt_finline;
 extern bool opt_funroll;
 extern bool opt_v;
@@ -459,6 +464,12 @@ extern bool opt_pedantic;
 extern bool opt_Werror_unknown;
 extern bool opt_Wno_homoglyph;
 extern bool opt_Wno_c23_c2y_compat;
+// -Wno-contract-assume-false: suppress the (on-by-default) warning when
+// a contract_assume() is proven never-satisfiable -- by eval_const_expr
+// (a literal condition) or, at -O3, the range prover -- and therefore
+// compiles to an unconditional __builtin_unreachable() whose following
+// code is dead-code-eliminated (see codegen.c's bi_unreachable handling).
+extern bool opt_Wno_contract_assume_false;
 extern bool opt_ms_bitfields;
 extern bool opt_dM;
 extern bool opt_E;

@@ -142,6 +142,33 @@ calls `abort()`, matching `assert()`'s own failure behavior (except
 diagnosed abort). A `post(NAME: ...)` binding on a function returning
 `void` is a compile error (there is no value to bind).
 
+**`-O3` range prover**: `eval_const_expr`'s literal-constant fold above
+runs at every optimization level; a separate, cheap, in-tree range
+prover _additionally_ runs at `-O3` and above (never below — it costs
+nothing at the default `-O0`/`-O1`/`-O2`). It propagates each in-scope
+variable's own _declared type's_ value range (e.g. an `unsigned char`
+parameter is provably in `[0,255]` regardless of what any caller
+actually passes — no interprocedural/caller analysis, no SSA, no
+escape/alias analysis, and deliberately no floating-point reasoning at
+all: NaN/inf make "obviously true" float facts unsound without a real
+IEEE-754 SMT theory) through straight-line integer arithmetic (`+ - *`,
+unary `- !`, `< <= == !=`, `&& ||`, casts) to decide conditions the
+literal fold alone can't:
+
+    int g(unsigned char c) pre(c > 300) { // -O3: compile error -- no
+        return c;                         // unsigned char can ever satisfy this
+    }
+
+A decided answer never changes program meaning, only whether a
+no-longer-needed runtime check gets elided (provably true) or promoted
+to the same compile error a literal `pre(0)` already gets (provably
+false for `pre`/`post`/`contract_assert`) — except `contract_assume`,
+which stays a warning (`-Wno-contract-assume-false` to suppress), not
+an error, matching its constant-false case: it compiles to an
+unconditional `__builtin_unreachable()`, silently discarding whatever
+source follows it in the same block once codegen's existing
+dead-code elision kicks in (`-O1`+).
+
 ## Options
 
 Unrecognized flags are, by default, warned about and otherwise
@@ -189,33 +216,35 @@ convention).
 
 See [Warnings and diagnostics](#warnings-and-diagnostics) for the message catalogue these flags gate.
 
-| Option                                  | Meaning                                                                                             |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `-W`                                    | Enable rcc's additional (non-default) warnings.                                                     |
-| `-Werror`                               | Treat every warning as an error.                                                                    |
-| `-pedantic`, `-Wpedantic`               | Enable pedantic ISO C diagnostics.                                                                  |
-| `-pedantic-errors`, `--pedantic-errors` | Like `-pedantic`, and promotes _only_ those diagnostics to errors, independent of a bare `-Werror`. |
-| `-Wfatal-errors`                        | Stop at the first error instead of collecting up to `-fmax-errors`.                                 |
-| `-fmax-errors=N`                        | Stop after N errors (default 20; `0` = unlimited).                                                  |
-| `-Werror=unknown-warning-option`        | Make an unrecognized `-Wname` a hard error (autoconf/CMake/meson warning-flag probes).              |
-| `-Wno-unknown-warning-option`           | Restore the default lenient handling.                                                               |
-| `-Wunknown-warning-option`              | No-op, accepted for autoconf probes.                                                                |
-| `-Wno-homoglyph`                        | Disable Unicode homoglyph/confusable identifier warnings.                                           |
-| `-Wno-c23-c2y-compat`                   | Suppress the pedantic C2Y labeled-`break`/`continue` diagnostic under an earlier `-std=`.           |
-| `-Wno-*`, `-Werror=*` (any other name)  | Silently accepted (no corresponding individually-named warning exists beyond the ones listed here). |
+| Option                                  | Meaning                                                                                                                                            |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-W`                                    | Enable rcc's additional (non-default) warnings.                                                                                                    |
+| `-Werror`                               | Treat every warning as an error.                                                                                                                   |
+| `-pedantic`, `-Wpedantic`               | Enable pedantic ISO C diagnostics.                                                                                                                 |
+| `-pedantic-errors`, `--pedantic-errors` | Like `-pedantic`, and promotes _only_ those diagnostics to errors, independent of a bare `-Werror`.                                                |
+| `-Wfatal-errors`                        | Stop at the first error instead of collecting up to `-fmax-errors`.                                                                                |
+| `-fmax-errors=N`                        | Stop after N errors (default 20; `0` = unlimited).                                                                                                 |
+| `-Werror=unknown-warning-option`        | Make an unrecognized `-Wname` a hard error (autoconf/CMake/meson warning-flag probes).                                                             |
+| `-Wno-unknown-warning-option`           | Restore the default lenient handling.                                                                                                              |
+| `-Wunknown-warning-option`              | No-op, accepted for autoconf probes.                                                                                                               |
+| `-Wno-homoglyph`                        | Disable Unicode homoglyph/confusable identifier warnings.                                                                                          |
+| `-Wno-c23-c2y-compat`                   | Suppress the pedantic C2Y labeled-`break`/`continue` diagnostic under an earlier `-std=`.                                                          |
+| `-Wno-contract-assume-false`            | Suppress the warning when a `contract_assume()` is proven never-satisfiable (see [Contracts](#contracts-prepost-contract_assert-contract_assume)). |
+| `-Wno-*`, `-Werror=*` (any other name)  | Silently accepted (no corresponding individually-named warning exists beyond the ones listed here).                                                |
 
 ### Optimization
 
-| Option                                                                                     | Meaning                                                                                                          |
-| ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `-O0`                                                                                      | Disable the peephole optimizer (default).                                                                        |
-| `-O1`                                                                                      | Enable the peephole optimizer + CTFE (compile-time evaluation of pure functions called with constant arguments). |
-| `-O2`, `-O3`                                                                               | `-O1` plus `-finline` (tiny-function inlining) and `-funroll` (constant-trip-count loop unrolling).              |
-| `-Os`, `-Ofast`, `-Og`, `-Oz`                                                              | Accepted as aliases for `-O2` (no separate size/fast/debug pipelines).                                           |
-| `-finline[-functions\|-small-functions]` / `-fno-inline[-functions\|-small-functions]`     | Force-enable/disable the tiny-function inliner independent of `-O`.                                              |
-| `-funroll[-loops]` / `-fno-unroll[-loops]`                                                 | Force-enable/disable the loop unroller independent of `-O`.                                                      |
-| `-fno-builtin[-name]`, `-fno-common`, `-fcommon`, `-fdata-sections`, `-ffunction-sections` | Accepted no-ops, kept for build-system compatibility.                                                            |
-| `-fdefer-ts`                                                                               | Internal `thread_local` destructor-ordering compatibility flag.                                                  |
+| Option                                                                                     | Meaning                                                                                                             |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `-O0`                                                                                      | Disable the peephole optimizer (default).                                                                           |
+| `-O1`                                                                                      | Enable the peephole optimizer + CTFE (compile-time evaluation of pure functions called with constant arguments).    |
+| `-O2`                                                                                      | `-O1` plus `-finline` (tiny-function inlining) and `-funroll` (constant-trip-count loop unrolling).                 |
+| `-O3`                                                                                      | `-O2` plus the [contract range prover](#contracts-prepost-contract_assert-contract_assume). Never runs below `-O3`. |
+| `-Os`, `-Ofast`, `-Og`, `-Oz`                                                              | Accepted as aliases for `-O1` (no separate size/fast/debug pipelines).                                              |
+| `-finline[-functions\|-small-functions]` / `-fno-inline[-functions\|-small-functions]`     | Force-enable/disable the tiny-function inliner independent of `-O`.                                                 |
+| `-funroll[-loops]` / `-fno-unroll[-loops]`                                                 | Force-enable/disable the loop unroller independent of `-O`.                                                         |
+| `-fno-builtin[-name]`, `-fno-common`, `-fcommon`, `-fdata-sections`, `-ffunction-sections` | Accepted no-ops, kept for build-system compatibility.                                                               |
+| `-fdefer-ts`                                                                               | Internal `thread_local` destructor-ordering compatibility flag.                                                     |
 
 ### Debugging and diagnostic output
 
@@ -291,29 +320,30 @@ non-default diagnostics below.
 
 Always active (regardless of `-W`), unless noted:
 
-| Message                                                                                        | Condition                                                       | Suppress with                                                       |
-| ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------- |
-| Homoglyph/confusable Unicode identifier (TR39 check via bundled libu8ident)                    | any confusable identifier                                       | `-Wno-homoglyph`                                                    |
-| `[[attributes]] before C23 are not supported`                                                  | `[[...]]` used pre-C23 mode                                     | —                                                                   |
-| `type defaults to int`                                                                         | implicit-`int` declaration                                      | —                                                                   |
-| `declaration of '%s' shadows a global declaration`                                             | local shadows a global                                          | requires `-W`                                                       |
-| `'%s' is static but used in inline function '%s' which is not static`                          | ODR-risk `static` reference from a non-`static inline` function | —                                                                   |
-| `assignment of read-only location`                                                             | assignment through a `const`-qualified lvalue                   | —                                                                   |
-| `assignment makes integer from pointer without a cast`                                         | pointer→integer implicit assignment                             | —                                                                   |
-| `assignment from incompatible pointer type`                                                    | incompatible pointer-type assignment                            | —                                                                   |
-| `pointer/integer mismatch in conditional expression`                                           | `?:` operand type mismatch                                      | —                                                                   |
-| `'_Alignof' applied to a function type` / `an incomplete type` / `an expression`               | GNU `_Alignof` extension misuse                                 | —                                                                   |
-| `static_assert condition is not an integer constant expression`                                | floating-point `static_assert` condition                        | —                                                                   |
-| `octal constants with a leading zero and no 'o'/'O' are obsolescent in C2Y; use 0o... instead` | legacy `0NNN` octal literal                                     | —                                                                   |
-| `missing terminating "` character                                                              | unterminated string literal (lexer recovers)                    | —                                                                   |
-| `call to '%s': %s`                                                                             | call to a function tagged `__attribute__((warning("...")))`     | — (its fatal sibling `__attribute__((error("...")))` always aborts) |
-| `asm: warning: %d unresolved fixups`                                                           | internal assembler pass                                         | —                                                                   |
-| `rcc: link warning: unhandled relocation %u`                                                   | internal linker, unrecognized relocation type                   | —                                                                   |
-| `rcc: warning: -Wl,--out-implib,%s: %s has no exports, ...`                                    | `--out-implib` requested on a DLL with no exports               | —                                                                   |
-| `rcc: warning: unsupported -std=%s, using C23`                                                 | unrecognized `-std=` value                                      | —                                                                   |
-| `rcc: warning: ignored unknown visibility '%s'`                                                | unrecognized `-fvisibility=` value                              | —                                                                   |
-| `rcc: warning: ignored unknown option %s`                                                      | unrecognized CLI flag                                           | `-Werror` promotes to a hard error                                  |
-| `%s:%d: warning: %s`                                                                           | `#warning` directive text                                       | promoted to a fatal error+exit under bare `-Werror`                 |
+| Message                                                                                                | Condition                                                                                                                                                    | Suppress with                                                       |
+| ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| Homoglyph/confusable Unicode identifier (TR39 check via bundled libu8ident)                            | any confusable identifier                                                                                                                                    | `-Wno-homoglyph`                                                    |
+| `[[attributes]] before C23 are not supported`                                                          | `[[...]]` used pre-C23 mode                                                                                                                                  | —                                                                   |
+| `type defaults to int`                                                                                 | implicit-`int` declaration                                                                                                                                   | —                                                                   |
+| `declaration of '%s' shadows a global declaration`                                                     | local shadows a global                                                                                                                                       | requires `-W`                                                       |
+| `'%s' is static but used in inline function '%s' which is not static`                                  | ODR-risk `static` reference from a non-`static inline` function                                                                                              | —                                                                   |
+| `assignment of read-only location`                                                                     | assignment through a `const`-qualified lvalue                                                                                                                | —                                                                   |
+| `assignment makes integer from pointer without a cast`                                                 | pointer→integer implicit assignment                                                                                                                          | —                                                                   |
+| `assignment from incompatible pointer type`                                                            | incompatible pointer-type assignment                                                                                                                         | —                                                                   |
+| `pointer/integer mismatch in conditional expression`                                                   | `?:` operand type mismatch                                                                                                                                   | —                                                                   |
+| `'_Alignof' applied to a function type` / `an incomplete type` / `an expression`                       | GNU `_Alignof` extension misuse                                                                                                                              | —                                                                   |
+| `static_assert condition is not an integer constant expression`                                        | floating-point `static_assert` condition                                                                                                                     | —                                                                   |
+| `contract_assume(%s) can never hold[...]; code after this point is unreachable and will be eliminated` | `contract_assume()` proven never-satisfiable (literal fold at any `-O`, or the [range prover](#contracts-prepost-contract_assert-contract_assume) at `-O3`+) | `-Wno-contract-assume-false`                                        |
+| `octal constants with a leading zero and no 'o'/'O' are obsolescent in C2Y; use 0o... instead`         | legacy `0NNN` octal literal                                                                                                                                  | —                                                                   |
+| `missing terminating "` character                                                                      | unterminated string literal (lexer recovers)                                                                                                                 | —                                                                   |
+| `call to '%s': %s`                                                                                     | call to a function tagged `__attribute__((warning("...")))`                                                                                                  | — (its fatal sibling `__attribute__((error("...")))` always aborts) |
+| `asm: warning: %d unresolved fixups`                                                                   | internal assembler pass                                                                                                                                      | —                                                                   |
+| `rcc: link warning: unhandled relocation %u`                                                           | internal linker, unrecognized relocation type                                                                                                                | —                                                                   |
+| `rcc: warning: -Wl,--out-implib,%s: %s has no exports, ...`                                            | `--out-implib` requested on a DLL with no exports                                                                                                            | —                                                                   |
+| `rcc: warning: unsupported -std=%s, using C23`                                                         | unrecognized `-std=` value                                                                                                                                   | —                                                                   |
+| `rcc: warning: ignored unknown visibility '%s'`                                                        | unrecognized `-fvisibility=` value                                                                                                                           | —                                                                   |
+| `rcc: warning: ignored unknown option %s`                                                              | unrecognized CLI flag                                                                                                                                        | `-Werror` promotes to a hard error                                  |
+| `%s:%d: warning: %s`                                                                                   | `#warning` directive text                                                                                                                                    | promoted to a fatal error+exit under bare `-Werror`                 |
 
 Gated on `-W`:
 

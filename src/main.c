@@ -244,7 +244,8 @@ void help(void) {
            "-o file             set output filename\n"
            "-O0                 disable peephole optimizer\n"
            "-O1                 enable peephole + CTFE optimizations\n"
-           "-O2, -O3            -O1 plus -finline, -funroll\n"
+           "-O2                 -O1 plus -finline, -funroll\n"
+           "-O3                 -O2 plus the contract range prover (pre/post/contract_assert/contract_assume)\n"
            "-finline            inline tiny \"return EXPR;\" functions (-fno-inline to disable)\n"
            "-funroll            unroll const-sized for-loops (-fno-unroll to disable)\n"
            "-g                  emit DWARF line-number debug info\n"
@@ -258,6 +259,7 @@ void help(void) {
            "-Wno-unknown-warning-option     we warn on unknown warning options by default\n"
            "-Wno-homoglyph      disable Unicode indentifer homoglyph warnings\n"
            "-Wno-c23-c2y-compat disable pedantic diagnostic for C2Y labeled break/continue under -std=c23\n"
+           "-Wno-contract-assume-false  disable the warning when contract_assume() is proven never-satisfiable\n"
            "-Lpath              add linker path\n"
            "-lname              add lib\n"
            "-pthread            link with pthreads library\n"
@@ -289,6 +291,7 @@ void help(void) {
 
 bool opt_O0 = false;
 bool opt_O1 = false;
+bool opt_O3 = false; // -O3-only: gates the contract range prover, see rcc.h
 bool opt_finline = false; // -finline / enabled at -O2+
 bool opt_funroll = false; // -funroll / enabled at -O2+
 const char *opt_std_version = "202311L"; /* rcc defaults to C23 */
@@ -330,6 +333,7 @@ bool opt_Wno_homoglyph = false;
 // -Wno-c23-c2y-compat` compiles code that uses them (gcc's own
 // c23-named-loops torture tests rely on this pairing).
 bool opt_Wno_c23_c2y_compat = false;
+bool opt_Wno_contract_assume_false = false;
 bool opt_dryrun = false;
 bool opt_dM = false;
 bool opt_E = false;
@@ -526,18 +530,27 @@ int main(int argc, char **argv) {
             // "#ifdef __OPTIMIZE__ #error ..." guard.
             opt_O0 = true;
             opt_O1 = false;
+            opt_O3 = false;
             opt_finline = false;
             opt_funroll = false;
         } else if (!strcmp(argv[i], "-O1")) {
             opt_O0 = false;
             opt_O1 = true;
+            opt_O3 = false;
             opt_finline = false;
             opt_funroll = false;
-        } else if (!strcmp(argv[i], "-O2") || !strcmp(argv[i], "-O3")) {
+        } else if (!strcmp(argv[i], "-O2")) {
             opt_O0 = false;
             opt_O1 = true;
+            opt_O3 = false;
             opt_finline = true; // -O2 and up enable inlining
             opt_funroll = true; // -O2 and up enable unrolling
+        } else if (!strcmp(argv[i], "-O3")) {
+            opt_O0 = false;
+            opt_O1 = true;
+            opt_O3 = true; // -O3-only: enables the contract range prover
+            opt_finline = true;
+            opt_funroll = true;
         } else if (!strcmp(argv[i], "-finline") || !strcmp(argv[i], "-finline-functions") ||
                    !strcmp(argv[i], "-finline-small-functions")) {
             opt_finline = true;
@@ -586,6 +599,8 @@ int main(int argc, char **argv) {
             opt_Wno_homoglyph = true;
         } else if (!strcmp(argv[i], "-Wno-c23-c2y-compat")) {
             opt_Wno_c23_c2y_compat = true;
+        } else if (!strcmp(argv[i], "-Wno-contract-assume-false")) {
+            opt_Wno_contract_assume_false = true;
         } else if (!strcmp(argv[i], "-Werror=unknown-warning-option")) {
             opt_Werror_unknown = true;
         } else if (!strcmp(argv[i], "-Wunknown-warning-option")) {
@@ -627,6 +642,7 @@ int main(int argc, char **argv) {
             // the -Werror-gated catch-all far below).
             opt_O0 = false;
             opt_O1 = true;
+            opt_O3 = false;
             opt_finline = false;
             opt_funroll = false;
         } else if (!strcmp(argv[i], "-mms-bitfields")) {
