@@ -151,6 +151,19 @@ All compilers but rcc fail the -Whomoglyph test/test_unicode.c
 
 Computed goto (`&&label`, including label-address differences `&&a - &&b` in `static` initializers), `_Decimal32`/`_Decimal64`/`_Decimal128` (IEEE 754-2008 decimal floating point via the bundled libdfp/libbid runtime), Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), `target_clones` (FMV with IFUNC resolver, asm .altinstr_replacements), gcc/enum/ms bitfields, old K&R function definitions, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, `_FORTIFY_SOURCE`, SIMD/NEON xmmintrin.h support, C29/C2y standard (WG14) unconditionally, pass `-std=c2y` (or `-std=c29`).
 
+**C contracts** — `pre(COND)`/`post([NAME:] COND)` declarator specifiers
+and the `contract_assert(COND[, "msg"])`/`contract_assume(COND[, "msg"])`
+statement forms, loosely following Jens Gustedt's ["Contracts for
+C"](https://gustedt.wordpress.com/2025/03/10/contracts-for-c/) proposal
+([#45](https://github.com/rurban/rcc/issues/45)). A violated contract
+prints a diagnostic and `abort()`s; a literal-constant condition is
+resolved at compile time like `static_assert`. At `-O3` and above, an
+additional in-tree range prover statically decides conditions from each
+parameter's own declared-type range (no Z3/SMT dependency, no
+floating-point reasoning) that the literal fold alone can't — see
+[docs/rcc.md](docs/rcc.md#contracts-prepost-contract_assert-contract_assume)
+for the full semantics.
+
 TODO: full \_Float16/\_Float32/\_Float64/\_Float128 support (still aliased to float/double/long double), `__STDC_IEC_60559_TYPES__` and `__STDC_DEC_FP__` feature macros.
 
 Unsupported (skipped in torture tests):
@@ -214,6 +227,7 @@ every `__attribute__`/`__builtin_*`/`#pragma` extension — in
     -O0                disable peephole optimizer
     -O1                enable CTFE optimizations
     -O2                enable -finline, -funroll optimizations
+    -O3                enable the contract range prover (pre/post/contract_assert/contract_assume)
     -g                 emit DWARF line-number debug info
     -std={c2y,c23,c17,c11,c99,c89,...}
                        sets __STDC_VERSION__
@@ -226,6 +240,8 @@ every `__attribute__`/`__builtin_*`/`#pragma` extension — in
     -Wno-homoglypth    suppress homoglyph unicode identifier warnings
     -Wno-c23-c2y-compat
                        suppress pedantic diagnostic for C2Y labeled break/continue under -std=c23
+    -Wno-contract-assume-false
+                       suppress the warning when contract_assume() is proven never-satisfiable
     -Wunknown-warning-option
                        for autoconf probes
     -Lpath             add linker path
