@@ -94,8 +94,9 @@ int main(void) {
         pclose(p);
     }
     remove(srcf);
+    strip_spaces(out);
 
-    if (!strstr(out, "fb f6") || !strstr(out, "mulx")) {
+    if (!strstr(out, "fbf6") || !strstr(out, "mulx")) {
         printf("FAIL: expected a VEX-encoded mulx instruction, got:\n%s\n", out);
         remove(objf);
         return 1;
@@ -106,9 +107,9 @@ int main(void) {
      * regressed. Check whichever source register this platform's
      * variant above actually multiplies by. */
 #ifdef _WIN32
-    if (strstr(out, "49 f7 e2") || strstr(out, "mul    %r10")) {
+    if (strstr(out, "49f7e2") || strstr(out, "mul%r10")) {
 #else
-    if (strstr(out, "48 f7 e6") || strstr(out, "mul    %rsi")) {
+    if (strstr(out, "48f7e6") || strstr(out, "mul%rsi")) {
 #endif
         printf("FAIL: mulx mis-encoded as plain one-operand mul:\n%s\n", out);
         remove(objf);

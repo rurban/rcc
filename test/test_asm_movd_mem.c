@@ -77,7 +77,8 @@ int main(void) {
     }
     remove(srcf);
 
-    if (!strstr(out, "66 0f 6e") || !strstr(out, "66 0f 7e")) {
+    strip_spaces(out);
+    if (!strstr(out, "660f6e") || !strstr(out, "660f7e")) {
         printf("FAIL: expected movd load (66 0f 6e) and store (66 0f 7e) "
                "encodings, got:\n%s\n", out);
         remove(objf);
