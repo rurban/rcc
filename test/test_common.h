@@ -93,4 +93,17 @@ static const char *rodata_section_name(void) {
 #endif
 }
 
+// Different objdump builds format the raw-hex-byte column of `-d` output
+// differently -- some space-separate each byte ("66 0f 6e"), some run them
+// together ("660f6e") -- purely a display choice, not a semantic one; the
+// encoded bytes are identical either way. Strip spaces in-place so tests
+// that grep disassembly for a raw byte sequence match regardless of which
+// objdump happens to be first on PATH.
+static void strip_spaces(char *s) {
+    char *w = s;
+    for (char *r = s; *r; r++)
+        if (*r != ' ') *w++ = *r;
+    *w = '\0';
+}
+
 #endif // TEST_COMMON_H
