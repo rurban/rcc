@@ -2,6 +2,7 @@
 CC     := gcc
 CFLAGS = -std=c11 -Wall -Wextra -O3 -g -Isrc
 GPERF  := gperf
+POD2MAN := pod2man
 TARGET = rcc
 MINGW_O =
 OBJ_EXT = .o
@@ -388,7 +389,7 @@ bench: $(TARGET)
 man: docs/rcc.1
 
 docs/rcc.1: docs/rcc.pod
-	pod2man --section=1 --center="RCC C Compiler" --release="rcc $(VERSION)" --name=RCC docs/rcc.pod docs/rcc.1
+	if command -v $(POD2MAN); then $(POD2MAN) --section=1 --center="RCC C Compiler" --release="rcc $(VERSION)" --name=RCC docs/rcc.pod $@; else touch $@; fi
 
 # Rebuild with the installed include path so rcc finds its headers
 # without needing -I after installation.
@@ -412,7 +413,7 @@ else
 	install -m 644 $(RCC_LIB) "$(DESTDIR)$(LIBDIR)/"
 	@if test -n "$(MINGW_O)"; then install -m 644 $(MINGW_O) "$(DESTDIR)$(LIBDIR)/"; fi
 	@if test -n "$(DARWIN_O)"; then install -m 644 $(DARWIN_O) "$(DESTDIR)$(LIBDIR)/"; fi
-	@if command -v pod2man > /dev/null 2>&1; then \
+	@if command -v $(POD2MAN) > /dev/null 2>&1; then \
 	  $(MAKE) man; \
 	  install -d "$(DESTDIR)$(MANDIR)"; \
 	  install -m 644 docs/rcc.1 "$(DESTDIR)$(MANDIR)/"; \
