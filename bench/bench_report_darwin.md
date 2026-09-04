@@ -4,94 +4,94 @@ _Generated: September 2026_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------- | -----------: | -----------: | ---------: |
-| RCC       |          229 |          808 |       1037 |
-| RCC -O1   |          203 |          824 |       1027 |
-| RCC -O2   |           86 |          710 |        796 |
-| TCC       |           72 |          619 |        691 |
-| GCC -O0   |           92 |          548 |        640 |
-| GCC -O2   |          133 |          325 |        458 |
-| Clang -O0 |          139 |          597 |        736 |
-| Clang -O2 |          115 |          339 |        454 |
+| RCC       |          165 |          762 |        927 |
+| RCC -O1   |           81 |          681 |        762 |
+| RCC -O2   |           82 |          669 |        751 |
+| TCC       |           60 |          580 |        640 |
+| GCC -O0   |           97 |          493 |        590 |
+| GCC -O2   |          129 |          304 |        433 |
+| Clang -O0 |           63 |          439 |        502 |
+| Clang -O2 |           85 |          263 |        348 |
 
 ## Are-We-Fast-Yet Suite (14 benchmarks)
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------- | -----------: | -----------: | ---------: |
-| RCC       |          281 |         6722 |       7003 |
-| RCC -O1   |          342 |         6286 |       6628 |
-| RCC -O2   |          288 |         5000 |       5288 |
-| TCC       |          198 |         5192 |       5390 |
-| GCC -O0   |          946 |         3986 |       4932 |
-| GCC -O2   |         1037 |         2141 |       3178 |
-| Clang -O0 |          612 |         3535 |       4147 |
-| Clang -O2 |         1022 |         1950 |       2972 |
+| RCC       |          134 |         4587 |       4721 |
+| RCC -O1   |          173 |         4388 |       4561 |
+| RCC -O2   |          138 |         3957 |       4095 |
+| TCC       |          157 |         3698 |       3855 |
+| GCC -O0   |          509 |         3095 |       3604 |
+| GCC -O2   |          817 |         1760 |       2577 |
+| Clang -O0 |          452 |         3074 |       3526 |
+| Clang -O2 |          813 |         1742 |       2555 |
 
 ## RCC Substep Timing
 
 ```
 RCC:
-  preprocess  bench.c       :    728 us
-  parse       bench.c       :    157 us
+  preprocess  bench.c       :    694 us
+  parse       bench.c       :    173 us
   typecheck   bench.c       :      4 us
-  codegen     bench.c       :    128 us
-  link        bench_rcc     :    227 us
-  link        bench_rcc     :  61052 us
+  codegen     bench.c       :    124 us
+  link        bench_rcc     :    133 us
+  link        bench_rcc     :  51865 us
 
 RCC -O1:
-  preprocess  bench.c       :   1424 us
-  parse       bench.c       :    156 us
+  preprocess  bench.c       :    806 us
+  parse       bench.c       :    169 us
   typecheck   bench.c       :      4 us
-  opt         bench.c       :     31 us
-  codegen     bench.c       :    176 us
-  link        bench_o1      :    355 us
-  link        bench_o1      :  60319 us
+  opt         bench.c       :     21 us
+  codegen     bench.c       :    160 us
+  link        bench_o1      :    119 us
+  link        bench_o1      :  49511 us
 
 RCC -O2:
-  preprocess  bench.c       :   1125 us
-  parse       bench.c       :    162 us
+  preprocess  bench.c       :    558 us
+  parse       bench.c       :    138 us
   typecheck   bench.c       :      4 us
   opt         bench.c       :     19 us
-  codegen     bench.c       :    148 us
-  link        bench_o2      :    240 us
-  link        bench_o2      :  70569 us
+  codegen     bench.c       :    124 us
+  link        bench_o2      :    140 us
+  link        bench_o2      :  50079 us
 ```
 
 ## RCC Substep Timing -- sqlite3.c
 
 ```
 RCC:
-  preprocess  sqlite3.c     : 449913 us
-  parse       sqlite3.c     : 269473 us
-  typecheck   sqlite3.c     :  31716 us
-  codegen     sqlite3.c     : 376257 us
-  link        sqlite3.so    :  37279 us
+  preprocess  sqlite3.c     : 248178 us
+  parse       sqlite3.c     :  50246 us
+  typecheck   sqlite3.c     :  11005 us
+  codegen     sqlite3.c     : 113935 us
+  link        sqlite3.so    :  16035 us
 
 RCC -O1:
-  preprocess  sqlite3.c     : 524677 us
-  parse       sqlite3.c     : 154638 us
-  typecheck   sqlite3.c     :  25002 us
-  opt         sqlite3.c     : 319801 us
-  codegen     sqlite3.c     : 209701 us
-  link        sqlite3.so    :  21472 us
+  preprocess  sqlite3.c     : 272681 us
+  parse       sqlite3.c     :  72681 us
+  typecheck   sqlite3.c     :  13430 us
+  opt         sqlite3.c     : 153785 us
+  codegen     sqlite3.c     : 136545 us
+  link        sqlite3.so    :  20353 us
 
 RCC -O2:
-  preprocess  sqlite3.c     : 442519 us
-  parse       sqlite3.c     : 176301 us
-  typecheck   sqlite3.c     :  31667 us
-  opt         sqlite3.c     : 451794 us
-  codegen     sqlite3.c     : 213057 us
-  link        sqlite3.so    :  28251 us
+  preprocess  sqlite3.c     : 317592 us
+  parse       sqlite3.c     :  61868 us
+  typecheck   sqlite3.c     :  19287 us
+  opt         sqlite3.c     : 180631 us
+  codegen     sqlite3.c     : 157492 us
+  link        sqlite3.so    :  21530 us
 ```
 
 ## Large File Compile-Only (sqlite3.c)
 
 | Compiler  | Compile (ms) |
 | :-------- | -----------: |
-| RCC       |      1205 ms |
-| RCC -O1   |       716 ms |
-| RCC -O2   |       702 ms |
-| TCC       |       116 ms |
-| GCC -O0   |      1010 ms |
-| GCC -O2   |     12782 ms |
-| Clang -O0 |      1396 ms |
-| Clang -O2 |     10059 ms |
+| RCC       |       887 ms |
+| RCC -O1   |       668 ms |
+| RCC -O2   |       650 ms |
+| TCC       |        99 ms |
+| GCC -O0   |       936 ms |
+| GCC -O2   |      8661 ms |
+| Clang -O0 |       908 ms |
+| Clang -O2 |      8684 ms |

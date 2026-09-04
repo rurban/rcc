@@ -1770,7 +1770,7 @@
   pr80153                             PASS
   pr80421                             PASS
   pr80501                             PASS
-  pr80692                             SKIP (missing include)
+  pr80692                             PASS
   pr81281                             PASS
   pr81423                             PASS
   pr81503                             PASS
@@ -3964,6 +3964,6 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3604/3608 passed (100%), 0 failed, 355 skipped, 4 todo.
+Torture: 3605/3609 passed (100%), 0 failed, 354 skipped, 4 todo.
 
 Dg-error tests: 36/36 passed (caught expected error), 0 failed.

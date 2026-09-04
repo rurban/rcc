@@ -8575,6 +8575,7 @@ struct KRParam {
     KRParam *next;
     char *name;
     Type *ty; // NULL until resolved by a matching declaration; defaults to int
+    Node *vla_len_expr; // VLA-typed param: size expr to evaluate at each call (C11 6.7.6.3p7 side effects)
 };
 static KRParam *parse_kr_param_list(Token **rest, Token *tok);
 
@@ -9651,8 +9652,15 @@ static KRParam *parse_kr_param_list(Token **rest, Token *tok) {
                 // LCC-derived K&R test corpus (test/ref/array.c).
                 if (ddecl->kind == TY_VLA) {
                     unsigned char pqual = ddecl->qual;
+                    Node *vla_expr = ddecl->vla_len_expr; // size side effects must run per call (C11 6.7.6.3p7), like the prototype path does at fn entry
                     ddecl = pointer_to(ddecl->base);
                     ddecl->qual |= pqual;
+                    for (KRParam *krp = kr_head.next; krp; krp = krp->next) {
+                        if (krp->name == dname) {
+                            krp->vla_len_expr = vla_expr;
+                            break;
+                        }
+                    }
                 } else if (ddecl->kind == TY_ARRAY) {
                     unsigned char pqual = ddecl->qual;
                     ddecl = pointer_to(ddecl->base);
@@ -12101,6 +12109,19 @@ static bool atomic_lib_helper(Token *tok, const char *op) {
 }
 
 static Node *unary(Token **rest, Token *tok) {
+    // GCC __builtin_assoc_barrier(x): optimization barrier - evaluates to
+    // x unchanged but blocks FP reassociation/constant folding across it.
+    // rcc does not reassociate FP expressions, so the identity is exact;
+    // it must also work for struct/union arguments (returned by value),
+    // where treating the name as an unknown function broke (the call's
+    // implicit-int result was address-taken for the struct return copy).
+    if (equalc(tok, "__builtin_assoc_barrier")) {
+        tok = skip(tok->next, "(");
+        Node *arg = assign(&tok, tok);
+        *rest = skip(tok, ")");
+        check_type(arg);
+        return arg;
+    }
     if (equalc(tok, "__builtin_offsetof")) {
         Token *start = tok;
         tok = skip(tok->next, "(");
@@ -15588,6 +15609,8 @@ Program *parse(Token *tok) {
                             if (!krp->ty)
                                 krp->ty = ty_int;
                             LVar *var = new_var(krp->name, krp->ty, true);
+                            if (krp->vla_len_expr)
+                                var->ty->vla_len_expr = krp->vla_len_expr; // fn-entry emission loop picks it up
                             cur = cur->param_next = var;
                         }
                         params = param_head.param_next;
