@@ -423,6 +423,11 @@ else
 endif
 
 dist: $(TARGET) docs/rcc.1
+	if test "$(shell git diff --raw)" != "" || \
+           test "$(shell git diff --cached --raw)" != "" ; then \
+          echo 'You are not on a clean branch, aborting.'; \
+          exit 1; \
+	fi
 	@echo make dist on $(OS)
 	@rm -rf rcc-$(VERSION) || true
 ifeq ($(OS),Windows_NT)

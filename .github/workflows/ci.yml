@@ -213,7 +213,9 @@ jobs:
 
       - name: Make dist
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dist'
-        run: make dist
+        run: |
+          git reset --hard
+          make dist
 
       - name: Upload Windows dist
         if: matrix.os == 'windows-latest' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dist')
@@ -226,7 +228,7 @@ jobs:
       - if: startsWith(github.ref, 'refs/tags/') && github.ref == 'refs/heads/main'
         name: Release
         continue-on-error: true
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: |
               rcc-*.tar.gz
