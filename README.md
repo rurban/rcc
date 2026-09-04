@@ -5,10 +5,12 @@ x86-64 on Windows and Unix, and AArch64 (ARM64) on elf and darwin.
 Written from scratch in C11 by Hosokawa-t, a 16 year old student. And
 then ported to linux, arm64 and fixed the rest by Reini Urban.
 
-The goal is to be fast, almost as fast as tcc, but with full gcc
-compatibility and some inexpensive optimizations. We pass much more
-tests than all other C compilers, we do support all standards, just
-not the backwards incompatible ones. I.e. C11 `int nullptr;` is wrong.
+The goal is to compile fast and correct, almost as fast as tcc, but
+with full gcc compatibility and some inexpensive optimizations. We
+pass much more tests than all other C compilers, fixed all the gcc
+bugs gcc didn't fix yet, and esp. don't do wrong optimizations.
+We do support all standards, just not the backwards incompatible ones.
+I.e. C11 `int nullptr;` is wrong.
 
 Full reference manual (every option, warning, and language
 extension): [docs/rcc.md](docs/rcc.md), also available as a man page
@@ -16,7 +18,9 @@ via `make man` ([docs/rcc.pod](docs/rcc.pod)).
 
 ## Benchmark Results
 
-Six workloads: Fibonacci(38), Ackermann(3,10), Sieve of Eratosthenes (1M), 128×128 matrix multiply, floating-point math loop (500K), and bubble sort (5K).
+Six workloads: Fibonacci(38), Ackermann(3,10), Sieve of Eratosthenes
+(1M), 128×128 matrix multiply, floating-point math loop (500K), and
+bubble sort (5K).
 
 Windows:
 
@@ -48,7 +52,14 @@ Linux:
 
 - RCC vs TCC vs GCC -O2 execution: same speed on windows, competitive on linux.
 - All outputs verified correct against TCC, GCC -O2 and CLANG -O2 references.
-- **Compile-time performance**: RCC has now it's own native linker, same as TCC. The peephole optimizer uses a 3-line sliding window (single pass over emitted asm), while TCC works on an internal abstract representation. Together these account for the compile-time gap. Faster branch patching as in TCC is in works. Generated code quality is on par with TCC. CCC is claudes-c-compiler vibe-coded in rust, which can compile the kernel. XCC is very fast, but cannot compile much.
+- **Compile-time performance**: RCC has now it's own native linker,
+  same as TCC. The peephole optimizer uses a 3-line sliding window
+  (single pass over emitted asm), while TCC works on an internal
+  abstract representation. Together these account for the compile-time
+  gap. Faster branch patching as in TCC is in works. Generated code
+  quality is on par with TCC. CCC is claudes-c-compiler vibe-coded in
+  rust, which can compile the kernel. XCC is very fast, but cannot
+  compile much.
 
 rcc -O1 -time:
 
@@ -124,8 +135,16 @@ All compilers but rcc fail the -Whomoglyph test/test_unicode.c
 
 ## Key Features
 
-- **Register-machine codegen** — 8-register allocator on x86-64 (r10, r11, rbx, r12–r15, rsi), 12-register on ARM64 (x10–x15, x19–x24) with dynamic allocation, no stack machine overhead. The register allocator is a simple first-fit bitmask with no spilling to stack except for the predefined spill slots. If all registers are in use, it spills the additional registers on the stack. Currently with a spill warning on -W.
-- **Two-pass function emission** — Body generated to buffer first; prologue only pushes callee-saved registers actually used. Recursive functions like `fib` get zero callee-saved pushes.
+- **Register-machine codegen** — 8-register allocator on x86-64 (r10,
+  r11, rbx, r12–r15, rsi), 12-register on ARM64 (x10–x15, x19–x24)
+  with dynamic allocation, no stack machine overhead. The register
+  allocator is a simple first-fit bitmask with no spilling to stack
+  except for the predefined spill slots. If all registers are in use,
+  it spills the additional registers on the stack. Currently with a
+  spill warning on -W.
+- **Two-pass function emission** — Body generated to buffer first;
+  prologue only pushes callee-saved registers actually used. Recursive
+  functions like `fib` get zero callee-saved pushes.
 - **Peephole optimizer** — Integrated inline peephole optimizer with:
   - Copy propagation (`mov r10, rax; mov r12, r10` → `mov r12, rax`)
   - Immediate folding (`mov r10, 1; add r11, r10` → `add r11, 1`)
@@ -134,46 +153,117 @@ All compilers but rcc fail the -Whomoglyph test/test_unicode.c
   - 3-instruction chain folding (`load; op; mov dst` → `load dst; op dst`)
   - Dead jump elimination (`jmp .L; .L:` → `.L:`)
   - Operates on emitted bytecode via `asm_record`/`asm_peep_try` with no separate pass
-- **Shadow space** — Maximal 32-byte shadow space in stack frame; no `sub rsp`/`add rsp` per call for ≤4 args.
-- **Compile-Time Function Execution (CTFE)** — AST interpreter evaluates pure functions with constant arguments at compile time with -O1.
-- **C preprocessor** — `#include`, `#define`, `#ifdef`/`#ifndef`/`#if`, `#pragma once`, macro expansion with token pasting.
-- **Floating-point support** — `float`/`double/long double` arithmetic, casts, function calls via SSE2 on x86-64 (xmm0–xmm7) or via ARM64 NEON/FP (v0–v7). 80-bit long double x87 on x86-64 via `fld`/`fstp` (truncated to 64 bits on store). ARM64 ELF 128-bit long double passed in register pairs (v0–v7 in even-odd pairs) following the AAPCS64 calling convention. Float args properly classified as SSE/FP class with separate GP/FP argument counters. ARM64 on APPLE only uses 8-byte doubles.
-- **Vector/SIMD support** — x86-64 SSE/AVX and ARM64 NEON vector types via `__attribute__((vector_size(N)))`, with full arithmetic, comparison, shuffle, and broadcast operations on float and integer element types.
-- **Windows x64 ABI** — Shadow space, correct volatile/non-volatile register handling, 16-byte stack alignment.
-- **SystemV x64 ABI** — No Shadow space. amd64 calling convention. Float and struct alignment specialities.
-- **ARM64 ABI (AAPCS64)** — x29 frame pointer, x30 link register, x0–x7 argument/return registers, x8 indirect result register, x9–x15 caller-saved, x19–x28 callee-saved. Variadic args passed on the stack. 16-byte stack alignment. NEON v0–v7 for FP/SIMD args; long double pairs on ELF use even-odd register pairs.
-- **Inline builtins** — `memset`, `memcpy`, `memcmp`, `strlen`, `strcmp`, `strchr` expanded inline(`rep stosb`/`rep movsb`/`repe cmpsb`/`repne scasb`/ byte loops), avoiding libc call overhead. Also most other GCC/clang builtins, and `_FORTIFY_SOURCE` check functions. Mandatory SSE4.2 not yet.
-- **Bounds checking builtins** — `__builtin_object_size` returns compile-time size for arrays/structs, `(size_t)-1` for pointers. `__builtin_dynamic_object_size` additionally reads the glibc malloc chunk header at runtime for heap pointers, returning the actual allocated size (may be larger than requested due to rounding). Unlike GCC -O2 which tracks malloc size through the optimizer, rcc reads the chunk metadata.
-- **Insecure C11-C26 unicode identifier** checks, instead using true TR39 advised homoglyph/confusable checks via my [libu8indent](https://github.com/rurban/libu8ident/) library. Checking unicode security guidelines for identifiers.
-- Simple function inliner and const-loop unroller with -O2.
+- **Shadow space** — Maximal 32-byte shadow space in stack frame; no `sub rsp`/`add rsp`
+  per call for ≤4 args.
+- **Compile-Time Function Execution (CTFE)** — AST interpreter evaluates pure functions
+  with constant arguments at compile time with -O1.
+- **C preprocessor** — `#include`, `#define`, `#ifdef`/`#ifndef`/`#if`, `#pragma once`,
+  macro expansion with token pasting.
+- **Floating-point support** — `float`/`double/long double`
+  arithmetic, casts, function calls via SSE2 on x86-64 (xmm0–xmm7) or
+  via ARM64 NEON/FP (v0–v7). 80-bit long double x87 on x86-64 via
+  `fld`/`fstp` (truncated to 64 bits on store). ARM64 ELF 128-bit long
+  double passed in register pairs (v0–v7 in even-odd pairs) following
+  the AAPCS64 calling convention. Float args properly classified as
+  SSE/FP class with separate GP/FP argument counters. ARM64 on APPLE
+  only uses 8-byte doubles.
+- **Vector/SIMD support** — x86-64 SSE/AVX and ARM64 NEON vector types
+  via `__attribute__((vector_size(N)))`, with full arithmetic,
+  comparison, shuffle, and broadcast operations on float and integer
+  element types.
+- **Windows x64 ABI** — Shadow space, correct volatile/non-volatile
+  register handling, 16-byte stack alignment.
+- **SystemV x64 ABI** — No Shadow space. amd64 calling convention.
+  Float and struct alignment specialities.
+- **ARM64 ABI (AAPCS64)** — x29 frame pointer, x30 link register,
+  x0–x7 argument/return registers, x8 indirect result register, x9–x15
+  caller-saved, x19–x28 callee-saved. Variadic args passed on the
+  stack. 16-byte stack alignment. NEON v0–v7 for FP/SIMD args; long
+  double pairs on ELF use even-odd register pairs.
+- **Inline builtins** — `memset`, `memcpy`, `memcmp`, `strlen`,
+  `strcmp`, `strchr` expanded inline(`rep stosb`/`rep movsb`/`repe
+cmpsb`/`repne scasb`/ byte loops), avoiding libc call overhead. Also
+  most other GCC/clang builtins, and `_FORTIFY_SOURCE` check
+  functions. Mandatory SSE4.2 not yet.
+- **Bounds checking builtins** — `__builtin_object_size` returns
+  compile-time size for arrays/structs, `(size_t)-1` for pointers.
+  `__builtin_dynamic_object_size` additionally reads the glibc malloc
+  chunk header at runtime for heap pointers, returning the actual
+  allocated size (may be larger than requested due to rounding).
+  Unlike GCC -O2 which tracks malloc size through the optimizer, rcc
+  reads the chunk metadata.
+- **Insecure C11-C26 unicode identifier** checks, instead using true
+  TR39 advised homoglyph/confusable checks via my
+  [libu8indent](https://github.com/rurban/libu8ident/) library.
+  Checking unicode security guidelines for identifiers.
+- Simple function inliner and const-loop unroller with -O2. But no SSA
+  conversion and optimizations.
 
 ## Additional C Features
 
-Computed goto (`&&label`, including label-address differences `&&a - &&b` in `static` initializers), `_Decimal32`/`_Decimal64`/`_Decimal128` (IEEE 754-2008 decimal floating point via the bundled libdfp/libbid runtime), Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), `target_clones` (FMV with IFUNC resolver, asm .altinstr_replacements), gcc/enum/ms bitfields, old K&R function definitions, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, `_FORTIFY_SOURCE`, SIMD/NEON xmmintrin.h support, C29/C2y standard (WG14) unconditionally, pass `-std=c2y` (or `-std=c29`).
+Computed goto (`&&label`, including label-address differences `&&a -
+&&b` in `static` initializers),
+`_Decimal32`/`_Decimal64`/`_Decimal128` (IEEE 754-2008 decimal
+floating point via the bundled libdfp/libbid runtime), Windows and
+SystemV long doubles (internally all using SSE), ARM64 long doubles
+(128-bit quad precision via register pairs in elf, 8 byte on APPLE),
+safe unicode identifiers and strings (unlike C11/C23), `target_clones`
+(FMV with IFUNC resolver, asm .altinstr_replacements), gcc/enum/ms
+bitfields, old K&R function definitions, basic -g DWARF debugging
+support (line numbers only), most GCC extensions and builtins,
+`_FORTIFY_SOURCE`, SIMD/NEON xmmintrin.h support, C29/C2y standard
+(WG14) unconditionally, pass `-std=c2y` (or `-std=c29`).
 
-**C contracts** — `pre(COND)`/`post([NAME:] COND)` declarator specifiers
-and the `contract_assert(COND[, "msg"])`/`contract_assume(COND[, "msg"])`
-statement forms, loosely following Jens Gustedt's ["Contracts for
-C"](https://gustedt.wordpress.com/2025/03/10/contracts-for-c/) proposal
-([#45](https://github.com/rurban/rcc/issues/45)). A violated contract
-prints a diagnostic and `abort()`s; a literal-constant condition is
-resolved at compile time like `static_assert`. At `-O3` and above, an
-additional in-tree range prover statically decides conditions from each
-parameter's own declared-type range (no Z3/SMT dependency, no
-floating-point reasoning) that the literal fold alone can't — see
+**C contracts** — `pre(COND)`/`post([NAME:] COND)` declarator
+specifiers and the `contract_assert(COND[,
+"msg"])`/`contract_assume(COND[, "msg"])` statement forms, loosely
+following Jens Gustedt's ["Contracts for
+C"](https://gustedt.wordpress.com/2025/03/10/contracts-for-c/)
+proposal ([#45](https://github.com/rurban/rcc/issues/45)). A violated
+contract prints a diagnostic and `abort()`s; a literal-constant
+condition is resolved at compile time like `static_assert`. At `-O3`
+and above, an additional in-tree range prover statically decides
+conditions from each parameter's own declared-type range (no Z3/SMT
+dependency, no floating-point reasoning) that the literal fold alone
+can't — see
 [docs/rcc.md](docs/rcc.md#contracts-prepost-contract_assert-contract_assume)
 for the full semantics.
 
-TODO: full \_Float16/\_Float32/\_Float64/\_Float128 support (still aliased to float/double/long double), `__STDC_IEC_60559_TYPES__` and `__STDC_DEC_FP__` feature macros.
+TODO: full \_Float16/\_Float32/\_Float64/\_Float128 support (still
+aliased to float/double/long double), `__STDC_IEC_60559_TYPES__` and
+`__STDC_DEC_FP__` feature macros.
 
 Unsupported (skipped in torture tests):
 
-- **GNU nested functions with escaping function pointers** — `int f2(...){...}` defined inside another function and passed/stored as a value (`g(f2)`) is supported on Linux (x86-64 and ARM64) via a runtime trampoline: a small per-activation stub written into the enclosing function's own stack frame at the point of reference, loading the static-chain pointer and jumping to the nested function's real code. The trampoline's executability relies on the standard `.note.GNU-stack` executable-stack ELF marking (matching what GCC itself emits for its own nested functions) rather than a runtime `mprotect` call, since libgcc's `__enable_execute_stack` is unreliable across real environments. Not yet implemented on Darwin (Mach-O) or Windows (PE) — no equivalent executable-stack wiring there yet. Direct calls to a nested function, and variable/`&&label` capture through the enclosing function's frame (static-chain pointer: `%r10` on x86-64, `x18` on AArch64), are supported on x86-64 Linux/Windows and ARM64 — including nonlocal `goto` from a nested function back into an enclosing `__label__`. K&R-style and VLA-typed nested function parameters aren't supported yet.
-- **VLA struct member `offsetof`** — rcc stores VLA array members as fat pointers (size=16, align=8), which gives different member offsets than GCC's flat in-struct layout.
+- **GNU nested functions with escaping function pointers** — `int
+f2(...){...}` defined inside another function and passed/stored as a
+  value (`g(f2)`) is supported on Linux (x86-64 and ARM64) via a
+  runtime trampoline: a small per-activation stub written into the
+  enclosing function's own stack frame at the point of reference,
+  loading the static-chain pointer and jumping to the nested
+  function's real code. The trampoline's executability relies on the
+  standard `.note.GNU-stack` executable-stack ELF marking (matching
+  what GCC itself emits for its own nested functions) rather than a
+  runtime `mprotect` call, since libgcc's `__enable_execute_stack` is
+  unreliable across real environments. Not yet implemented on Darwin
+  (Mach-O) or Windows (PE) — no equivalent executable-stack wiring
+  there yet. Direct calls to a nested function, and variable/`&&label`
+  capture through the enclosing function's frame (static-chain
+  pointer: `%r10` on x86-64, `x18` on AArch64), are supported on
+  x86-64 Linux/Windows and ARM64 — including nonlocal `goto` from a
+  nested function back into an enclosing `__label__`. K&R-style and
+  VLA-typed nested function parameters aren't supported yet.
+- **VLA struct member `offsetof`** — rcc stores VLA array members as
+  fat pointers (size=16, align=8), which gives different member
+  offsets than GCC's flat in-struct layout.
 - `__attribute__((` **scalar_storage_order** `()))`, `__attribute__((` **mode** `()))`
 - `-finstrument`, use perf instead.
 
-Top-level `__asm__("...")` statements in AT&T, Intel or ARM syntax are supported and emitted in source order. Unlike GCC (which hoists all file-scope `asm` blocks to the top of the output at `-O2`/`-O3` unless `-fno-toplevel-reorder` is used), rcc always preserves their original position relative to functions.
+Top-level `__asm__("...")` statements in AT&T, Intel or ARM syntax are
+supported and emitted in source order. Unlike GCC (which hoists all
+file-scope `asm` blocks to the top of the output at `-O2`/`-O3` unless
+`-fno-toplevel-reorder` is used), rcc always preserves their original
+position relative to functions.
 
 The test suites has all tests passed on linux, darwin, windows, mingw-cross,
 arm64-cross, darwin-cross, musl.
@@ -181,18 +271,20 @@ With musl the gcc torture tests fail 2 tests: c23-no-dfp-1 pr80692.
 
 ## Build
 
+`make` or just
+
 ```bash
-gcc -std=c11 -O2 -o rcc src/main.c src/lexer.c src/parser.c src/type.c src/codegen.c src/alloc.c src/preprocess.c src/opt.c
+gcc -std=c11 -O2 -o rcc src/*.c
 ```
 
 ## Usage
 
 ```bash
 # Compile to executable
-./rcc.exe -o output.exe source.c ...
+./rcc -o output.exe source.c ...
 
 # Output assembly
-./rcc.exe -S -o output.S source.c
+./rcc -S -o output.S source.c
 
 # Run tests and benchmark
 make check
@@ -287,6 +379,8 @@ every `__attribute__`/`__builtin_*`/`#pragma` extension — in
 | `src/parser.c`        | Recursive-descent parser → AST                                              |
 | `src/type.c`          | Type system (primitives, pointers, arrays, structs, functions)              |
 | `src/codegen.c`       | x86-64/ARM64 code generator with register allocator and peephole optimizer  |
+| `src/cg_builtins.c`   | x86-64/ARM64 code generator for the builtins                                |
+| `src/cg_vectors.c`    | x86-64/ARM64 code generator for vector support                              |
 | `src/opt.c`           | AST-level optimizer and CTFE interpreter                                    |
 | `src/alloc.c`         | Arena memory allocator                                                      |
 | `src/unicode.{c,h}`   | libu8ident unicode identifier checks                                        |
@@ -299,6 +393,10 @@ every `__attribute__`/`__builtin_*`/`#pragma` extension — in
 | `src/elf_write.c`     | ELF object file writer                                                      |
 | `src/macho_write.c`   | Mach-O object file writer                                                   |
 | `src/coff_write.c`    | COFF object file writer                                                     |
+| `src/link.{c,h}`      | Arch-independent linker functions                                           |
+| `src/link_elf.c`      | ELF linker                                                                  |
+| `src/link_macho.c`    | Mach-O linker                                                               |
+| `src/link_pe.c`       | PE/COFF linker                                                              |
 | `include/`            | Minimal C standard library headers (`stdio.h`, `math.h`, etc.)              |
 | `bench/`              | Benchmark suite and runner script                                           |
 | `test/`               | Test programs                                                               |

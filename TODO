@@ -5,6 +5,8 @@
 - add more cheap -O2 passes, but no need for SSA analysis (yet).
   Like removing the REX prefix, strength reduction, ...
 
-- optional QBE backend for -O2?
+- solver backend for the optimizer and contracts prover with -O3
+
+- optional QBE backend for -O2? not for windows.
 
 - SSA conversion for -O2?
