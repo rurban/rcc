@@ -53,6 +53,7 @@ jobs:
             make
             curl
             unzip
+            perl
 
       - name: Disable Windows Error Reporting UI
         if: matrix.os == 'windows-latest'
