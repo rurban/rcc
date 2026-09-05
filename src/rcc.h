@@ -623,6 +623,13 @@ struct LVar {
     // functions, not a real conflict — the prototype-redeclaration
     // check must not compare against these.
     bool is_synthetic_prelude;
+    // C11 6.9p3: a function identifier may have at most one external
+    // definition (a body) in a translation unit -- true once this
+    // symbol's function body has been parsed, checked before starting
+    // to parse a second one so `int f(void){...} int f(void){...}`
+    // errors like every other C compiler instead of silently keeping
+    // (or overwriting) whichever definition rcc happened to see.
+    bool has_definition;
 };
 
 // GNU nested functions: fixed frame offset (from rbp/x29) where every

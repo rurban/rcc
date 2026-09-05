@@ -15608,6 +15608,7 @@ Program *parse(Token *tok) {
             EnumLog *top_enum_log_cp = enum_scope_checkpoint();
             int top_decl_align = 0;
             char *name = NULL;
+            Token *decl_start = tok;
             Type *ty = declarator(&tok, tok, copy_type(base), &name, &attr);
             tok = read_type_attrs(tok, &top_decl_align, &attr);
             // Transfer C23 function type attributes from VarAttr to the Type
@@ -15861,6 +15862,24 @@ Program *parse(Token *tok) {
                 if (equalc(tok, "{")) {
                     if (attr.is_typedef)
                         error_tok(tok, "typedef cannot have function body");
+                    // C11 6.9p3: at most one external definition per
+                    // identifier in this TU (a function's own symbol is
+                    // always registered above by this point, prototype
+                    // or not). Point at the declarator's own identifier
+                    // token (matching gcc's "int f(void)" column), not
+                    // the '{' that merely triggered this check.
+                    LVar *prior_def = find_global_name(name);
+                    if (prior_def && prior_def->has_definition) {
+                        Token *name_tok = tok;
+                        for (Token *t = decl_start; t && t != tok; t = t->next)
+                            if (t->kind == TK_IDENT && t->name == name) {
+                                name_tok = t;
+                                break;
+                            }
+                        error_tok(name_tok, "redefinition of '%s'", name);
+                    }
+                    if (prior_def)
+                        prior_def->has_definition = true;
 
                     LVar *fn_locals = NULL;
                     // A statement-level declaration inside the body

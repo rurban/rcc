@@ -1,11 +1,6 @@
 // from https://en.cppreference.com/c/language/bool_constant
 #include <assert.h>
 
-int main()
-{
-    assert(true == 1 && 0 == false);
-}
-
 // Regression: comparisons with negative constants, represented as
 // ND_NEG(ND_NUM(C)), must fold to cmp $imm rather than emitting a
 // self-compare (mov $1; neg; cmp %reg,%reg) that always produces
@@ -27,7 +22,7 @@ int cmp_neg_two(int x) {
     return 0;
 }
 
-int main() {
+void run_neg_regressions(void) {
     assert(cmp_neg_one(-1) == 1);
     assert(cmp_neg_one(0) == 2);
     assert(cmp_neg_one(5) == 2);
@@ -36,5 +31,10 @@ int main() {
     assert(cmp_lt_neg_one(0) == 0);
     assert(cmp_neg_two(-2) == 100);
     assert(cmp_neg_two(-1) == 0);
-    return 0;
+}
+
+int main()
+{
+    assert(true == 1 && 0 == false);
+    run_neg_regressions();
 }
