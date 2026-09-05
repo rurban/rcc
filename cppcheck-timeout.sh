@@ -13,6 +13,24 @@
 # unaffected.
 set -eu
 
+# cppcheck's own preprocessor doesn't know the host platform unless told:
+# without it, config enumeration for `#if defined(__linux__)`-style guards
+# can settle on a configuration where none of the arch/OS macros are set,
+# walking into an `#error "unsupported ..."` branch and reporting it as a
+# real preprocessorErrorDirective. Define the macros that actually apply
+# to the host this hook runs on, matching AGENTS.md: native only, no
+# cross-compilation in one binary.
+PLATFORM_DEFS=
+case "$(uname -s)" in
+    Linux) PLATFORM_DEFS="-D__linux__" ;;
+    Darwin) PLATFORM_DEFS="-D__APPLE__" ;;
+    MINGW*|MSYS*|CYGWIN*) PLATFORM_DEFS="-D_WIN32 -D__MINGW32__" ;;
+esac
+case "$(uname -m)" in
+    x86_64|amd64) PLATFORM_DEFS="$PLATFORM_DEFS -D__x86_64__" ;;
+    aarch64|arm64) PLATFORM_DEFS="$PLATFORM_DEFS -D__aarch64__" ;;
+esac
+
 TIMEOUT_SECS="${CPPCHECK_TIMEOUT_SECS:-180}"
 
 if command -v timeout >/dev/null 2>&1; then
@@ -20,7 +38,8 @@ if command -v timeout >/dev/null 2>&1; then
     # returns non-zero — including `timeout` itself reporting 124 — so
     # capturing $? on the line *after* silently never runs. `|| rc=$?`
     # keeps the non-zero status from tripping `set -e` at all.
-    timeout "$TIMEOUT_SECS" cppcheck "$@" || rc=$?
+    # shellcheck disable=SC2086  # PLATFORM_DEFS: intentional word-split, may hold 0-2 -D flags
+    timeout "$TIMEOUT_SECS" cppcheck $PLATFORM_DEFS "$@" || rc=$?
     rc="${rc:-0}"
     if [ "$rc" -eq 124 ]; then
         echo "cppcheck-timeout.sh: cppcheck did not finish within ${TIMEOUT_SECS}s; skipping (not a lint failure)" >&2
@@ -30,5 +49,6 @@ if command -v timeout >/dev/null 2>&1; then
 else
     # No `timeout` binary available (unlikely outside minimal containers):
     # fall back to running cppcheck directly, unbounded.
-    exec cppcheck "$@"
+    # shellcheck disable=SC2086  # PLATFORM_DEFS: intentional word-split, may hold 0-2 -D flags
+    exec cppcheck $PLATFORM_DEFS "$@"
 fi
