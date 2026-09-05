@@ -865,6 +865,12 @@ struct Node {
     // value (always, success or failure), not the success/fail bool
     // __sync_bool_compare_and_swap / __atomic_compare_exchange return.
     bool atomic_cas_return_old;
+    // Set once eval_const_expr_impl() has warned about signed integer
+    // overflow folding this node (see warn_const_int_overflow in
+    // parser.c) -- the same node can be re-evaluated from several call
+    // sites (speculative array-size/alignment attempts, etc.); without
+    // this the identical diagnostic would repeat once per evaluation.
+    bool overflow_warned;
 };
 
 typedef struct Function Function;
@@ -978,6 +984,12 @@ void always_inline_pass(Program *prog);
 // optimization.
 void eliminate_unused_static_inline(Program *prog);
 bool eval_const_expr(Node *node, long long *val);
+// Set (and restored) around a speculative eval_const_expr() probe whose
+// caller only cares whether/what the value is, not whether folding it
+// hit UB -- e.g. is_null_pointer_constant() in type.c, invoked on both
+// arms of every conditional expression regardless of which arm a
+// constant condition selects. See warn_const_int_overflow in parser.c.
+extern bool suppress_const_overflow_warn;
 
 // Unicode identifiers
 uint32_t decode_utf8(char **new_pos, char *p);

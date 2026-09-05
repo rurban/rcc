@@ -412,7 +412,11 @@ static bool is_null_pointer_constant(Node *n) {
     // constant; eval_const_expr() correctly fails (non-constant) when x is
     // a runtime value, so the trick still resolves to "not a constant" then.
     long long v;
-    return eval_const_expr(n, &v) && v == 0;
+    bool saved = suppress_const_overflow_warn;
+    suppress_const_overflow_warn = true;
+    bool ok = eval_const_expr(n, &v) && v == 0;
+    suppress_const_overflow_warn = saved;
+    return ok;
 }
 
 // C23: a "null pointer constant" (is_null_pointer_constant() above, the
