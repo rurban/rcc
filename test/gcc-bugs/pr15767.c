@@ -1,3 +1,4 @@
+/* { dg-skip-if "ppc-only: uses AltiVec `vector int` syntax" { x86_64-*-* i?86-*-* } } */
 /* GCC Bug #15767 - ppc-linux type attribute aligned, packed on vector types behaves wrongly
  * https://gcc.gnu.org/bugzilla/show_bug.cgi?id=15767
  */
