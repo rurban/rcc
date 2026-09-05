@@ -14,7 +14,7 @@ struct s
 //       *s->m = 5;
 //       // (*s)->m = 5;
     }
-C:
+// C:
 //     ../f.c: In function 'f':
 //     ../f.c:8:5: error: '*s' is a pointer; did you mean to use '->'?
 //         8 |   *s->m = 5;

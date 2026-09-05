@@ -4,8 +4,7 @@
 /* { dg-do compile } */
 
 
-> typedef struct S_ { short f[3] __attribute((aligned(8))); } S;
-    typedef int more_aligned_int __attribute__ ((aligned (8)));
-// it's still an issue.
+typedef struct S_ { short f[3] __attribute((aligned(8))); } S;
+typedef int more_aligned_int __attribute__ ((aligned (8)));
 
 

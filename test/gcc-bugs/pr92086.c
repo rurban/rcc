@@ -7,7 +7,8 @@
 int f1 (int);
 
 __attribute__ ((noreturn, nothrow))
-// f2 (void)
+void
+f2 (void)
 {
   int x1 = f1 (1);
   int x2 = f1 (2);

@@ -2,28 +2,30 @@
  * https://gcc.gnu.org/bugzilla/show_bug.cgi?id=39438
  */
 /* { dg-do compile } */
+#include <time.h>
+
 
 
 static void __attribute__((format (strftime, 1, 0)))
-// test1(const char *fmt, const struct tm *tm)
+test1(const char *fmt, const struct tm *tm)
 {
  char buf[100];
 
-// 	strftime(buf, sizeof(buf), fmt, tm);
+	strftime(buf, sizeof(buf), fmt, tm);
 }
 
 static const char *__attribute__((format_arg (1)))
-// helper(const char *fmt)
+helper(const char *fmt)
 {
  return fmt;
 }
 
 static void
-// test2(const char *fmt, const struct tm *tm)
+test2(const char *fmt, const struct tm *tm)
 {
  char buf[100];
 
-// 	strftime(buf, sizeof(buf), helper(fmt), tm);
+	strftime(buf, sizeof(buf), helper(fmt), tm);
 }
 
 

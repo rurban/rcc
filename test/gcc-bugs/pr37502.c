@@ -9,10 +9,10 @@ volatile struct {
 } bits;
 
 unsigned char
-// getfoo(void)
+getfoo(void)
 {
         while (bits.a < 3)
-//                 /* wait */;
+                /* wait */;
         return 42;
 }
 // GCC does not emit a warning with -Wall -Wextra yet happily generates an

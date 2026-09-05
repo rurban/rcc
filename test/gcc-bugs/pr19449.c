@@ -8,8 +8,8 @@ int y;
 static char a[__builtin_constant_p (y) ? -1 : 1];
 extern char b[__builtin_constant_p (y) ? -1 : 1];
 char d[__builtin_constant_p (y) ? -1 : 1];
-// void
-// foo (int x)
+void
+foo (int x)
 {
   static char e[__builtin_constant_p (x) ? -1 : 1];
   extern char f[__builtin_constant_p (x) ? -1 : 1];

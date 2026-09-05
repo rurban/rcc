@@ -4,18 +4,8 @@
 /* { dg-do compile } */
 
 
-{
-// +  tree size = fold_offsetof_1 (expr, stop_ref);
-// +
-// +  /* Convert in case a char is more than one unit.  */
-// +  size
-// +    = size_binop (CEIL_DIV_EXPR, size,
-// +                 size_int (TYPE_PRECISION (char_type_node) / BITS_PER_UNIT));
-//    /* Convert back from the internal sizetype to size_t.  */
-// -  return convert (size_type_node, fold_offsetof_1 (expr, stop_ref));
-// +  return convert (size_type_node, size);
- }
+#include <stddef.h>
 
-//  /* Warn for A ?: C expressions (with B omitted) where A is a boolean
+struct S { char a; int b; };
 
-
+size_t off = offsetof(struct S, b);

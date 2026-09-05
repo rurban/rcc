@@ -7,18 +7,15 @@
 void g1( float );
 void g2( int );
 
-// f1( float a)
+void f1( float a)
 {
 	if (a < 0.0 && a > 1.0)
-// 		g1( a);
+	g1( a);
 }
 
-// f2( int a)
+void f2( int a)
 {
 	if (a < 0 && a > 1)
-// 		g2( a);
+	g2( a);
 }
-// mar26e.cc: In function ‘void f2(int)’:
-  if (a < 0 && a > 1)
-
 

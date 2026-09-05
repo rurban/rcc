@@ -92,7 +92,7 @@ int main(void)
 //        default:
 //         ^
 // switches.c:66:9: warning: default label in switch which covers all enumeration values [-Wcovered-switch-default]
-        default: __builtin_unreachable(); /*NOTREACHED*/
+//        default: __builtin_unreachable(); /*NOTREACHED*/
 //         ^
 // switches.c:77:9: warning: default label in switch which covers all enumeration values [-Wcovered-switch-default]
 //        default: /*REACHEDBYFALLTHROUGH*/

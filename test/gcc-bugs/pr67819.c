@@ -6,8 +6,8 @@
 
 #define FOO 4
 #define BAR 4
-// int
-// fn (int n)
+int
+fn (int n)
 {
   if (n <= FOO)
     return 1;

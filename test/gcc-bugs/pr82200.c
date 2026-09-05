@@ -14,7 +14,7 @@ int main() {}
 //                  from /usr/include/syslog.h:23,
 //                  from sl.c:1:
 // /usr/include/sys/syslog.h:227:124: error: expected ‘,’ or ‘;’ before ‘__asm’
- void syslog(int, const char *, ...) __printflike(2, 3) __not_tail_called __DARWIN_ALIAS_STARTING(__MAC_10_13, __IPHONE_NA, __DARWIN_EXTSN(syslog));
+// void syslog(int, const char *, ...) __printflike(2, 3) __not_tail_called __DARWIN_ALIAS_STARTING(__MAC_10_13, __IPHONE_NA, __DARWIN_EXTSN(syslog));
 // ```
 // where __DARWIN_EXTSN is defined as:
 // (in /usr/include/sys/cdefs.h)

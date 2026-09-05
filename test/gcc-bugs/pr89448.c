@@ -17,23 +17,13 @@ int upperunder (void)
 }
 int redef (void)
 {
+#undef complex
 #define complex _Complex
   complex int a = 0;
   return creal (a);
 }
-   _Complex int a = 0;
- #define complex _Complex
-   complex int a = 0;
 
 // Why no diagnostic in lower() but yes in redef()?  Sounds as if the
+// "complex" from <complex.h> is not just "_Complex".
 
-// The preprocessed form just further confuses the matter, because (as expected) "complex" does appear to be just "_Complex":
-
-int lower (void)
-{
-
-         int a = 0;
-  return creal (a);
-}
-
-
+// The preprocessed form just further confuses the matter, because (as expected) "complex" does appear to be just "_Complex".

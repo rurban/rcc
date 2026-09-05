@@ -6,12 +6,12 @@
 
 static inline void foo(unsigned short n)
 {
-  __asm__("foo %0" :: "r" (n));
+  __asm__("" :: "r" (n));
 }
 
 void bar(void)
 {
-//   foo(0xfffc);
+  foo(0xfffc);
 }
 //         .file   "x.c"
 //         .option nopic
@@ -19,13 +19,13 @@ void bar(void)
 //         .align  2
 //         .globl  bar
 //         .type   bar, @function
-bar:
+// bar:
 //         li      a5,-4
- #APP
+// #APP
 # 3 "x.c" 1
 //         foo a5
-# 0 "" 2
- #NO_APP
+// # 0 "" 2
+// #NO_APP
 //         ret
 //         .size   bar, .-bar
 //         .ident  "GCC: (GNU) 7.2.0"

@@ -13,7 +13,7 @@ void set_message_by_errcode(va_list ap) { set_message(&a, ap); }
 
 // test.cc: In function ‘void set_message_by_errcode(va_list)’:
 // test.cc:6:61: warning: function ‘void set_message_by_errcode(va_list)’ might be a candidate for ‘gnu_printf’ format attribute [-Wsuggest-attribute=format]
- void set_message_by_errcode(va_list ap) { set_message(&a, ap); }
+// void set_message_by_errcode(va_list ap) { set_message(&a, ap); }
 
 // I believe the warning is spurious, since there's no way you could construct a valid printf format attribute for set_message_by_errcode (it doesn't take in a string parameter).
 

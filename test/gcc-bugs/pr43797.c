@@ -10,12 +10,8 @@ INT1 f2 (void) __attribute__((deprecated));
 
 void func (void)
 {
-//   f1();
-//   f2();
+  f1();
+  f2();
 }
-// ===
-produces:
-// warning: 'f1' is deprecated (declared at...): No f1        *** (correct)
-// warning: 'f2' is deprecated (declared at...): No INT1   *** (incorrect, f2 has no deprecation message).
 
 

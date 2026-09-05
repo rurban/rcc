@@ -4,11 +4,15 @@
 /* { dg-do compile } */
 
 
+#include <stdbool.h>
+#include <stddef.h>
+
 void cleanup_func (void **ptr);
 
 void *init (void);
 
-// function (bool condition)
+void
+function (bool condition)
 {
   if (condition)
     goto out;
@@ -17,7 +21,8 @@ void *init (void);
     __attribute__((__default_value__((NULL))))
     void *x = init ();
 
-//   return;
+out:
+  return;
 }
 // On the start of the function, when we allocate stack space for 'x', we would ensure that a NULL value is written into that space.  If 'condition' is true, then we exit the function immediately and the cleanup_func is called on the address of 'x' (and x will contain NULL).
 

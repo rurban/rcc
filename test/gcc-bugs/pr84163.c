@@ -16,7 +16,7 @@ const __flash char *pet = FSTR ("pet");
 // 	.data
 // 	.type	pet, @object
 // 	.size	pet, 2
-pet:
+// pet:
 // 	.word	__compound_literal.0
 // Hence this works great and perfectly as expected.  Unfortunately, this does not work locally in a function:
 const __flash char* get_pet (void)
@@ -26,7 +26,7 @@ const __flash char* get_pet (void)
 }
 // literal.c: In function 'get_pet':
 // literal.c:7:3: error: compound literal qualified by address-space qualifier
-   static const __flash char *pet = FSTR ("pet");
+//   static const __flash char *pet = FSTR ("pet");
 //    ^~~~~~
 // Would be great if the C front end also supported such compound literals with the obvious semantics as a GNU-C extension (which __flash and other address-spaces already are).
 

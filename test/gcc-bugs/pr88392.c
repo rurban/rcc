@@ -3,16 +3,6 @@
  */
 /* { dg-do compile } */
 
-
 struct {
-   void    *v:44;
+   void    *v:44; /* { dg-error "bit-field .v. has invalid type" } */
 } z;
-// b.c:2:13: error: bit-field ‘v’ has invalid type
-    void    *v:44;
-//              ^
-// b.c:2:13: error: width of ‘v’ exceeds its type
-// The first message is fine, but the second is I believe erroneous as sizeof (void *) is 8 on that machine. A bit misleading but not a big deal, though.
-// All the best,
-// Frédéric
-
-

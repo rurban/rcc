@@ -16,15 +16,7 @@ struct fail {
 #define ACCESS_ONCE(x) (*__ACCESS_ONCE(x))
 
 void fail(struct fail *s, uint32_t p) {
-        ACCESS_ONCE(*s->p) = p;
+        ACCESS_ONCE(*s->p) = p; /* { dg-error "assignment of read-only location" } */
 }
-// ====
-// results in
-// fail.c: In function 'fail':
-// fail.c:13:21: error: assignment of read-only location '*__builtin_memcpy(&<U1950>, &({...}))'
-  ACCESS_ONCE(*s->p) = p;
-//                      ^
-// There is no __builtin_memcpy in the program source, but the <U1950> is
-// even more worrying (the number is different on different runs).
 
 

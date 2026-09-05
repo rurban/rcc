@@ -19,15 +19,15 @@ struct foo { char i; };
 // --- a/gcc/c/c-parser.cc
 // +++ b/gcc/c/c-parser.cc
 // @@ -4114,7 +4114,8 @@ c_parser_struct_or_union_specifier (c_parser *parser)
-     c_parser_error (parser, "expected %<;%>");
+//    c_parser_error (parser, "expected %<;%>");
 //    /* ??? Existing practice is that GNU attributes are ignored after
 //       the struct or union keyword when not defining the members.  */
 // -  ret = parser_xref_tag (ident_loc, code, ident, have_std_attrs, std_attrs,
 // +  ret = parser_xref_tag (ident_loc, code, ident, have_std_attrs || attrs,
 // +                        std_attrs ? chainon (std_attrs, attrs) : attrs,
 //                          false);
-   return ret;
- }
+//   return ret;
+// }
 
 // It's far from a proper change, as there are more places that need to be adapted to, for example, cover enums as well. However, it shows where things go wrong and where the (still parsed!) (GNU only!) attributes get silently ignored. And yes, the comment needs a change too.
 // If there's consent that gcc should follow Clang's lead and actually comply to its own documentation, I can prepare a proper patch.

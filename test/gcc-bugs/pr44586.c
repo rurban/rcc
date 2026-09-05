@@ -4,6 +4,8 @@
 /* { dg-do compile } */
 
 
+typedef int (*bar_t)(int x, int y, ...);
+
 int foo(int x, int y) {
         return x+y;
 }
@@ -11,9 +13,9 @@ int foo(int x, int y) {
 void f(int x, int y) {
        bar_t bar;
 
-//        /* Cast foo to variadic type... undefined behaviour */
+       /* Cast foo to variadic type... undefined behaviour */
        bar = (bar_t) foo;
-//        (*bar)(x,y);
+       (*bar)(x,y);
 }
 
 

@@ -5,7 +5,7 @@
 
 
 typedef unsigned long long
-    __attribute__((vector_size(*(int (*)())0xbabebec0))) V2DI;
+    __attribute__((vector_size(*(int (*)())0xbabebec0))) V2DI; /* { dg-error "expected constant vector_size" } */
 // Real reproducer (comment 1's "Reduced:" testcase); this still triggers an
 // ICE in default_conversion (c/c-typeck.cc) with current GCC, matching the
 // still-open PR.

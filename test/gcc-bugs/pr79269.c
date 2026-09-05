@@ -15,19 +15,5 @@ unsigned size (void)
 {
   return __builtin_object_size (&test, 0);
 }
-// ;; Function size (size, funcdef_no=0, decl_uid=1799, cgraph_uid=0, symbol_order=1)
-
-// size ()
-{
-  unsigned int D.1802;
-  unsigned int _1;
-
-//   <bb 2> [0.00%]:
-  _1 = 5;
-
-// <L0> [0.00%]:
-  return _1;
-
-}
 
 

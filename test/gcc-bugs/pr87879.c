@@ -40,11 +40,11 @@ int g2(const char *s, int x)
 
 // Neverthess, the f1() case is rather common. Is there some magic one could insert above
 
-  if (TREE_CODE (format_tree) != ADDR_EXPR)
-    {
+//   if (TREE_CODE (format_tree) != ADDR_EXPR)
+//     {
 //       res->number_non_literal++;
 //       return;
-    }
+//     }
 
 // to replace format_tree with its DECL_INITIAL in a case like that, to silence Wformat-nonliteral and allow diagnosing f2()?
 

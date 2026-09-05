@@ -4,7 +4,7 @@
 /* { dg-do compile } */
 
 
-<span class="quote">>     ./goto_gen.py ${n} t.c
+// <span class="quote">>     ./goto_gen.py ${n} t.c
 // return statement) that consume a significant amount of memory.
 // Let's assume we need about 6 times the 131MB to to account for all stmt
 // operands and for PHI nodes. That's ~1GB total for the function body.

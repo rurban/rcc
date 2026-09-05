@@ -36,7 +36,7 @@ int main( void )
 //         printf("error: no FE_OVERFLOW is raised\n");
         return 2;
     }
-    return 0;  ​
+    return 0;
 }
 // Invocation: gcc t0.c -std=c11 -pedantic -lm
 // <nothing>

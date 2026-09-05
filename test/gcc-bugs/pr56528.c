@@ -5,9 +5,10 @@
 
 
 // Adding an asm label attribute to a function declaration with a visibility attribute causes the visibility attribute to be ignored:
-$ echo 'void f() __attribute__((visibility("hidden"))); void g() { f(); }' | gcc -x c - -S -o - | grep hidden
+// $ echo 'void f() __attribute__((visibility("hidden"))); void g() { f(); }' | gcc -x c - -S -o - | grep hidden
 //         .hidden f
-$ echo 'void f() __asm__("f") __attribute__((visibility("hidden"))); void g() { f(); }' | gcc -x c - -S -o - | grep hidden
+// $ echo 'void f() __asm__("f") __attribute__((visibility("hidden"))); void g() { f(); }' | gcc -x c - -S -o - | grep hidden
 // $
 
-
+void f() __asm__("f") __attribute__((visibility("hidden")));
+void g() { f(); }

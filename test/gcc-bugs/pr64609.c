@@ -12,7 +12,6 @@ void fn1() { ((a = 0 && 0) <= 4); }
 // $: clang-trunk -c s.c -Wno-unused-value
 // s.c:2:28: warning: comparison of constant 4 with boolean expression is always
 //       true [-Wtautological-constant-out-of-range-compare]
-void fn1() { ((a = 0 && 0) <= 4); }
 //               ~~~~~~~~~~~~ ^  ~
 // 1 warning generated.
 // $: 

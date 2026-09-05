@@ -5,11 +5,10 @@
 
 
 static a () __attribute__ ((weakref ("")));
-// b ()
+b ()
 {
   __transaction_atomic { a (); }
 }
- }
 // 0xa87b10 symtab_node::get_alias_target()
 // 0xa87b10 cgraph_node::get_alias_target()
 

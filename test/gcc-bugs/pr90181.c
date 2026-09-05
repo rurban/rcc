@@ -4,6 +4,8 @@
 /* { dg-do compile } */
 
 
+#include <stddef.h>
+
 void call_ecall(size_t num)
   {
     register size_t r_a7 __asm("a7") = num;
@@ -13,10 +15,13 @@ void call_ecall(size_t num)
 // This gets awkward fast. It adds a lot of extra noise if you have many registers to pass (the ecall instruction provides an example where this may be needed).
 
 // The semantics are also not entirely clear: will r_a7 occupy the a7 register for the entire function (suppose there is more C code around it)? What if call_ecall gets inlined into a larger function? I think the intended (and actual) semantics are that it's effective only at the points where it's passed with register inline asm constraints.
-  void call_ecall(size_t num)
-  {
-    __asm volatile("ecall" : : "a7" (num) : "memory");
-  }
+// (The alternate form below was never proposed as valid; it's what the
+// reporter wished could work directly with a constraint but can't, since
+// "a7" is not a constraint.)
+//   void call_ecall(size_t num)
+//   {
+//     __asm volatile("ecall" : : "a7" (num) : "memory");
+//   }
 
 // Some architectures do support this (like x86), but not all.
 

@@ -20,7 +20,7 @@ typedef int r_fun_t (int);
 // with
 //   input: In function ‘report’:
 //   input:8:58: warning: logical ‘and’ of equal expressions [-Wlogical-op]
-     return (t < sizeof text_funcs / sizeof text_funcs[0] &&
+//     return (t < sizeof text_funcs / sizeof text_funcs[0] &&
 //                                                           ^
 // when these two conditions are about two different types, defined in two
 // different locations, and the sizes are set differently.

@@ -4,7 +4,7 @@
 /* { dg-do compile } */
 
 
-void f2(y, __attribute__(()) x);
+void f2(y, __attribute__(()) x); /* { dg-error "expected .\\). before .__attribute__." } */
 void f3(__attribute__(()) x, y);
 
 

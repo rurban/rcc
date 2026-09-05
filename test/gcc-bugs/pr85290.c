@@ -4,15 +4,18 @@
 /* { dg-do compile } */
 
 
+typedef int pid_t;
+
 int test(void)
 {
-//  test();
-# 8 "bla.c" 3
-// pid_t 
-# 8 "bla.c"
-      pid = 0;
+ test();
 
-//  test();
+# 8 "bla.c" 3
+pid_t
+# 8 "bla.c"
+ pid = 0;
+
+ test();
 
  return pid;
 }

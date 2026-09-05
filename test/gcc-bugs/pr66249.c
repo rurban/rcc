@@ -15,7 +15,7 @@ int main(void) {
 }
 // foo.c: In function ‘main’:
 // foo.c:8:11: warning: format ‘%u’ expects argument of type ‘unsigned int’, but argument 2 has type ‘int’ [-Wformat=]
-   printf ("%u %d %u %d %u %d %u %d\n", i, u, es, es, eu, eu, ei, ei);
+//    printf ("%u %d %u %d %u %d %u %d\n", i, u, es, es, eu, eu, ei, ei);
 //            ^
 // foo.c:8:11: warning: format ‘%d’ expects argument of type ‘int’, but argument 3 has type ‘unsigned int’ [-Wformat=]
 // foo.c:8:11: warning: format ‘%u’ expects argument of type ‘unsigned int’, but argument 4 has type ‘int’ [-Wformat=]
@@ -29,7 +29,7 @@ int main(void) {
 // And look what happens when I add -fshort-enums to the mix:
 // foo.c: In function ‘main’:
 // foo.c:8:11: warning: format ‘%u’ expects argument of type ‘unsigned int’, but argument 2 has type ‘int’ [-Wformat=]
-   printf ("%u %d %u %d %u %d %u %d\n", i, u, es, es, eu, eu, ei, ei);
+//    printf ("%u %d %u %d %u %d %u %d\n", i, u, es, es, eu, eu, ei, ei);
 //            ^
 // foo.c:8:11: warning: format ‘%d’ expects argument of type ‘int’, but argument 3 has type ‘unsigned int’ [-Wformat=]
 // foo.c:8:11: warning: format ‘%u’ expects argument of type ‘unsigned int’, but argument 4 has type ‘int’ [-Wformat=]

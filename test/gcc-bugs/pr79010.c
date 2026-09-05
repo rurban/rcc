@@ -4,6 +4,8 @@
 /* { dg-do compile } */
 
 
+#define N 123456
+
 void sink (void*);
 
 char a[N];
@@ -37,17 +39,4 @@ void fmalloc (void)
   void *a = __builtin_malloc (N);
   sink (a);
 }
-// b.c:3:6: warning: size of ‘a’ is 123456 bytes [-Wlarger-than=]
- char a[N];
-//       ^
-// b.c: In function ‘farray’:
-// b.c:7:8: warning: size of ‘a’ is 123456 bytes [-Wlarger-than=]
-   char a[N];
-//         ^
-// b.c: In function ‘funnamed_array’:
-// b.c:13:18: warning: size of ‘({anonymous})’ is 123456 bytes [-Wlarger-than=]
-   sink ((char[N]){ 0 });
-//                   ^
-// b.c:13:18: warning: size of ‘({anonymous})’ is 123456 bytes [-Wlarger-than=]
-
 

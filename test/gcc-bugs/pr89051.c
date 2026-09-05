@@ -7,7 +7,7 @@
 void f() { g(1); }
 // x.c: In function ‘f’:
 // x.c:1:12: error: implicit declaration of function ‘g’ [-Werror=implicit-function-declaration]
- void f() { g(1); }
+// void f() { g(1); }
 //             ^
 // cc1: some warnings being treated as errors
 // Using built-in specs.

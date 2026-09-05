@@ -5,11 +5,10 @@
 
 
 #include <stdio.h>
-// f(void)
+void f(void)
 {
-//   stdout;
+  stdout;
 }
-//    stdout;
 #define stdout stdout
 
 

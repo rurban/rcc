@@ -8,11 +8,11 @@
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 
 unsigned int
-// constrain(unsigned int index, unsigned int offset, unsigned int limit)
+constrain(unsigned int index, unsigned int offset, unsigned int limit)
 {
   int adj = index - offset;
   adj = MAX(adj, 0);
-//   return MIN(adj, limit); /* { dg-bogus "signed and unsigned" } */
+  return MIN(adj, limit); /* { dg-bogus "signed and unsigned" } */
 }
 
 

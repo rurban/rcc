@@ -5,7 +5,7 @@
 
 
 #define FOO(x) x
-int foo(void) {return FOO(bar);}
+int foo(void) {return FOO(bar);} /* { dg-error "undeclared" } */
 // foo.c: In function 'foo':
 // foo.c:2:27: error: 'bar' undeclared (first use in this function)
 // int foo(void) {return FOO(bar);}

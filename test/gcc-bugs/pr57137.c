@@ -16,9 +16,6 @@ void h (const char *fmt)
 {
   g (fmt);
 }
-// v.c: In function ‘g’:
+// v.c: In function 'g':
 // v.c:6:3: warning: format not a string literal, argument types not checked [-Wformat-nonliteral]
-   f (fmt, "xxx");
-//    ^
-
 

@@ -1,6 +1,7 @@
 /* GCC Bug #78155 - missing warning on invalid usage of functions/macros from <ctype.h> (isalpha et al.)
  * https://gcc.gnu.org/bugzilla/show_bug.cgi?id=78155
  */
+/* { dg-do compile } */
 
 
 int main (void)

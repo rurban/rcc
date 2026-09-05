@@ -23,11 +23,11 @@ void h (void)
 
 // z.c: In function ‘void f()’:
 // z.c:5:28: warning: ‘memset’ used with length equal to number of elements without multiplication by element size [-Wmemset-elt-size]
-   __builtin_memset (a, 0, 2);   // -Wmemset-elt-size (good)
+//   __builtin_memset (a, 0, 2);   // -Wmemset-elt-size (good)
 //                             ^
 // z.c: In function ‘void g()’:
 // z.c:10:29: warning: ‘memset’ used with length equal to number of elements without multiplication by element size [-Wmemset-elt-size]
-   __builtin_memset (&a, 0, 2);   // -Wmemset-elt-size (good)
+//   __builtin_memset (&a, 0, 2);   // -Wmemset-elt-size (good)
 //                              ^
 
 

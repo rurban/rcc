@@ -10,7 +10,7 @@ int foo (_Bool a) {
 }
 // u.c: In function ‘foo’:
 // u.c:4:1: warning: control reaches end of non-void function [-Wreturn-type]
- }
+//  }
 //  ^
 
 

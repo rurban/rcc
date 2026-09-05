@@ -6,26 +6,26 @@
 #include <stdio.h>
 
 static void
-// func (void **ptr)
+func (void **ptr)
 {
   printf ("free(%p)\n", *ptr);
 }
 
-// main (void)
+int
+main (void)
 {
   goto out;
 
   __attribute__((__cleanup__(func))) void *x = NULL;
 
+out:
   return 0;
 }
-// free(0x559190032050)
 
-  __attribute__((__cleanup__(func))) void *x = NULL;
-  goto out;
-// test.c:14:44: note: jump bypasses initialization of variable with __attribute__((cleanup))
-  __attribute__((__cleanup__(func))) void *x = NULL;
-
+// This blog post implies that GCC gives a helpful warning about this
+// problem, but modern GCC versions seem to have lost this warning.  By
+// comparison, clang gives a warning and turns the goto itself into a hard
+// error in response to detecting the problem.
 // clang version 7.0.1-8 (tags/RELEASE_701/final)
 
 

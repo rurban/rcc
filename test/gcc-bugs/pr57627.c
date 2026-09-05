@@ -12,17 +12,17 @@ void f2(char *dst, char *src)
 
 void f3(unsigned char *dst, unsigned char *src)
 { __builtin_memcpy(dst, src, sizeof(unsigned char *)); }
-// test.c: In function ‘f1’:
-// test.c:2:36: warning: argument to ‘sizeof’ in ‘__builtin_memcpy’ call is the same pointer type ‘int *’ as the destination; expected ‘int’ or an explicit length [-Wsizeof-pointer-memaccess]
- { __builtin_memcpy(dst, src, sizeof(int *)); }
+// test.c: In function 'f1':
+// test.c:2:36: warning: argument to 'sizeof' in '__builtin_memcpy' call is the same pointer type 'int *' as the destination; expected 'int' or an explicit length [-Wsizeof-pointer-memaccess]
+//  { __builtin_memcpy(dst, src, sizeof(int *)); }
 //                                     ^
-// test.c: In function ‘f2’:
-// test.c:5:36: warning: argument to ‘sizeof’ in ‘__builtin_memcpy’ call is the same pointer type ‘char *’ as the destination; expected ‘char’ or an explicit length [-Wsizeof-pointer-memaccess]
- { __builtin_memcpy(dst, src, sizeof(char *)); }
+// test.c: In function 'f2':
+// test.c:5:36: warning: argument to 'sizeof' in '__builtin_memcpy' call is the same pointer type 'char *' as the destination; expected 'char' or an explicit length [-Wsizeof-pointer-memaccess]
+//  { __builtin_memcpy(dst, src, sizeof(char *)); }
 //                                     ^
-// test.c: In function ‘f3’:
-// test.c:8:36: warning: argument to ‘sizeof’ in ‘__builtin_memcpy’ call is the same pointer type ‘unsigned char *’ as the destination; expected ‘unsigned char’ or an explicit length [-Wsizeof-pointer-memaccess]
- { __builtin_memcpy(dst, src, sizeof(unsigned char *)); }
+// test.c: In function 'f3':
+// test.c:8:36: warning: argument to 'sizeof' in '__builtin_memcpy' call is the same pointer type 'unsigned char *' as the destination; expected 'unsigned char' or an explicit length [-Wsizeof-pointer-memaccess]
+//  { __builtin_memcpy(dst, src, sizeof(unsigned char *)); }
 //                                     ^
 // Copyright (C) 2013 Free Software Foundation, Inc.
 // This is free software; see the source for copying conditions.  There is NO

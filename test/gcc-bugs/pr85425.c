@@ -11,7 +11,7 @@ void f(int i, double d) { ghhrobust_search(i, d); }
 // If you use -Wconversion you get a warning:
 // a.c: In function ‘void f(int, double)’:
 // a.c:3:48: warning: conversion to ‘int’ from ‘double’ may alter its value [-Wfloat-conversion]
- void f(int i, double d) { ghhrobust_search(i, d); }
+//  void f(int i, double d) { ghhrobust_search(i, d); }
 //                                                 ^
 // This seems to be what you're looking for. Indeed, compiling your attached code with -Wconversion gives a warning on the relevant line:
 // fail_contour.c: In function ‘contour_trace’:

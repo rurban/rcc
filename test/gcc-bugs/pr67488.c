@@ -7,8 +7,7 @@
 void g() {
   void f(void);
 }
-void k() {int f(int); f(1);}
+void k() {int f(int); f(1);} /* { dg-error "conflicting types for" } */
 // Saying f was declared in a different scope too.
-// Note I don't have access to clang so I can't say what it shows.
 
 

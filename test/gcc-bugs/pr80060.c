@@ -4,6 +4,8 @@
 /* { dg-do compile } */
 
 
+typedef unsigned long long __u64;
+
 struct uffd_msg msg;
 struct uffd_msg {
 // ..
@@ -14,7 +16,7 @@ struct uffd_msg {
                 } pagefault;
 // ..
         } arg;
-}
+} ;
 
 // Printing one of these values is obvious - the typedef name tells you it should be an unsigned 64-bit quantity, so let's try printf("%"PRIx64, msg.arg.pagefault.flags).  Oops, on 64-bit Linux, that fails under -Wformat, because "%ld" is incompatible with 'unsigned long long'.  But since the kernel headers typedef'd __u64 without any counterpart to something like PRIx64, there is no sane way to print a __u64 without writing an extra cast at every caller, which is prone to introduce more bugs than the warnings it silences: printf("%"PRIx64, (uint64_t)msg.arg.pagefault.flags).
 

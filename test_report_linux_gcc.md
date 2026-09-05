@@ -4,15 +4,15 @@
 
 **Compiler**: gcc
 
-Generated: September 04 2026 20:00
+Generated: September 05 2026 19:35
 
 ## Overall Summary
 
-- **Total**: 4806
-- **Passed**: 4279
-- **Failed**: 282
-- **Skipped**: 245
-- **Overall Pass Rate**: 94%
+- **Total**: 4805
+- **Passed**: 4384
+- **Failed**: 175
+- **Skipped**: 246
+- **Overall Pass Rate**: 96%
 
 ## RCC Unit Tests
 
@@ -34,11 +34,11 @@ Generated: September 04 2026 20:00
 
 ## GCC Bugs
 
-- **Total**: 606
-- **Passed**: 338
-- **Failed**: 219
-- **Skipped**: 49
-- **Fail Compile**: 203
-- **Fail Runtime**: 12
-- **Dg-error Tests**: 40/44 passed, 4 failed
-- **Pass Rate (excl. skip)**: 61%
+- **Total**: 605
+- **Passed**: 443
+- **Failed**: 112
+- **Skipped**: 50
+- **Fail Compile**: 94
+- **Fail Runtime**: 6
+- **Dg-error Tests**: 48/60 passed, 12 failed
+- **Pass Rate (excl. skip)**: 80%

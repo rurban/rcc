@@ -1,7 +1,7 @@
 /* GCC Bug #84595 - Add __builtin_break() built-in for a breakpointing mechanism
  * https://gcc.gnu.org/bugzilla/show_bug.cgi?id=84595
  */
-
+/* { dg-do compile } */
 
 #include <stdio.h>
 
@@ -12,7 +12,7 @@ int main()
  return 0;
 }
 // Then
-main:
+// main:
 //   ud2
 // I propose, as a feature, either to provide a new command line option to control whether the code is optimized out or preserved, or to a add a new builtin function.
 

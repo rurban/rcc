@@ -9,16 +9,16 @@
 struct S {
    int val;
 };
-// int
-// f (struct S *sym1, struct S *sym2 __attribute__((unused)))
+int
+f (struct S *sym1, struct S *sym2 __attribute__((unused)))
 {
   return memcmp (&sym1->val, &sym1->val, sizeof (sym1->val));
 }
 
 #define N 0
 #define M 0
-// int
-// f2 (void)
+int
+f2 (void)
 {
   extern const char *a[];
   return __builtin_strcmp (a[N], a[M]);

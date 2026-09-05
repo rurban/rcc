@@ -20,19 +20,18 @@ int main() {
 // a.c:6:21: warning: initializer-string for array of chars is too long
    char32_t u32[3] = U"abcd";
 //                      ^~~~~~~
-Also:
-#include <stddef.h>
-int main() {
-  char c[3] = "abc";
-  wchar_t w[3] = L"abc";
-}
-// a.c: In function ‘main’:
+// Also:
+// #include <stddef.h>
+// int main() {
+//   char c[3] = "abc";
+//   wchar_t w[3] = L"abc";
+// }
+// a.c: In function 'main':
 // a.c:4:15: warning: initializer-string for array chars is too long for C++ [-Wc++-compat]
-   char c[3] = "abc";
-//                ^~~~~
+//    char c[3] = "abc";
+//                 ^~~~~
 // a.c:5:18: warning: initializer-string for array chars is too long for C++ [-Wc++-compat]
-   wchar_t w[3] = L"abc";
-//                   ^~~~~~
+//    wchar_t w[3] = L"abc";
 // Note "array chars" not "array of chars".
 
 

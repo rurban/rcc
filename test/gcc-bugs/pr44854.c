@@ -5,13 +5,3 @@
 
 
 struct foo { int };
-// gcc-4.6:
-// test.c:1:18: error: expected identifier or ‘(’ before ‘}’ token
-// test.c:1:18: error: expected specifier-qualifier-list at end of input
-clang:
-// test.c:1:18: error: expected member name or ';' after declaration specifiers
-struct foo { int };
-//              ~~~ ^
-// Clang knows what you mean and the diagnostic message is better.
-
-

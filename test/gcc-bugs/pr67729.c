@@ -3,7 +3,7 @@
  */
 /* { dg-do compile } */
 
-
+#include <stdio.h>
 extern void g( FILE * fp);
 
 void f( FILE * fp)
@@ -16,12 +16,7 @@ void f( FILE * fp)
 		;
 	while (fscanf( fp, "%20s", buf))
 		;
-// 	g( fp);
+	g( fp);
 }
-// Here is cppcheck detecting the problem and suggesting a fix.
-// Checking sep9a.cc...
-// [sep9a.cc:12]: (error) Width 10 given in format string (no. 1) is larger than destination buffer 'buf[10]', use %9s to prevent overflowing it.
-// [sep9a.cc:16]: (error) Width 20 given in format string (no. 1) is larger than destination buffer 'buf[10]', use %9s to prevent overflowing it.
-// $
 
 

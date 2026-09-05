@@ -5,7 +5,7 @@
 
 
 extern int
-// f(short s, unsigned int u)
+f(short s, unsigned int u)
 {
     return s == u % 100;
 }
