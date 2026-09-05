@@ -6558,6 +6558,21 @@ int main(int argc, char **argv) {
     {
         const char *rb = strrchr(rcc, '/');
         rb = rb ? rb + 1 : rcc;
+        /* `timeout DURATION COMMAND...` (e.g. "timeout 5s clang") wraps
+         * the real compiler for a per-test kill switch; unwrap it here
+         * so compiler_name reflects the actual compiler ("clang"), not
+         * the wrapper ("timeout") -- otherwise every report/log file
+         * would be suffixed "_timeout" instead of "_clang", and the
+         * dg-option filtering below would treat "timeout" as the
+         * (unknown) compiler instead of "clang". */
+        if (streq(rb, "timeout") && rccflags && *rccflags) {
+            char *copy = strdup(rccflags);
+            char *sv = NULL;
+            char *tok = strtok_r(copy, " ", &sv);
+            while (tok && tok[0] == '-') tok = strtok_r(NULL, " ", &sv);
+            if (tok) tok = strtok_r(NULL, " ", &sv); /* skip the duration itself */
+            if (tok) rb = tok;
+        }
         if (!contains(rb, "rcc")) {
             static char name_buf[256];
             if (contains(rb, "cake-cc"))
