@@ -3663,7 +3663,17 @@ static bool eval_const_expr_impl(Node *node, long long *val) {
         // genuine address relocation. Found via njs's
         // "(uintptr_t) &(njs_webcrypto_algorithm_t){...}": the anon
         // struct compound literal silently "folded" to address 0.
-        if (node->var && node->var->is_constexpr && node->var->has_init &&
+        // A plain (non-`const`) global with a literal initializer is NOT
+        // a compile-time constant just because it starts one -- it's an
+        // ordinary mutable object (see the matching ND_MEMBER case's
+        // comment for the concrete bash bug this guards against).
+        // Require real const-qualification (ty_const) for a non-local
+        // var, or an explicit constexpr, matching real GCC/Clang's
+        // extension of accepting `const int j = i;` for an already-
+        // initialized `const int i` (GCC PR99577: ISO C doesn't require
+        // this, but every mainstream compiler does it).
+        if (node->var && ((node->var->is_constexpr) ||
+            (!node->var->is_local && ty_const(node->var->ty))) && node->var->has_init &&
             (!node->ty || (node->ty->kind != TY_STRUCT && node->ty->kind != TY_UNION && node->ty->kind != TY_ARRAY))) {
             *val = node->var->init_val;
             return true;
@@ -4604,7 +4614,7 @@ static Type *type_suffix(Token **rest, Token *tok, Type *ty, char *decl_name) {
 // (handled in postfix) and, unlike arrays, are first-class by-value values.
 // align is the natural vector alignment (== total size).
 static Type *make_vector_type(Type *elem, int total_size) {
-    if (!elem || elem->size <= 0 || (!is_integer(elem) && !is_flonum(elem)))
+    if (!elem || elem->size <= 0 || (!is_integer(elem) && !is_flonum(elem) && elem->kind != TY_PTR))
         error("vector_size applied to non-scalar type");
     if (total_size <= 0 || total_size % (int)elem->size != 0)
         error("vector_size %d is not a multiple of element size %d", total_size, (int)elem->size);
@@ -4843,7 +4853,16 @@ static Type *enum_specifier(Token **rest, Token *tok) {
     // C23: attributes allowed between enum keyword and tag name
     bool c23_tag_attrs = equalc(tok, "[") && tok->next &&
         equalc(tok->next, "[") && tok->ptr + tok->len == tok->next->ptr;
-    tok = read_type_attrs(tok, NULL, NULL);
+    // GCC also honors `packed` here (between `enum` and the tag name,
+    // e.g. `enum __attribute__((packed)) E { ... };`) -- verified
+    // against real GCC: distinct from the C23 `[[...]]` attribute-list
+    // position checked above, this is the classic GNU
+    // `__attribute__((...))` spelling and narrows the underlying type
+    // exactly like the trailing `enum { ... } __attribute__((packed))`
+    // form below (see `is_packed` at the end of this function).
+    VarAttr leading_attr = {0};
+    tok = read_type_attrs(tok, NULL, &leading_attr);
+    bool leading_packed = leading_attr.is_packed;
     char *tag_name = NULL;
     if (tok->kind == TK_IDENT) {
         tag_name = tok->name;
@@ -5047,7 +5066,7 @@ static Type *enum_specifier(Token **rest, Token *tok) {
     // instead of the C-standard "at least int". Peek past '}' for it.
     VarAttr trailing_attr = {0};
     Token *after_attrs = read_type_attrs(tok->next, NULL, &trailing_attr);
-    bool is_packed = trailing_attr.is_packed;
+    bool is_packed = trailing_attr.is_packed || leading_packed;
     *rest = after_attrs;
     // C23: with a fixed underlying type, the enum uses exactly that type;
     // otherwise choose the narrowest integer type >= int that fits all
@@ -12942,7 +12961,17 @@ static Node *unary(Token **rest, Token *tok) {
     check_type(val); \
     if (ptr->ty->kind == TY_PTR || ptr->ty->kind == TY_ARRAY) { \
         Type *base = ptr->ty->base; \
-        if (!base || base->kind == TY_PTR || base->size == 0 || base->size > 8 || (base->size & (base->size - 1))) \
+        /* GCC allows atomic_fetch_add/sub (ops 0/1) on an atomic pointer
+         * object with ordinary pointer-arithmetic scaling by the
+         * pointee's pointee size (C11 7.17.7.5); only bitwise ops
+         * (or/xor/and/nand) require a genuine integer target. A pointer
+         * base only qualifies when the pointer itself is atomic-qualified
+         * (`int *_Atomic p`) -- a plain pointer to an atomic pointee
+         * (`_Atomic int *p`) is not an atomic pointer object at all. */ \
+        bool atomic_ptr_base = base && base->kind == TY_PTR && ty_atomic(base); \
+        if (!base || (atomic_ptr_base && (op_val) != 0 && (op_val) != 1) || \
+            (base->kind == TY_PTR && !atomic_ptr_base) || \
+            (base->kind != TY_PTR && (base->size == 0 || base->size > 8 || (base->size & (base->size - 1))))) \
             error_tok_simple(start, "integral or integer-sized pointer target type expected"); \
         else if (ty_const(base)) \
             warn_tok(start, "assignment of read-only location"); \

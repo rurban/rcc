@@ -14984,6 +14984,32 @@ VReg gen(Node *node) {
                 sign_extend_to(r_val, node->rhs->ty->size, sz);
         }
         int op = node->atomic_fetch_op;
+        // GCC pointer-scaled atomic fetch_add/sub (C11 7.17.7.5): the
+        // underlying atomic object is itself a pointer type -- the
+        // parser only allows this for op 0/1 (see
+        // ATOMIC_FETCH_OP_HELPER) -- scale the operand by the
+        // pointee's own pointee size first, exactly like ordinary
+        // `ptr += n` pointer arithmetic. node->lhs is the address
+        // expression (&p); ->ty->base is p's own (pointer) type.
+        if ((op == 0 || op == 1) && node->lhs->ty && node->lhs->ty->base &&
+            node->lhs->ty->base->kind == TY_PTR && node->lhs->ty->base->base) {
+            int scale = node->lhs->ty->base->base->size;
+            if (scale > 1) {
+                if ((scale & (scale - 1)) == 0) {
+                    int shift = 0, t = scale;
+                    while (t > 1) {
+                        shift++;
+                        t >>= 1;
+                    }
+                    asm_shl_imm(cg_sec, r_val, sz, (uint8_t)shift);
+                } else {
+                    VReg r_scale = alloc_reg();
+                    asm_mov_imm(cg_sec, r_scale, sz, (int64_t)scale);
+                    asm_mul_reg_reg(cg_sec, r_val, r_scale, sz);
+                    free_reg(r_scale);
+                }
+            }
+        }
         bool is_store = node->atomic_is_store;
 #ifdef ARCH_ARM64
         // The old (pre-op) value must survive from LDXR through STXR for
