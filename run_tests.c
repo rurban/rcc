@@ -2178,6 +2178,34 @@ static const char *rcc, *rccflags, *TEST_DIR, *REPORT_FILE, *SCRIPT_DIR;
  * is given (see main()); disabled by an explicit binary/runner arg, by
  * "compiler flags" args (e.g. "ccc -O2"), and for cross-compile targets. */
 static bool use_rcc_lib;
+
+/* rccflags may be a multi-word "-O2 -Wall"-style string when the
+ * compiler and its flags were given as one shell-quoted argument (see
+ * the ' ' split above). proc_run()/posix_spawn() take argv directly
+ * with no shell involved, so passing it as a single argv slot would
+ * hand the compiler one literal (space-containing) argument instead of
+ * separate flags. Split on spaces into consecutive argv slots instead. */
+static int append_rccflags(char **ca, int ai, int max) {
+    if (!rccflags || !*rccflags) return ai;
+    char *copy = strdup(rccflags);
+    char *sv = NULL;
+    for (char *tok = strtok_r(copy, " ", &sv); tok && ai < max; tok = strtok_r(NULL, " ", &sv))
+        ca[ai++] = tok;
+    return ai;
+}
+
+/* Same, but each token is its own strdup'd allocation so a caller that
+ * frees individual argv slots (unit_compile_argv(), called once per
+ * unit test rather than once per process) can free them precisely. */
+static int append_rccflags_dup(char **ca, int ai, int max) {
+    if (!rccflags || !*rccflags) return ai;
+    char *copy = strdup(rccflags);
+    char *sv = NULL;
+    for (char *tok = strtok_r(copy, " ", &sv); tok && ai < max; tok = strtok_r(NULL, " ", &sv))
+        ca[ai++] = strdup(tok);
+    free(copy);
+    return ai;
+}
 #define MAX_ONLY_TESTS 64
 static const char *only_tests[MAX_ONLY_TESTS];
 static int only_test_count;
@@ -2405,10 +2433,10 @@ static void run_one_test(const char *src_path, const char *base,
         char **dt = extract_dt_tests(src_path);
         if (dt) {
             for (char **tn = dt; *tn; tn++) {
-                char *ca[16];
+                char *ca[20];
                 int ai = 0;
                 ca[ai++] = (char *)rcc;
-                ca[ai++] = (char *)rccflags;
+                ai = append_rccflags(ca, ai, ai + 4);
                 char df[128];
                 snprintf(df, sizeof(df), "-D%s", *tn);
                 ca[ai++] = df;
@@ -2527,10 +2555,10 @@ static void run_one_test(const char *src_path, const char *base,
         const char *tests[] = {"test_128_return", "test_128_exit", NULL};
         int exp_rc[] = {1, 2};
         for (int t = 0; tests[t]; t++) {
-            char *ca[8];
+            char *ca[12];
             int ai = 0;
             ca[ai++] = (char *)rcc;
-            ca[ai++] = (char *)rccflags;
+            ai = append_rccflags(ca, ai, ai + 4);
             char df[64];
             snprintf(df, sizeof(df), "-D%s", tests[t]);
             ca[ai++] = df;
@@ -2592,10 +2620,10 @@ static void run_one_test(const char *src_path, const char *base,
 
     /* normal test: compile */
     {
-        char *ca[16];
+        char *ca[20];
         int ai = 0;
         ca[ai++] = (char *)rcc;
-        ca[ai++] = (char *)rccflags;
+        ai = append_rccflags(ca, ai, ai + 4);
         ca[ai++] = "-o";
         ca[ai++] = tmp_exe;
         if (p_src && *p_src) {
@@ -2859,10 +2887,10 @@ static void compile_and_exec(const char *src_path, const char *base,
         char **dt = extract_dt_tests(src_path);
         if (dt) {
             for (char **tn = dt; *tn; tn++) {
-                char *ca[16];
+                char *ca[20];
                 int ai = 0;
                 ca[ai++] = (char *)rcc;
-                ca[ai++] = (char *)rccflags;
+                ai = append_rccflags(ca, ai, ai + 4);
                 char df[128];
                 snprintf(df, sizeof(df), "-D%s", *tn);
                 ca[ai++] = df;
@@ -2934,10 +2962,10 @@ static void compile_and_exec(const char *src_path, const char *base,
         const char *tests[] = {"test_128_return", "test_128_exit", NULL};
         int exp_rc[] = {1, 2};
         for (int t = 0; tests[t]; t++) {
-            char *ca[8];
+            char *ca[12];
             int ai = 0;
             ca[ai++] = (char *)rcc;
-            ca[ai++] = (char *)rccflags;
+            ai = append_rccflags(ca, ai, ai + 4);
             char df[64];
             snprintf(df, sizeof(df), "-D%s", tests[t]);
             ca[ai++] = df;
@@ -2983,10 +3011,10 @@ static void compile_and_exec(const char *src_path, const char *base,
             compile_cwd = TEST_DIR;
         }
 
-        char *ca[16];
+        char *ca[20];
         int ai = 0;
         ca[ai++] = (char *)rcc;
-        ca[ai++] = (char *)rccflags;
+        ai = append_rccflags(ca, ai, ai + 4);
         ca[ai++] = "-o";
         ca[ai++] = r->tmp_exe;
         if (p_src && *p_src) {
@@ -3274,24 +3302,32 @@ static bool is_todo_test(const char *base) {
 
 /* ── unit: parallel compile+exec ─────────────────────────────────── */
 
-/* Build the unit-test compile argv: rcc, rccflags, -o tmp, src, then each
- * whitespace-separated token of ldflags (e.g. " -pthread" -> "-pthread").
- * Each token is strdup'd (strtok_r slices one buffer, but the caller frees
- * argv[i] individually), so the parse buffer is released here. Returns a
+/* Build the unit-test compile argv: rcc, (split) rccflags, -o tmp, src,
+ * then each whitespace-separated token of ldflags (e.g. " -pthread" ->
+ * "-pthread"). Every rccflags/ldflags token is individually strdup'd so
+ * the caller can free argv[i] precisely; *rf_count_out receives the
+ * number of rccflags tokens appended (starting right after argv[0]) and
+ * *lf_start_out the index where the ldflags tokens begin, so the caller
+ * can free exactly those two (possibly empty) ranges without touching
+ * the borrowed rcc/"-o"/tmp/src_path slots between them. Returns a
  * NULL-terminated array the caller must free. */
-static char **unit_compile_argv(char *tmp, const char *src_path, const char *ldflags) {
-    char **ca = calloc(16, sizeof(char *));
+static char **unit_compile_argv(char *tmp, const char *src_path, const char *ldflags,
+                                int *rf_count_out, int *lf_start_out) {
+    char **ca = calloc(20, sizeof(char *));
     int ai = 0;
     ca[ai++] = (char *)rcc;
-    ca[ai++] = (char *)rccflags;
+    int rf_before = ai;
+    ai = append_rccflags_dup(ca, ai, ai + 4);
+    if (rf_count_out) *rf_count_out = ai - rf_before;
     ca[ai++] = (char *)"-o";
     ca[ai++] = tmp;
     ca[ai++] = (char *)src_path;
+    if (lf_start_out) *lf_start_out = ai;
     if (ldflags && *ldflags) {
         char *lf = strdup(ldflags);
         char *sv = NULL;
         char *tok = strtok_r(lf, " ", &sv);
-        while (tok && ai < 15) {
+        while (tok && ai < 19) {
             ca[ai++] = strdup(tok);
             tok = strtok_r(NULL, " ", &sv);
         }
@@ -3312,7 +3348,8 @@ static void unit_compile_exec(const char *src_path, const char *base,
 #endif
     /* test_err*: expect compile failure */
     if (is_err_test(base)) {
-        char **ca = unit_compile_argv(r->tmp_exe, src_path, ldflags);
+        int rf_count = 0, lf_start = 0;
+        char **ca = unit_compile_argv(r->tmp_exe, src_path, ldflags, &rf_count, &lf_start);
         r->compile_cmdline = cmdline_from_argv(ca);
         ProcResult cr = proc_run(ca, scaled(30), 1);
         r->exit_code = cr.exit_code;
@@ -3320,14 +3357,15 @@ static void unit_compile_exec(const char *src_path, const char *base,
         cr.out = NULL;
         proc_free(&cr);
         for (int i = 0; ca[i]; i++)
-            if (i >= 5) free(ca[i]);
+            if ((i >= 1 && i < 1 + rf_count) || i >= lf_start) free(ca[i]);
         free(ca);
         return;
     }
 
     /* normal compile */
     {
-        char **ca = unit_compile_argv(r->tmp_exe, src_path, ldflags);
+        int rf_count = 0, lf_start = 0;
+        char **ca = unit_compile_argv(r->tmp_exe, src_path, ldflags, &rf_count, &lf_start);
         r->compile_cmdline = cmdline_from_argv(ca);
         ProcResult cr = proc_run(ca, scaled(30), 1);
         if (cr.exit_code != 0 || access(r->tmp_exe, X_OK) != 0) {
@@ -3336,13 +3374,13 @@ static void unit_compile_exec(const char *src_path, const char *base,
             cr.out = NULL;
             proc_free(&cr);
             for (int i = 0; ca[i]; i++)
-                if (i >= 5) free(ca[i]);
+                if ((i >= 1 && i < 1 + rf_count) || i >= lf_start) free(ca[i]);
             free(ca);
             return;
         }
         proc_free(&cr);
         for (int i = 0; ca[i]; i++)
-            if (i >= 5) free(ca[i]);
+            if ((i >= 1 && i < 1 + rf_count) || i >= lf_start) free(ca[i]);
         free(ca);
     }
 
@@ -3668,7 +3706,14 @@ static int run_unit_tests(void) {
 #else
                 snprintf(tmp, sizeof(tmp), "%s/rcc_test_%d", get_tmpdir(), getpid());
 #endif
-                char *ca[] = {(char *)rcc, (char *)rccflags, "-o", tmp, src_path, NULL};
+                char *ca[10];
+                int ai = 0;
+                ca[ai++] = (char *)rcc;
+                ai = append_rccflags(ca, ai, ai + 4);
+                ca[ai++] = "-o";
+                ca[ai++] = tmp;
+                ca[ai++] = src_path;
+                ca[ai] = NULL;
                 compile_cmdline = cmdline_from_argv(ca);
                 ProcResult cr = proc_run(ca, scaled(30), 1);
                 if (cr.exit_code == 0) {
@@ -3706,11 +3751,12 @@ static int run_unit_tests(void) {
 #endif
             {
                 const char *ldflags = extra_ldflags(base, src_path);
-                char **ca = unit_compile_argv(tmp, src_path, ldflags);
+                int rf_count = 0, lf_start = 0;
+                char **ca = unit_compile_argv(tmp, src_path, ldflags, &rf_count, &lf_start);
                 compile_cmdline = cmdline_from_argv(ca);
                 ProcResult cr = proc_run(ca, scaled(30), 1);
                 for (int i = 0; ca[i]; i++)
-                    if (i >= 5) free(ca[i]);
+                    if ((i >= 1 && i < 1 + rf_count) || i >= lf_start) free(ca[i]);
                 free(ca);
                 if (cr.exit_code != 0 || access(tmp, X_OK) != 0) {
                     if (is_todo_test(base)) {
@@ -4520,7 +4566,7 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
         char *ca[48];
         int ai = 0;
         ca[ai++] = (char *)rcc;
-        ca[ai++] = (char *)rccflags;
+        ai = append_rccflags(ca, ai, ai + 4);
         // Parse dg-options and dg-additional-options from test file.
         if (content && ai < 30) {
             const char *patterns[] = {"dg-additional-options \"", "dg-options \"", NULL};
@@ -4820,7 +4866,7 @@ static void run_torture_test(const char *src, bool summary_only) {
     char *ca[32];
     int ai = 0;
     ca[ai++] = (char *)rcc;
-    ca[ai++] = (char *)rccflags;
+    ai = append_rccflags(ca, ai, ai + 4);
     // Parse dg-options and dg-additional-options from test file.
     // Process dg-additional-options first (longer string) to avoid
     // dg-options matching it as a substring.
@@ -5762,7 +5808,15 @@ static int run_ctest_one(const char *ctest_dir, const char *test_name) {
     snprintf(bin_path, sizeof(bin_path), "%s/rcc_ctest_%d", get_tmpdir(), getpid());
 #endif
 
-    char *ca[] = {(char *)rcc, (char *)rccflags, "-lm", "-o", bin_path, src_path, NULL};
+    char *ca[10];
+    int cai = 0;
+    ca[cai++] = (char *)rcc;
+    cai = append_rccflags(ca, cai, cai + 4);
+    ca[cai++] = "-lm";
+    ca[cai++] = "-o";
+    ca[cai++] = bin_path;
+    ca[cai++] = src_path;
+    ca[cai] = NULL;
     char *compile_cmdline = cmdline_from_argv(ca);
     ProcResult cr = proc_run(ca, scaled(30), 1);
     int fail = 0;
@@ -5826,7 +5880,15 @@ static void ctest_compile_exec(const char *src_path, const char *name,
         }
     }
 #endif
-    char *ca[] = {(char *)rcc, (char *)rccflags, "-lm", "-o", r->tmp_exe, (char *)src_path, NULL};
+    char *ca[10];
+    int cai = 0;
+    ca[cai++] = (char *)rcc;
+    cai = append_rccflags(ca, cai, cai + 4);
+    ca[cai++] = "-lm";
+    ca[cai++] = "-o";
+    ca[cai++] = r->tmp_exe;
+    ca[cai++] = (char *)src_path;
+    ca[cai] = NULL;
     r->compile_cmdline = cmdline_from_argv(ca);
     ProcResult cr = proc_run(ca, scaled(30), 1);
     if (cr.exit_code != 0 || access(r->tmp_exe, X_OK) != 0) {
@@ -6046,7 +6108,15 @@ static int run_ctest_suite(void) {
                 snprintf(bin_path, sizeof(bin_path), "%s/rcc_ctest_%d_%s",
                          get_tmpdir(), getpid(), name);
 #endif
-                char *ca[] = {(char *)rcc, (char *)rccflags, "-lm", "-o", bin_path, (char *)*f, NULL};
+                char *ca[10];
+                int cai = 0;
+                ca[cai++] = (char *)rcc;
+                cai = append_rccflags(ca, cai, cai + 4);
+                ca[cai++] = "-lm";
+                ca[cai++] = "-o";
+                ca[cai++] = bin_path;
+                ca[cai++] = (char *)*f;
+                ca[cai] = NULL;
                 ProcResult cr = proc_run(ca, scaled(30), 1);
                 bool test_pass = false;
                 if (cr.exit_code != 0 || access(bin_path, X_OK) != 0) {
