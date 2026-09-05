@@ -10,8 +10,8 @@ int test_fn()
 }
 
 __attribute__((target("sse2")))
-int test_fn()
-{ /* { dg-error "redefinition" } */
+int test_fn() /* { dg-error "redefinition" } */
+{
     return 0;
 }
 int main()
