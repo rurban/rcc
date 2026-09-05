@@ -96,8 +96,30 @@ static int use_real_alloca(void) {
 #endif
 }
 
+/* GCC PR92261 "syntax errors on __has_builtin (__has_builtin)": unlike
+ * real GCC (which only supports __has_builtin inside #if/#elif), Clang
+ * treats it as a general preprocessor construct usable in ordinary
+ * expression context too. rcc's #if-context handling deferred the outer
+ * `__has_builtin` token unevaluated with nothing downstream able to
+ * parse it, AND separately let the raw argument token fall through to
+ * plain object-macro expansion (`#define __has_builtin 1`) before
+ * anyone checked it -- corrupting the self-referential case in
+ * particular. Verified against real clang to produce identical values:
+ * __has_builtin(__has_builtin) is 0 (the operator itself isn't a
+ * builtin function); __has_builtin(__builtin_memcpy) is 1. */
+static int test_outside_if(void) {
+    int self = __has_builtin(__has_builtin);
+    int direct = __has_builtin(__builtin_memcpy);
+    int fake = __has_builtin(__builtin_totally_fake_name_xyz123);
+    if (self != 0) return 1;
+    if (direct != 1) return 2;
+    if (fake != 0) return 3;
+    return 0;
+}
+
 int main(void) {
     if (probe() != 0) return 2;
     if (use_real_alloca() != 0) return 3;
+    if (test_outside_if() != 0) return 4;
     return 0;
 }

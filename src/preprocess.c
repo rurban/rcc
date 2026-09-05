@@ -1428,6 +1428,7 @@ static Token *xp_next(void) {
 }
 
 static void expand_token(Token *t);
+static int64_t has_builtin_val(const char *name);
 static void drain_frames(void) {
     for (;;) {
         Token *t = ungot_pull();
@@ -1972,6 +1973,28 @@ static void expand_token(Token *t) {
     if (name == kw_has_include || name == kw_has_include_next || name == kw_has_c_attribute || name == kw_has_builtin) {
         Token *nx = xp_next();
         if (ptok(nx, "(")) {
+            // __has_builtin(NAME) is a Clang extension usable anywhere
+            // tokens are scanned, not only inside #if/#elif -- GCC only
+            // supports the #if form (see PR92261, "syntax errors on
+            // __has_builtin (__has_builtin)"). Outside #if there was no
+            // downstream consumer at all for the deferred tokens below:
+            // they leaked through to the C parser as a bogus call
+            // expression, AND the raw argument token got ordinary macro
+            // expansion first -- corrupting the exact self-referential
+            // `__has_builtin(__has_builtin)` case via the plain
+            // `#define __has_builtin 1` feature-test alias below (its
+            // own name isn't immediately followed by "(" from the
+            // argument position, so it took the ordinary macro path
+            // instead of this deferral). Evaluate and substitute a
+            // numeric literal right here instead, matching Clang.
+            if (name == kw_has_builtin && !xp_in_cond) {
+                Token *arg = xp_next();
+                char *argname = (arg && arg->kind == TK_IDENT) ? arg->name : "";
+                Token *close = ptok(arg, ")") ? arg : xp_next();
+                while (close && !ptok(close, ")")) close = xp_next();
+                out_append(syn_num(has_builtin_val(argname), t));
+                return;
+            }
             xp_unget(nx);
             out_append(t);
             return;
