@@ -4403,51 +4403,62 @@ static void tort_add_error(char **list, const char *name) {
     strcat(*list, name);
 }
 
-/* dg-error line check (GH #34): every source line carrying a dg-error
- * directive must be reported as an error line by the compiler. Only line
- * numbers are compared ("file.c:<line>:" on an output line mentioning
- * "error"), not the error messages. Extra errors are tolerated, as are
- * directives gated by target/xfail selectors (may not apply here). */
+/* dg-error/dg-warning line check (GH #34): every source line carrying a
+ * dg-error or dg-warning directive must be reported as an error/warning
+ * line by the compiler. Only line numbers are compared ("file.c:<line>:"
+ * on an output line mentioning "error" or "warning"), not the messages.
+ * Extra diagnostics are tolerated, as are directives gated by target/
+ * xfail selectors (may not apply here). A compiler crash ("internal
+ * compiler error") is never an acceptable stand-in for an expected
+ * diagnostic, no matter what line numbers happen to precede it in the
+ * output -- reject outright. */
 static bool dg_error_lines_reported(const char *content, const char *out) {
     if (!content)
         return true;
+    if (out && strstr(out, "internal compiler error"))
+        return false;
     int lineno = 1;
     for (const char *p = content; *p; lineno++) {
         const char *nl = strchr(p, '\n');
         size_t len = nl ? (size_t)(nl - p) : strlen(p);
-        bool has_dg_error = false;
-        for (size_t i = 0; i + 8 <= len; i++) {
-            if (memcmp(p + i, "dg-error", 8) == 0) {
-                has_dg_error = true;
+        bool has_directive = false;
+        for (size_t i = 0; i < len; i++) {
+            if (i + 8 <= len && memcmp(p + i, "dg-error", 8) == 0) {
+                has_directive = true;
+                break;
+            }
+            if (i + 10 <= len && memcmp(p + i, "dg-warning", 10) == 0) {
+                has_directive = true;
                 break;
             }
         }
         /* target/xfail selectors and relative line refs (".-1") make the
          * directive conditional or point elsewhere: don't require those */
-        if (has_dg_error) {
+        if (has_directive) {
             for (size_t i = 0; i + 6 <= len; i++) {
                 if (memcmp(p + i, "target", 6) == 0 ||
                     memcmp(p + i, "xfail", 5) == 0) {
-                    has_dg_error = false;
+                    has_directive = false;
                     break;
                 }
             }
         }
-        if (has_dg_error) {
-            /* scan each output line mentioning "error" for its first
-             * ":<digits>:" line reference */
+        if (has_directive) {
+            /* scan each output line mentioning "error" or "warning" for
+             * its first ":<digits>:" line reference */
             bool found = false;
             for (const char *o = out; o && *o && !found;) {
                 const char *onl = strchr(o, '\n');
                 size_t olen = onl ? (size_t)(onl - o) : strlen(o);
-                bool has_error = false;
+                bool has_diag = false;
                 for (size_t i = 0; i + 5 <= olen; i++) {
-                    if (memcmp(o + i, "error", 5) == 0) {
-                        has_error = true;
+                    if (memcmp(o + i, "error", 5) == 0 ||
+                        (i + 7 <= olen && memcmp(o + i, "warning", 7) == 0)) {
+                        has_diag = true;
                         break;
                     }
                 }
-                if (has_error) {
+                if (has_diag) {
                     for (const char *c = o; c + 1 < o + olen; c++) {
                         if (*c == ':' && isdigit((unsigned char)c[1])) {
                             char *end = NULL;

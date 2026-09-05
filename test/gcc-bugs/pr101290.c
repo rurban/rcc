@@ -38,33 +38,33 @@ typedef struct {
                                                     struct {
                                                       struct {
                                                         unsigned b, c, d, e
-                                                      } b, c, d, e, f
-                                                    } b, c, d, e, f
-                                                  } b, c, d, e, f
-                                                } b, c, d, e, f
-                                              } b, c, d, e, f
-                                            } b, c, d, e, f
-                                          } b, c, d, e, f
-                                        } b, c, d, e, f
-                                      } b, c, d, e, f
-                                    } b, c, d, e, f
-                                  } b, c, d, e, f
-                                } b, c, d, e, f
-                              } b, c, d, e, f
-                            } b, c, d, e, f
-                          } b, c, d, e, f
-                        } b, c, d, e, f
-                      } b, c, d, e, f
-                    } b, c, d, e, f
-                  } b, c, d, e, f
-                } b, c, d, e, f
-              } b, c, d, e, f
-            } b, c, d, e, f
-          } b, c, d, e, f
-        } b, c, d, e, f
-      } b, c, d, e, f
-    } b, c, d, e, f
-  } b, c, f
+                                                          } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                                                    } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                                                  } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                                                } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                                              } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                                            } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                                          } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                                        } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                                      } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                                    } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                                  } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                                } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                              } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                            } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                          } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                        } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                      } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                    } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                  } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+                } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+              } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+            } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+          } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+        } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+      } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+    } b, c, d, e, f /* { dg-warning "no semicolon at end of struct or union" } */
+  } b, c, f /* { dg-warning "no semicolon at end of struct or union" } */
 } * g;
 int h;
 struct i k;
@@ -77,5 +77,3 @@ n() {
   k.j = &h;
   l(&k);
 }
-
-

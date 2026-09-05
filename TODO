@@ -10,3 +10,8 @@
 - optional QBE backend for -O2? not for windows.
 
 - SSA conversion for -O2?
+
+- missing gcc diagnostics (torture dg-warning gaps, deferred):
+  integer overflow in constant expression (c11-static-assert-3.c:5),
+  useless type qualifier on const struct/union decl (c23-attr-syntax-3.c:45,48),
+  braces around scalar initializer in constexpr compound literals (c23-constexpr-1.c).

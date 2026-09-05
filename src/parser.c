@@ -5892,7 +5892,14 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             tok = tok->next;
         }
 
-        tok = skip(tok, ";");
+        // GNU extension (gcc: "warning: no semicolon at end of struct or
+        // union"): the trailing ';' after a struct/union's last member
+        // declarator-list may be omitted when '}' unambiguously
+        // terminates it instead of erroring outright.
+        if (equalc(tok, "}"))
+            warn_tok(tok, "no semicolon at end of struct or union");
+        else
+            tok = skip(tok, ";");
     }
 
     tok = skip(tok, "}");

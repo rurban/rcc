@@ -899,7 +899,7 @@
   c11-qual-1                          PASS (compile only)
   c11-static-assert-1                 PASS (compile only)
   c11-static-assert-2                 PASS (expected error)
-  c11-static-assert-3                 PASS (expected error)
+  c11-static-assert-3                 FAIL (dg-error lines)
   c11-static-assert-4                 PASS (expected error)
   c11-static-assert-5                 PASS (compile only)
   c11-static-assert-6                 PASS (compile only)
@@ -965,7 +965,7 @@
   c23-attr-reproducible-5             PASS
   c23-attr-syntax-1                   PASS (compile only)
   c23-attr-syntax-2                   PASS (compile only)
-  c23-attr-syntax-3                   PASS (expected error)
+  c23-attr-syntax-3                   FAIL (dg-error lines)
   c23-attr-syntax-4                   PASS (compile only)
   c23-attr-syntax-5                   PASS (compile only)
   c23-attr-syntax-6                   PASS (expected error)
@@ -1004,7 +1004,7 @@
   c23-complit-7                       PASS (compile only)
   c23-complit-8                       PASS (compile only)
   c23-concat-1                        PASS (expected error)
-  c23-constexpr-1                     PASS (expected error)
+  c23-constexpr-1                     FAIL (dg-error lines)
   c23-constexpr-2a                    PASS
   c23-constexpr-2b                    PASS (compile only)
   c23-constexpr-3                     TODO (dg-error lines)
@@ -1770,7 +1770,7 @@
   pr80153                             PASS
   pr80421                             PASS
   pr80501                             PASS
-  pr80692                             PASS
+  pr80692                             SKIP (missing include)
   pr81281                             PASS
   pr81423                             PASS
   pr81503                             PASS
@@ -3964,6 +3964,8 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3605/3609 passed (100%), 0 failed, 354 skipped, 4 todo.
+Torture: 3601/3608 passed (100%), 3 failed (0 compile/3 error/0 runtime), 355 skipped, 4 todo.
 
-Dg-error tests: 36/36 passed (caught expected error), 0 failed.
+Compile failures: c11-static-assert-3 c23-attr-syntax-3 c23-constexpr-1
+
+Dg-error tests: 33/36 passed (caught expected error), 3 failed.

@@ -10,6 +10,6 @@ void foo(char a) {
     int d[map()];
     char *e;
   };
-  bar((union C) & a);
+  bar((union C) & a); /* { dg-error "lvalue required as left operand of assignment" } */
 }
 
