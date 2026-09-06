@@ -15610,15 +15610,28 @@ Program *parse(Token *tok) {
             if (!v) error_tok(st, "%s", msg);
             continue;
         }
+        Token *decl_start = tok;
         VarAttr attr = {};
         Type *base = declspec(&tok, tok, &attr);
 
         if (equalc(tok, ";")) {
-            // C11 6.7.4p2: _Noreturn requires a function declarator
-            if (attr.has_alignas)
-                error_tok(tok, "alignment specified for unnamed declaration");
-            if (attr.has_alignas)
-                error_tok(tok, "alignment specified for unnamed declaration");
+            // GCC/Clang accept `_Alignas(int) char;` etc. as a plain empty
+            // declaration (just the generic "useless type name" warning,
+            // not specific to alignas) -- UNLESS the base type is a bare
+            // struct/union/enum tag reference with no body given right
+            // here: then alignas has nothing to attach to (it doesn't
+            // redeclare the tag), which GCC/Clang do reject.
+            if (attr.has_alignas && !base->is_enum_fixed &&
+                (base->kind == TY_STRUCT || base->kind == TY_UNION || base->is_enum)) {
+                bool has_body_here = false;
+                for (Token *t = decl_start; t != tok; t = t->next)
+                    if (equalc(t, "{")) {
+                        has_body_here = true;
+                        break;
+                    }
+                if (!has_body_here)
+                    error_tok(tok, "empty declaration with '_Alignas' does not redeclare tag");
+            }
             if (attr.is_noreturn_std)
                 error_tok(tok, "'_Noreturn' in empty declaration");
             if (attr.is_auto || attr.is_auto_type) {
