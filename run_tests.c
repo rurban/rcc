@@ -1996,6 +1996,7 @@ typedef struct {
     bool exec_timed_out;
     bool expect_compile_error; /* dg-error test: compile failure is success */
     bool dg_error_lines_ok; /* dg-error lines all reported by the compiler */
+    bool unexpected_success; /* dg-error test compiled clean when it should have errored */
     // Compliance-specific: gcc execution
     int gcc_exec_exit;
     char *gcc_exec_out;
@@ -4437,6 +4438,13 @@ static int g_tort_todo;
 static int g_tort_pass, g_tort_fail_compile, g_tort_fail_runtime, g_tort_skip, g_tort_total;
 static int g_tort_error_pass, g_tort_error_fail;
 static char *g_tort_compile_errors, *g_tort_runtime_errors;
+/* Strict dg-error/dg-warning validation (an annotated file that compiles
+ * clean is a FAIL, not a silent PASS) is scoped to the informational
+ * gcc-bugs suite only. Enabling it for the gating torture suite exposed
+ * ~170 pre-existing rcc diagnostic gaps (real, but each needs individual
+ * triage -- well beyond a single harness fix); torture keeps its prior,
+ * more lenient behavior until those are worked through separately. */
+static bool g_strict_dg_error;
 
 static void tort_add_error(char **list, const char *name) {
     if (!*list) {
@@ -4659,6 +4667,8 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
         proc_free(&cr);
     }
     r->did_compile = true;
+    if (g_strict_dg_error && (contains(content, "dg-error") || contains(content, "dg-warning")))
+        r->unexpected_success = true;
 
     /* compile-only or preprocess-only: no execution needed */
     {
@@ -4791,6 +4801,18 @@ static void tort_evaluate_report(const char *name, ParallelResult *r, bool summa
     free(r->compile_out);
     r->compile_out = NULL;
 
+    if (r->unexpected_success) {
+        if (is_torture_todo(name)) {
+            g_tort_todo++;
+            if (!summary_only) print_result(name, COL_YELLOW, "TODO (dg-error lines)");
+        } else {
+            g_tort_error_fail++;
+            tort_add_error(&g_tort_compile_errors, name);
+            if (!summary_only) print_result(name, COL_RED, "FAIL (expected error, compiled clean)");
+        }
+        unlink(r->tmp_exe);
+        return;
+    }
     if (!r->did_exec) {
         g_tort_pass++;
         if (!summary_only) print_result(name, COL_GREEN, "PASS (compile only)");
@@ -4985,6 +5007,20 @@ static void run_torture_test(const char *src, bool summary_only) {
         return;
     }
     proc_free(&cr);
+    if (g_strict_dg_error && (contains(content, "dg-error") || contains(content, "dg-warning"))) {
+        if (is_torture_todo(name)) {
+            g_tort_todo++;
+            if (!summary_only) print_result(name, COL_YELLOW, "TODO (dg-error lines)");
+        } else {
+            g_tort_error_fail++;
+            tort_add_error(&g_tort_compile_errors, name);
+            if (!summary_only) print_result(name, COL_RED, "FAIL (expected error, compiled clean)");
+        }
+        vlog_test_details(name, compile_cmdline, NULL, NULL, NULL);
+        free(compile_cmdline);
+        free(content);
+        return;
+    }
 
     /* compile-only or preprocess-only: no execution needed */
     if (dgdo == DGDO_COMPILE || dgdo == DGDO_PREPROCESS) {
@@ -5051,7 +5087,9 @@ static void run_torture_test(const char *src, bool summary_only) {
     free(content);
 }
 
+
 static int run_torture_suite(bool summary_only) {
+    g_strict_dg_error = false;
     g_tort_pass = g_tort_fail_compile = g_tort_fail_runtime = g_tort_skip = g_tort_total = 0;
     g_tort_error_pass = g_tort_error_fail = g_tort_todo = 0;
     free(g_tort_compile_errors);
@@ -5253,6 +5291,7 @@ static int run_torture_suite(bool summary_only) {
 /* ── gcc-bugs: compile+exec C bug reproducers ─────────────────────── */
 
 static int run_gcc_bugs_suite(bool summary_only) {
+    g_strict_dg_error = true;
     g_tort_pass = g_tort_fail_compile = g_tort_fail_runtime = g_tort_skip = g_tort_total = 0;
     g_tort_error_pass = g_tort_error_fail = 0;
     free(g_tort_compile_errors);
