@@ -13610,6 +13610,10 @@ static Node *unary(Token **rest, Token *tok) {
             Token *t = tok->next; // '('
             int depth = 0;
             for (;;) {
+                if (t->kind == TK_EOF)
+                    break; // unbalanced parens (malformed input) -- bail out
+                // and let parse_cast_type()'s own bracket
+                // matching below report the real syntax error.
                 if (equalc(t, "(")) depth++;
                 else if (equalc(t, ")")) {
                     if (--depth == 0) {
