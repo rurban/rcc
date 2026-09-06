@@ -569,6 +569,27 @@ static void cast_funcall_args(Node *call) {
         if (t->kind == TY_PTR && t->base && t->base->kind == TY_FUNC)
             fty = t->base;
     }
+    // GCC/Clang extension gap (PR54408 "sqrt for vector types", filed
+    // 2012, never implemented by either): math.h's sqrt(double) rejects
+    // a vector argument outright, even though GCC's own vector
+    // extensions already make +,-,*,/ elementwise. rcc fills the gap
+    // for the native SSE2/NEON width (vector of 2 doubles) by
+    // redirecting to the existing __builtin_ia32_sqrtpd codegen, which
+    // is already correct on both x86-64 (SQRTPD) and ARM64 (its
+    // ARCH_ARM64 dispatch branch already handles this exact intrinsic
+    // name via NEON fsqrt) -- see codegen.c's __builtin_ia32_* dispatch
+    // and type.c's ia32_builtin_ret (return-type inference).
+    if (call->lhs && call->lhs->kind == ND_LVAR && call->lhs->var &&
+        call->lhs->var->name && !strcmp(call->lhs->var->name, "sqrt") &&
+        call->args && !call->args->next) {
+        check_type(call->args);
+        Type *at = call->args->ty;
+        if (at && at->is_vector && at->base && at->base->kind == TY_DOUBLE && at->size == 16) {
+            call->lhs = NULL;
+            call->funcname = str_intern("__builtin_ia32_sqrtpd", 22);
+            return;
+        }
+    }
     if (!fty || !fty->param_types)
         return;
     // C11 6.5.2.2p6/p7: the number of arguments must match a prototyped
@@ -3672,8 +3693,7 @@ static bool eval_const_expr_impl(Node *node, long long *val) {
         // extension of accepting `const int j = i;` for an already-
         // initialized `const int i` (GCC PR99577: ISO C doesn't require
         // this, but every mainstream compiler does it).
-        if (node->var && ((node->var->is_constexpr) ||
-            (!node->var->is_local && ty_const(node->var->ty))) && node->var->has_init &&
+        if (node->var && ((node->var->is_constexpr) || (!node->var->is_local && ty_const(node->var->ty))) && node->var->has_init &&
             (!node->ty || (node->ty->kind != TY_STRUCT && node->ty->kind != TY_UNION && node->ty->kind != TY_ARRAY))) {
             *val = node->var->init_val;
             return true;
