@@ -314,6 +314,35 @@ static inline void asm_fixup_add(SecBuf *s, size_t instr_off, const char *label,
     asm_fixup_ht_add(instr_off, label, type);
 }
 
+// Patch a forward branch (emitted with a placeholder displacement) to the
+// current position, for skips of fixed size. Same encodings as
+// asm_fixup_resolve, but no label/fixup needed: call right after emitting
+// the last skipped instruction, where a cg_def_label would have gone.
+// dry-run safe: secbuf_patch32le is a no-op there, like in asm_b_back.
+static inline void asm_patch_jmp_fwd(SecBuf *s, size_t off) {
+#ifdef ARCH_ARM64
+    uint32_t insn = *(uint32_t *)(s->data + off);
+    int64_t imm = (int64_t)((int64_t)s->len - (int64_t)off) / 4; // B: imm26, word offset from the branch
+    insn = (insn & ~0x03FFFFFFU) | (uint32_t)(imm & 0x03FFFFFFU);
+    secbuf_patch32le(s, off, insn);
+#else
+    int32_t disp = (int32_t)(s->len - (off + 5));
+    secbuf_patch32le(s, off + 1, (uint32_t)disp);
+#endif
+}
+
+static inline void asm_patch_jcc_fwd(SecBuf *s, size_t off) {
+#ifdef ARCH_ARM64
+    uint32_t insn = *(uint32_t *)(s->data + off);
+    int64_t imm = (int64_t)((int64_t)s->len - (int64_t)off) / 4; // B.cond: imm19, word offset from the branch
+    insn = (insn & ~0x00FFFFE0U) | (uint32_t)((imm & 0x7FFFF) << 5);
+    secbuf_patch32le(s, off, insn);
+#else
+    int32_t disp = (int32_t)(s->len - (off + 6));
+    secbuf_patch32le(s, off + 2, (uint32_t)disp);
+#endif
+}
+
 // Resolve pending fixups when a label is defined
 static inline void asm_fixup_resolve(SecBuf *s, const char *label, size_t target_off) {
     uint32_t h = cg_ht_hash(label);
