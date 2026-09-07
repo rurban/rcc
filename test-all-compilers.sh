@@ -86,7 +86,7 @@ make -s rcc run_tests
 # name:binary:suffix triples, in README row order. suffix is the
 # "_<compiler-basename>" run_tests appends to report filenames for
 # any binary whose basename doesn't contain "rcc" (see run_tests.c).
-ROW_NAMES="rcc gcc ccc clang tcc kefir antcc slimcc lacc scc xcc cproc cake compcert"
+ROW_NAMES="rcc gcc ccc clang tcc kefir antcc slimcc cake lacc compcert scc xcc cproc"
 bin_for() {
 	case "$1" in
 	rcc) echo "$RCC" ;;
@@ -124,7 +124,7 @@ for name in $ROW_NAMES; do
 		continue
 	fi
 	echo "=== $name ($bin) ==="
-	./run_tests "$bin" --all --parallel >"/tmp/test-all-$name.log" 2>&1 || true
+	./run_tests "$bin" --all --parallel --gcc-bugs >"/tmp/test-all-$name.log" 2>&1 || true
 	tail -3 "/tmp/test-all-$name.log"
 done
 
@@ -134,7 +134,7 @@ done
 # it's the only suite that tracks that granularity (dg-error/dg-warning
 # tests count as their own "e" bucket, separate from "c" plain compile
 # failures — catching an expected error wrong is not the same bug class).
-SUITES="tcc units compliance ctest torture"
+SUITES="tcc units compliance ctest torture gcc-bugs"
 TABLE=$(
 	printf '| Compiler | Passed | Failed | Skipped | Notes                  |\n'
 	printf '| -------- | ------ | ------ | ------- | ---------------------- |\n'
