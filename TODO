@@ -10,3 +10,8 @@
 - optional QBE backend for -O2? not for windows.
 
 - SSA conversion for -O2?
+
+- label improvements: replace forward-skip `asm_fixup_add` + `cg_def_label`
+  (loop-exit jcc/jmp to a fixed-size block) with `asm_patch_jcc_fwd` /
+  `asm_patch_jmp_fwd`. Keep objdump identical on all targets; no pre-existing
+  bugs, so any output change is a regression. Short/precise comments.

@@ -2580,7 +2580,6 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 asm_push(cg_sec, X86_RDI); // pushq %rdi
                 asm_push(cg_sec, X86_RSI); // pushq %rsi
                 asm_push(cg_sec, X86_RCX); // pushq %rcx
-                int cl = ++rcc_label_count;
                 x86_mov_rr(cg_sec, 8, X86_RDI, REG(s1_r));
                 x86_mov_rr(cg_sec, 8, X86_RSI, REG(s2_r));
                 x86_mov_rr(cg_sec, 8, X86_RCX, REG(len_r));
@@ -2591,20 +2590,14 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 x86_xor_rr(cg_sec, 4, X86_RAX, X86_RAX); // ZF=1
                 x86_rep_prefix(cg_sec);
                 x86_cmpsb(cg_sec); // repe cmpsb
-                {
-                    size_t o = asm_jcc_label(cg_sec, X86_NE);
-                    asm_fixup_add(cg_sec, o, format(".L.memcmp_diff.%d", cl), 1);
-                }
+                size_t o_diff = asm_jcc_label(cg_sec, X86_NE);
                 x86_xor_rr(cg_sec, 4, X86_RAX, X86_RAX); // xorl %eax, %eax (equal)
-                {
-                    size_t o = asm_jmp_label(cg_sec);
-                    asm_fixup_add(cg_sec, o, format(".L.memcmp_end.%d", cl), 0);
-                }
-                cg_def_label(format(".L.memcmp_diff.%d", cl));
+                size_t o_end = asm_jmp_label(cg_sec);
+                asm_patch_jcc_fwd(cg_sec, o_diff); // jne lands here (memcmp_diff)
                 x86_movzx_rm(cg_sec, 4, 1, X86_RAX, x86_mem(X86_RDI, -1)); // movsbl -1(%rdi),%eax
                 x86_movzx_rm(cg_sec, 4, 1, X86_RCX, x86_mem(X86_RSI, -1)); // movsbl -1(%rsi),%ecx
                 x86_sub_rr(cg_sec, 4, X86_RAX, X86_RCX); // subl %ecx, %eax
-                cg_def_label(format(".L.memcmp_end.%d", cl));
+                asm_patch_jmp_fwd(cg_sec, o_end); // jmp lands here (memcmp_end)
                 asm_pop(cg_sec, X86_RCX);
                 asm_pop(cg_sec, X86_RSI);
                 asm_pop(cg_sec, X86_RDI);
@@ -2658,32 +2651,23 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 cg_def_label(format(".L.strcmp_loop.%d", cl));
                 x86_movzx_rm(cg_sec, 4, 1, X86_RAX, x86_mem(X86_RDI, 0)); // movb (%rdi),%%al
                 x86_cmp_rm(cg_sec, 1, X86_RAX, x86_mem(X86_RSI, 0)); // cmpb (%rsi),%%al
-                {
-                    size_t o = asm_jcc_label(cg_sec, X86_NE);
-                    asm_fixup_add(cg_sec, o, format(".L.strcmp_diff.%d", cl), 1);
-                }
+                size_t o_diff = asm_jcc_label(cg_sec, X86_NE);
                 x86_test_rr(cg_sec, 1, X86_RAX, X86_RAX); // testb %%al,%%al
-                {
-                    size_t o = asm_jcc_label(cg_sec, X86_Z);
-                    asm_fixup_add(cg_sec, o, format(".L.strcmp_eq.%d", cl), 1);
-                }
+                size_t o_eq = asm_jcc_label(cg_sec, X86_Z);
                 x86_inc_r(cg_sec, 8, X86_RDI); // incq %rdi
                 x86_inc_r(cg_sec, 8, X86_RSI); // incq %rsi
                 {
                     size_t o = asm_jmp_label(cg_sec);
                     asm_fixup_add(cg_sec, o, format(".L.strcmp_loop.%d", cl), 0);
                 }
-                cg_def_label(format(".L.strcmp_diff.%d", cl));
+                asm_patch_jcc_fwd(cg_sec, o_diff); // jne lands here (strcmp_diff)
                 x86_movzx(cg_sec, 4, 1, X86_RAX, X86_RAX); // movzbl %%al,%eax
                 x86_movzx_rm(cg_sec, 4, 1, X86_RCX, x86_mem(X86_RSI, 0)); // movzbl (%rsi),%ecx
                 x86_sub_rr(cg_sec, 4, X86_RAX, X86_RCX); // subl %ecx,%eax
-                {
-                    size_t o = asm_jmp_label(cg_sec);
-                    asm_fixup_add(cg_sec, o, format(".L.strcmp_end.%d", cl), 0);
-                }
-                cg_def_label(format(".L.strcmp_eq.%d", cl));
+                size_t o_end = asm_jmp_label(cg_sec);
+                asm_patch_jcc_fwd(cg_sec, o_eq); // jz lands here (strcmp_eq)
                 x86_xor_rr(cg_sec, 4, X86_RAX, X86_RAX); // xorl %eax,%eax
-                cg_def_label(format(".L.strcmp_end.%d", cl));
+                asm_patch_jmp_fwd(cg_sec, o_end); // jmp lands here (strcmp_end)
                 asm_pop(cg_sec, X86_RSI); // popq %rsi
                 asm_pop(cg_sec, X86_RDI); // popq %rdi
                 free_reg(r);
@@ -2707,29 +2691,20 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 x86_movzx(cg_sec, 4, 1, X86_RAX, REG(cr)); // movzbl %s, %eax
                 cg_def_label(format(".L.strchr.%d", cl)); // .L.strchr_loop.%d:
                 x86_cmp_rm(cg_sec, 1, X86_RAX, x86_mem(X86_RDI, 0)); // cmpb %%al, (%rdi)
-                {
-                    size_t o = asm_jcc_label(cg_sec, X86_E);
-                    asm_fixup_add(cg_sec, o, format(".L.strchr_end.%d", cl), 1);
-                }
+                size_t o_end = asm_jcc_label(cg_sec, X86_E);
                 x86_cmp_mi(cg_sec, 1, x86_mem(X86_RDI, 0), 0); // cmpb $0, (%rdi)
-                {
-                    size_t o = asm_jcc_label(cg_sec, X86_E);
-                    asm_fixup_add(cg_sec, o, format(".L.strchr_ret.%d", cl), 1);
-                }
+                size_t o_ret = asm_jcc_label(cg_sec, X86_E);
                 x86_inc_r(cg_sec, 8, X86_RDI); // incq %rdi
                 {
                     size_t o = asm_jmp_label(cg_sec);
                     asm_fixup_add(cg_sec, o, format(".L.strchr.%d", cl), 0);
                 }
-                cg_def_label(format(".L.strchr_end.%d", cl)); // .L.strchr_found.%d:
+                asm_patch_jcc_fwd(cg_sec, o_end); // je lands here (strchr_found)
                 x86_mov_rr(cg_sec, 8, X86_RAX, X86_RDI); // movq %rdi, %rax
-                {
-                    size_t o = asm_jmp_label(cg_sec);
-                    asm_fixup_add(cg_sec, o, format(".L.strchr_done.%d", cl), 0);
-                }
-                cg_def_label(format(".L.strchr_ret.%d", cl)); // .L.strchr_null.%d:
+                size_t o_done = asm_jmp_label(cg_sec);
+                asm_patch_jcc_fwd(cg_sec, o_ret); // je lands here (strchr_null)
                 x86_xor_rr(cg_sec, 4, X86_RAX, X86_RAX); // xorl %eax, %eax
-                cg_def_label(format(".L.strchr_done.%d", cl)); // .L.strchr_end.%d:
+                asm_patch_jmp_fwd(cg_sec, o_done); // jmp lands here (strchr_done)
                 asm_pop(cg_sec, X86_RCX); // popq %rcx
                 asm_pop(cg_sec, X86_RDI); // popq %rdi
                 free_reg(sr);
@@ -7901,24 +7876,20 @@ static VReg gen_int128(Node *node) {
                 // rdx gets the shifted lo, rax becomes 0.
                 x86_test_ri(cg_sec, 4, X86_RCX, 0x40); // testl $0x40, %ecx
                 size_t o = asm_jcc_label(cg_sec, X86_Z);
-                int c = ++rcc_label_count;
-                asm_fixup_add(cg_sec, o, format(".L.shl128_%d", c), 1);
                 asm_mov_rax_rdx(cg_sec); // movq %%rax, %%rdx
                 asm_xor_rax_rax(cg_sec); // xorq %%rax, %%rax
-                cg_def_label(format(".L.shl128_%d", c));
+                asm_patch_jcc_fwd(cg_sec, o); // jz lands here (shl128)
             } else {
                 asm_shrdq_cl(cg_sec); // shrdq %%cl, %%rdx, %%rax
                 asm_shift_rdx_cl(cg_sec, is_unsigned); // %s %%cl, %%rdx
-                int c = ++rcc_label_count;
                 x86_test_ri(cg_sec, 4, X86_RCX, 0x40); // testl $0x40, %ecx
                 size_t o = asm_jcc_label(cg_sec, X86_Z);
-                asm_fixup_add(cg_sec, o, format(".L.shr128_%d", c), 1);
                 asm_mov_rdx_rax(cg_sec); // movq %%rdx, %%rax
                 if (is_unsigned)
                     asm_xor_rdx_rdx(cg_sec); // xorq %%rdx, %%rdx
                 else
                     asm_shift_rdx_imm(cg_sec, false, 63); // sarq $63, %%rdx
-                cg_def_label(format(".L.shr128_%d", c));
+                asm_patch_jcc_fwd(cg_sec, o); // jz lands here (shr128)
             }
         }
         asm_mov_rax_mem(cg_sec, dst); // movq %%rax, (dst)
@@ -8349,62 +8320,41 @@ static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
 #else
         asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq r, %xmm0
         if (to->size == 8 && to->is_unsigned) {
-            int c = ++rcc_label_count;
             asm_movabs_phy(cg_sec, X86_RAX, 0x43e0000000000000ULL); // movabs $0x43e0000000000000, %rax (2^63 as double)
             x86_movq_r_xmm(cg_sec, X86_XMM1, X86_RAX); // movq %rax, %xmm1
             asm_ucomisd(cg_sec); // comisd %xmm1, %xmm0
-            {
-                size_t o = asm_jcc_label(cg_sec, X86_B); // jb .L.ucast.c
-                asm_fixup_add(cg_sec, o, format(".L.ucast.%d", c), 1);
-            }
+            size_t o_ucast = asm_jcc_label(cg_sec, X86_B); // jb .L.ucast.c
             asm_subsd(cg_sec); // subsd %xmm1, %xmm0
             asm_cvttsd2si(cg_sec, r, 8); // cvttsd2si %xmm0, rr
             x86_movabs(cg_sec, X86_RCX, 1ULL << 63); // movabs $0x8000000000000000, %rcx
             x86_or_rr(cg_sec, 8, REG(r), X86_RCX); // orq %rcx, rr
-            {
-                size_t o = asm_jmp_label(cg_sec); // jmp .L.ucast_end.c
-                asm_fixup_add(cg_sec, o, format(".L.ucast_end.%d", c), 0);
-            }
-            cg_def_label(format(".L.ucast.%d", c)); // .L.ucast.c:
+            size_t o_ucast_end = asm_jmp_label(cg_sec); // jmp .L.ucast_end.c
+            asm_patch_jcc_fwd(cg_sec, o_ucast); // jb lands here (ucast)
             asm_cvttsd2si(cg_sec, r, 8); // cvttsd2si %xmm0, rr
-            cg_def_label(format(".L.ucast_end.%d", c)); // .L.ucast_end.c:
+            asm_patch_jmp_fwd(cg_sec, o_ucast_end); // jmp lands here (ucast_end)
         } else if (to->size <= 4 && to->is_unsigned) {
             // float-to-unsigned-int: cvttsd2si is signed, so handle [2^31, 2^32) range.
-            int c = ++rcc_label_count;
             asm_movabs_phy(cg_sec, X86_RAX, 0x41e0000000000000ULL); // movabs $0x41e0000000000000, %rax (2^31 as double)
             x86_movq_r_xmm(cg_sec, X86_XMM1, X86_RAX); // movq %rax, %xmm1
             asm_ucomisd(cg_sec); // comisd %xmm1, %xmm0
-            {
-                size_t o = asm_jcc_label(cg_sec, X86_B); // jb .L.ucast32.c
-                asm_fixup_add(cg_sec, o, format(".L.ucast32.%d", c), 1);
-            }
+            size_t o_ucast32 = asm_jcc_label(cg_sec, X86_B); // jb .L.ucast32.c
             asm_subsd(cg_sec); // subsd %xmm1, %xmm0
             asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, rr
             asm_add_imm(cg_sec, r, 4, (int)(1U << 31)); // addl $0x80000000, rr
-            {
-                size_t o = asm_jmp_label(cg_sec); // jmp .L.ucast32_end.c
-                asm_fixup_add(cg_sec, o, format(".L.ucast32_end.%d", c), 0);
-            }
-            cg_def_label(format(".L.ucast32.%d", c)); // .L.ucast32.c:
+            size_t o_ucast32_end = asm_jmp_label(cg_sec); // jmp .L.ucast32_end.c
+            asm_patch_jcc_fwd(cg_sec, o_ucast32); // jb lands here (ucast32)
             asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, rr
-            cg_def_label(format(".L.ucast32_end.%d", c)); // .L.ucast32_end.c:
+            asm_patch_jmp_fwd(cg_sec, o_ucast32_end); // jmp lands here (ucast32_end)
         } else if (to->size <= 4 && !to->is_unsigned) {
-            int c = ++rcc_label_count;
             asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si xmm0, rr
             asm_cmp_imm(cg_sec, r, 4, (int32_t)0x80000000); // cmpl $0x80000000, rr
-            {
-                size_t o = asm_jcc_label(cg_sec, X86_NE); // jcc label
-                asm_fixup_add(cg_sec, o, format(".L.u2f.end.%d", c), 1);
-            }
+            size_t o_ne = asm_jcc_label(cg_sec, X86_NE);
             x86_xorpd(cg_sec, X86_XMM1, X86_XMM1); // xorpd %xmm1, %xmm1
             asm_ucomisd(cg_sec); // ucomisd %xmm1, %xmm0
-            {
-                size_t o = asm_jcc_label(cg_sec, X86_B); // jb .L.sat_end.c
-                asm_fixup_add(cg_sec, o, format(".L.u2f.end.%d", c), 1);
-            }
-            asm_mov_imm(cg_sec, r, 4, 0x7fffffff); // movl $0x7fffffff, rr
-            cg_def_label(format(".L.saturate.%d", c)); // (saturate value)
-            cg_def_label(format(".L.u2f.end.%d", c));
+            size_t o_b = asm_jcc_label(cg_sec, X86_B);
+            asm_mov_imm(cg_sec, r, 4, 0x7fffffff); // movl $0x7fffffff, rr (saturate)
+            asm_patch_jcc_fwd(cg_sec, o_ne); // jne lands here (u2f_end)
+            asm_patch_jcc_fwd(cg_sec, o_b); // jb lands here (u2f_end)
         } else {
             asm_cvttsd2si(cg_sec, r, to->size); // cvttsd2si %xmm0, rr
         }
@@ -8444,49 +8394,35 @@ static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
             // 64-bit source rounds once; u64 uses the round-to-odd
             // halve/double trick so bit 63 never sets the sign.
             if (from->is_unsigned) {
-                int c = ++rcc_label_count;
                 asm_test(cg_sec, REG(r), REG(r), 8); // test r, r
-                {
-                    size_t o = asm_jcc_label(cg_sec, X86_S);
-                    asm_fixup_add(cg_sec, o, format(".L.u2f32.high.%d", c), 1);
-                }
+                size_t o_high = asm_jcc_label(cg_sec, X86_S);
                 asm_cvtsi2ss(cg_sec, REG(r), 8); // cvtsi2ss %r, %xmm0 (v < 2^63)
-                {
-                    size_t o = asm_jmp_label(cg_sec);
-                    asm_fixup_add(cg_sec, o, format(".L.u2f32.end.%d", c), 0);
-                }
-                cg_def_label(format(".L.u2f32.high.%d", c));
+                size_t o_end = asm_jmp_label(cg_sec);
+                asm_patch_jcc_fwd(cg_sec, o_high); // js lands here (u2f32.high)
                 x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq r, %rcx
                 x86_and_ri(cg_sec, 8, REG(r), 1); // isolate sticky (round-to-odd) bit before halving
                 x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq $1, %rcx
                 x86_or_rr(cg_sec, 8, X86_RCX, REG(r)); // OR sticky bit back in (round-to-odd)
                 asm_cvtsi2ss(cg_sec, X86_RCX, 8); // cvtsi2ss %rcx, %xmm0 (now < 2^63)
                 x86_addss(cg_sec, X86_XMM0, X86_XMM0); // xmm0 += xmm0 (exact doubling)
-                cg_def_label(format(".L.u2f32.end.%d", c));
+                asm_patch_jmp_fwd(cg_sec, o_end); // jmp lands here (u2f32.end)
             } else {
                 asm_cvtsi2ss(cg_sec, REG(r), 8); // cvtsi2ss %r, %xmm0 (single rounding)
             }
             asm_cvtss2sd(cg_sec); // widen to the internal double representation
         } else if (from->is_unsigned && from->size == 8) {
-            int c = ++rcc_label_count;
             asm_test(cg_sec, REG(r), REG(r), 8); // test r, r
-            {
-                size_t o = asm_jcc_label(cg_sec, X86_S); // jcc label
-                asm_fixup_add(cg_sec, o, format(".L.u2f.high.%d", c), 1);
-            }
+            size_t o_high = asm_jcc_label(cg_sec, X86_S);
             asm_cvtsi2sd(cg_sec, r, 8); // cvtsi2sd r, xmm0
-            {
-                size_t o = asm_jmp_label(cg_sec); // cvttsd2si %%xmm0, %s
-                asm_fixup_add(cg_sec, o, format(".L.u2f.end.%d", c), 0);
-            }
-            cg_def_label(format(".L.u2f.high.%d", c)); // ucvtf d0, %s
+            size_t o_end = asm_jmp_label(cg_sec);
+            asm_patch_jcc_fwd(cg_sec, o_high); // js lands here (u2f.high)
             x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq r, %rcx
             x86_and_ri(cg_sec, 8, REG(r), 1); // isolate sticky (round-to-odd) bit before halving
             x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq $1, %rcx
             x86_or_rr(cg_sec, 8, X86_RCX, REG(r)); // OR sticky bit back in (round-to-odd)
             x86_cvtsi2sd(cg_sec, 8, X86_XMM0, X86_RCX); // cvtsi2sd %rcx, %xmm0
             x86_addsd(cg_sec, X86_XMM0, X86_XMM0); // addsd %xmm0, %xmm0 (double it)
-            cg_def_label(format(".L.u2f.end.%d", c)); // .L.u2f.end.%d:
+            asm_patch_jmp_fwd(cg_sec, o_end); // jmp lands here (u2f.end)
             if (to->kind == TY_FLOAT) {
                 asm_cvtsd2ss(cg_sec);
                 asm_cvtss2sd(cg_sec);
@@ -8552,25 +8488,18 @@ static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
                 } else if (from->is_unsigned) {
                     // unsigned 64-bit: halve, convert, double (mirrors the scalar u64→f path)
                     x86_mov_rm(cg_sec, 8, REG(r), x86_mem(REG(r), 0)); // movq (r), r
-                    int c = ++rcc_label_count;
                     asm_test(cg_sec, REG(r), REG(r), 8); // test r, r
-                    {
-                        size_t o = asm_jcc_label(cg_sec, X86_S); // jcc label
-                        asm_fixup_add(cg_sec, o, format(".L.u2f.high.%d", c), 1);
-                    }
+                    size_t o_high = asm_jcc_label(cg_sec, X86_S);
                     asm_cvtsi2sd(cg_sec, r, 8); // cvtsi2sd r, xmm0
-                    {
-                        size_t o = asm_jmp_label(cg_sec);
-                        asm_fixup_add(cg_sec, o, format(".L.u2f.end.%d", c), 0);
-                    }
-                    cg_def_label(format(".L.u2f.high.%d", c));
+                    size_t o_end = asm_jmp_label(cg_sec);
+                    asm_patch_jcc_fwd(cg_sec, o_high); // js lands here (u2f.high)
                     x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq r, %rcx
                     x86_and_ri(cg_sec, 8, REG(r), 1); // isolate sticky (round-to-odd) bit before halving
                     x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq $1, %rcx
                     x86_or_rr(cg_sec, 8, X86_RCX, REG(r)); // OR sticky bit back in (round-to-odd)
                     x86_cvtsi2sd(cg_sec, 8, X86_XMM0, X86_RCX); // cvtsi2sd %rcx, %xmm0
                     x86_addsd(cg_sec, X86_XMM0, X86_XMM0); // addsd %xmm0, %xmm0 (double it)
-                    cg_def_label(format(".L.u2f.end.%d", c));
+                    asm_patch_jmp_fwd(cg_sec, o_end); // jmp lands here (u2f.end)
                 } else {
                     x86_mov_rm(cg_sec, 8, REG(r), x86_mem(REG(r), 0)); // movq (r), r
                     asm_cvtsi2sd(cg_sec, r, 8); // cvtsi2sd r64, %xmm0
@@ -10081,10 +10010,7 @@ VReg gen(Node *node) {
                     emit_mov_imm64(ARM64_X9, copy_len); // mov x9, #copy_len
                     cg_def_label(format(".L.strcpy.%d", c)); // .L.copy.%d:
                     arm64_subs_imm(cg_sec, 1, ARM64_XZR, ARM64_X9, 0, 0); // cmp x9, #0
-                    {
-                        size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq .L.strcpy_end.c
-                        asm_fixup_add(cg_sec, o, format(".L.strcpy_end.%d", c), 1);
-                    }
+                    size_t o_end = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq .L.strcpy_end.c
                     arm64_sub_imm(cg_sec, 1, ARM64_X9, ARM64_X9, 1, 0); // sub x9, x9, #1
                     // ldrb w16, [x{src}, x9]
                     asm_ldrb_w16_x9(cg_sec, src); // ldrb w16, [x{src}, x9]
@@ -10094,7 +10020,7 @@ VReg gen(Node *node) {
                         size_t o = asm_jmp_label(cg_sec); // b .L.strcpy.c
                         asm_fixup_add(cg_sec, o, format(".L.strcpy.%d", c), 0);
                     }
-                    cg_def_label(format(".L.strcpy_end.%d", c));
+                    asm_patch_jcc_fwd(cg_sec, o_end); // b.eq lands here (strcpy_end)
                 }
                 if (copy_len < lhs_size) {
                     // Zero dst[copy_len .. lhs_size-1]; count x12 from lhs_size down to copy_len
@@ -10111,27 +10037,21 @@ VReg gen(Node *node) {
                         */
                         arm64_subs_reg(cg_sec, 1, ARM64_XZR, ARM64_X9, ARM64_X16, ARM64_LSL, 0); // cmp x9, x16
                     }
-                    {
-                        size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq .L.strzero_end.c2
-                        asm_fixup_add(cg_sec, o, format(".L.strzero_end.%d", c2), 1);
-                    }
+                    size_t o_end = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq .L.strzero_end.c2
                     arm64_sub_imm(cg_sec, 1, ARM64_X9, ARM64_X9, 1, 0); // sub x9, x9, #1
                     asm_strb_wzr_x9(cg_sec, dst); // strb wzr, [x{dst}, x9]
                     {
                         size_t o = asm_jmp_label(cg_sec); // b .L.strzero.c2
                         asm_fixup_add(cg_sec, o, format(".L.strzero.%d", c2), 0);
                     }
-                    cg_def_label(format(".L.strzero_end.%d", c2));
+                    asm_patch_jcc_fwd(cg_sec, o_end); // b.eq lands here (strzero_end)
                 }
 #else
                 {
                     asm_mov_imm_phy(cg_sec, X86_RCX, 8, copy_len); // movq $copy_len, %rcx
                     cg_def_label(format(".L.strcpy.%d", c));
                     x86_cmp_ri(cg_sec, 8, X86_RCX, 0); // cmpq $0, %rcx
-                    {
-                        size_t o = asm_jcc_label(cg_sec, X86_E); // je .L.strcpy_end.c
-                        asm_fixup_add(cg_sec, o, format(".L.strcpy_end.%d", c), 1);
-                    }
+                    size_t o_end = asm_jcc_label(cg_sec, X86_E); // je .L.strcpy_end.c
                     x86_mov_rm(cg_sec, 1, X86_RAX, x86_mem_idx(REG(src), X86_RCX, 1, -1)); // movb -1(src, %rcx), %al
                     x86_mov_mr(cg_sec, 1, x86_mem_idx(REG(dst), X86_RCX, 1, -1), X86_RAX); // movb %al, -1(dst, %rcx)
                     x86_sub_ri(cg_sec, 8, X86_RCX, 1); // subq $1, %rcx
@@ -10139,7 +10059,7 @@ VReg gen(Node *node) {
                         size_t o = asm_jmp_label(cg_sec); // jmp .L.strcpy.c
                         asm_fixup_add(cg_sec, o, format(".L.strcpy.%d", c), 0);
                     }
-                    cg_def_label(format(".L.strcpy_end.%d", c));
+                    asm_patch_jcc_fwd(cg_sec, o_end); // je lands here (strcpy_end)
                 }
                 if (copy_len < lhs_size) {
                     VReg cnt2 = alloc_reg();
@@ -10147,10 +10067,7 @@ VReg gen(Node *node) {
                     int c2 = ++rcc_label_count;
                     cg_def_label(format(".L.strzero.%d", c2));
                     x86_cmp_ri(cg_sec, 8, REG(cnt2), 0); // cmpq $0, cnt2
-                    {
-                        size_t o = asm_jcc_label(cg_sec, X86_E); // je .L.strzero_end.c2
-                        asm_fixup_add(cg_sec, o, format(".L.strzero_end.%d", c2), 1);
-                    }
+                    size_t o_end2 = asm_jcc_label(cg_sec, X86_E); // je .L.strzero_end.c2
                     // movb $0, copy_len-1(dst, cnt2)
                     x86_mov_mi(cg_sec, 1, x86_mem_idx(REG(dst), REG(cnt2), 1, copy_len - 1), 0);
                     x86_sub_ri(cg_sec, 8, REG(cnt2), 1); // subq $1, cnt2
@@ -10158,7 +10075,7 @@ VReg gen(Node *node) {
                         size_t o = asm_jmp_label(cg_sec); // jmp .L.strzero.c2
                         asm_fixup_add(cg_sec, o, format(".L.strzero.%d", c2), 0);
                     }
-                    cg_def_label(format(".L.strzero_end.%d", c2));
+                    asm_patch_jcc_fwd(cg_sec, o_end2); // je lands here (strzero_end)
                     free_reg(cnt2);
                 }
 #endif
@@ -10224,17 +10141,14 @@ VReg gen(Node *node) {
                     emit_mov_imm64(ARM64_X9, (uint64_t)node->lhs->ty->size); // mov x9, #size
                     cg_def_label(format(".L.zero.%d", c));
                     arm64_subs_imm(cg_sec, 1, ARM64_XZR, ARM64_X9, 0, 0); // cmp x9, #0
-                    {
-                        size_t zj1 = asm_jcc_label(cg_sec, ARM64_EQ);
-                        asm_fixup_add(cg_sec, zj1, format(".L.zero_end.%d", c), 1);
-                    }
+                    size_t zj1 = asm_jcc_label(cg_sec, ARM64_EQ);
                     arm64_sub_imm(cg_sec, 1, ARM64_X9, ARM64_X9, 1, 0); // sub x9, x9, #1
                     asm_strb_wzr_x9(cg_sec, dst); // strb wzr, [x{dst}, x9]
                     {
                         size_t zj2 = asm_jmp_label(cg_sec);
                         asm_fixup_add(cg_sec, zj2, format(".L.zero.%d", c), 0);
                     }
-                    cg_def_label(format(".L.zero_end.%d", c));
+                    asm_patch_jcc_fwd(cg_sec, zj1); // beq lands here (zero_end)
                     asm_mov_phy_reg(cg_sec, ARM64_X16, src, 1); // mov x16, x{src}
                     arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(dst), 0); // str x16, [x{dst}]
 #else
@@ -10242,17 +10156,14 @@ VReg gen(Node *node) {
                     asm_mov_imm(cg_sec, cnt, 8, node->lhs->ty->size); // movq $size, cnt
                     cg_def_label(format(".L.zero.%d", c));
                     x86_cmp_ri(cg_sec, 8, REG(cnt), 0); // cmpq $0, cnt
-                    {
-                        size_t zj1 = asm_jcc_label(cg_sec, X86_E);
-                        asm_fixup_add(cg_sec, zj1, format(".L.zero_end.%d", c), 1);
-                    }
+                    size_t zj1 = asm_jcc_label(cg_sec, X86_E);
                     x86_mov_mi(cg_sec, 1, x86_mem_idx(REG(dst), REG(cnt), 1, -1), 0); // movb $0, -1(dst,cnt)
                     x86_sub_ri(cg_sec, 8, REG(cnt), 1); // subq $1, cnt
                     {
                         size_t zj2 = asm_jmp_label(cg_sec);
                         asm_fixup_add(cg_sec, zj2, format(".L.zero.%d", c), 0);
                     }
-                    cg_def_label(format(".L.zero_end.%d", c));
+                    asm_patch_jcc_fwd(cg_sec, zj1); // je lands here (zero_end)
                     free_reg(cnt);
                     asm_mov_reg_mem(cg_sec, src, dst, 8); // movq src, (%dst)
 #endif
@@ -10283,10 +10194,7 @@ VReg gen(Node *node) {
                 emit_mov_imm64(ARM64_X9, (uint64_t)node->lhs->ty->size); // mov x9, #size
             cg_def_label(format(".L.copy.%d", c));
             arm64_subs_imm(cg_sec, 1, ARM64_XZR, ARM64_X9, 0, 0); // cmp x9, #0
-            {
-                size_t _cj = asm_jcc_label(cg_sec, ARM64_EQ);
-                asm_fixup_add(cg_sec, _cj, format(".L.copy_end.%d", c), 1);
-            }
+            size_t _cj = asm_jcc_label(cg_sec, ARM64_EQ);
             arm64_sub_imm(cg_sec, 1, ARM64_X9, ARM64_X9, 1, 0); // sub x9, x9, #1
             asm_ldrb_w16_x9(cg_sec, src); // ldrb w16, [x{src}, x9]
             asm_strb_w16_x9(cg_sec, dst); // strb w16, [x{dst}, x9]
@@ -10294,7 +10202,7 @@ VReg gen(Node *node) {
                 size_t _jmp = asm_jmp_label(cg_sec);
                 asm_fixup_add(cg_sec, _jmp, format(".L.copy.%d", c), 0);
             }
-            cg_def_label(format(".L.copy_end.%d", c));
+            asm_patch_jcc_fwd(cg_sec, _cj); // beq lands here (copy_end)
 #else
             {
                 VReg cnt = alloc_reg(); // dedicated counter, doesn't conflict with src/dst
@@ -10305,7 +10213,6 @@ VReg gen(Node *node) {
                 cg_def_label(format(".L.copy.%d", c));
                 x86_cmp_ri(cg_sec, 8, REG(cnt), 0); // cmpq $0, cnt
                 size_t cj1 = asm_jcc_label(cg_sec, X86_E);
-                asm_fixup_add(cg_sec, cj1, format(".L.copy_end.%d", c), 1);
                 {
                     X86Mem msrc = x86_mem_idx(REG(src), REG(cnt), 1, -1); // -1(src, cnt)
                     X86Mem mdst = x86_mem_idx(REG(dst), REG(cnt), 1, -1); // -1(dst, cnt)
@@ -10315,7 +10222,7 @@ VReg gen(Node *node) {
                 x86_sub_ri(cg_sec, 8, REG(cnt), 1); // subq $1, cnt
                 size_t cj2 = asm_jmp_label(cg_sec);
                 asm_fixup_add(cg_sec, cj2, format(".L.copy.%d", c), 0);
-                cg_def_label(format(".L.copy_end.%d", c));
+                asm_patch_jcc_fwd(cg_sec, cj1); // je lands here (copy_end)
                 free_reg(cnt);
             }
 #endif
@@ -10949,23 +10856,21 @@ VReg gen(Node *node) {
         cg_def_label(format(".L.zero.%d", c));
         arm64_subs_imm(cg_sec, 1, ARM64_XZR, ARM64_X17, 0, 0); // cmp x17, #0
         size_t zj1 = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq .L.zero_end.c
-        asm_fixup_add(cg_sec, zj1, format(".L.zero_end.%d", c), 1);
         arm64_sub_imm(cg_sec, 1, ARM64_X17, ARM64_X17, 1, 0); // sub x17, x17, #1
         arm64_str_reg(cg_sec, 0, ARM64_XZR, ARM64_X16, ARM64_X17, true, 0); // strb wzr, [x16, x17]
         size_t zj2 = asm_jmp_label(cg_sec); // b .L.zero.c
         asm_fixup_add(cg_sec, zj2, format(".L.zero.%d", c), 0); // strb wzr, [x16, x17]
-        cg_def_label(format(".L.zero_end.%d", c)); // b .L.zero.%d
+        asm_patch_jcc_fwd(cg_sec, zj1); // b.eq lands here (zero_end)
 #else
         x86_mov_ri(cg_sec, 8, X86_RCX, var->ty->size); // movq $size, %rcx
         cg_def_label(format(".L.zero.%d", c));
         x86_cmp_ri(cg_sec, 8, X86_RCX, 0); // cmpq $0, %rcx
         size_t zj1 = asm_jcc_label(cg_sec, X86_E);
-        asm_fixup_add(cg_sec, zj1, format(".L.zero_end.%d", c), 1);
         x86_mov_mi(cg_sec, 1, x86_mem_idx(X86_RBP, X86_RCX, 1, -var->offset - 1), 0); // movb $0, -off-1(%rbp,%rcx)
         x86_sub_ri(cg_sec, 8, X86_RCX, 1); // subq $1, %rcx
         size_t zj2 = asm_jmp_label(cg_sec);
         asm_fixup_add(cg_sec, zj2, format(".L.zero.%d", c), 0);
-        cg_def_label(format(".L.zero_end.%d", c));
+        asm_patch_jcc_fwd(cg_sec, zj1); // je lands here (zero_end)
 #endif
         return -1;
     }
@@ -11790,10 +11695,7 @@ VReg gen(Node *node) {
                 emit_mov_imm64(ARM64_X9, (uint64_t)node->lhs->ty->size); // mov x9, #size
                 cg_def_label(format(".L.retcopy.%d", c));
                 arm64_subs_imm(cg_sec, 1, ARM64_XZR, ARM64_X9, 0, 0); // cmp x9, #0
-                {
-                    size_t _cj = asm_jcc_label(cg_sec, ARM64_EQ);
-                    asm_fixup_add(cg_sec, _cj, format(".L.retcopy_end.%d", c), 1);
-                }
+                size_t _cj = asm_jcc_label(cg_sec, ARM64_EQ);
                 arm64_sub_imm(cg_sec, 1, ARM64_X9, ARM64_X9, 1, 0); // sub x9, x9, #1
                 asm_ldrb_w16_x9_phy(cg_sec, ARM64_X12); // ldrb w16, [x12, x9]
                 asm_strb_w16_x9_phy(cg_sec, ARM64_X11); // strb w16, [x11, x9]
@@ -11801,7 +11703,7 @@ VReg gen(Node *node) {
                     size_t _jmp = asm_jmp_label(cg_sec);
                     asm_fixup_add(cg_sec, _jmp, format(".L.retcopy.%d", c), 0);
                 }
-                cg_def_label(format(".L.retcopy_end.%d", c));
+                asm_patch_jcc_fwd(cg_sec, _cj); // beq lands here (retcopy_end)
                 asm_mov_x0_reg(cg_sec, ARM64_X11); // mov x0, x11
 #else
 #ifdef _WIN32
@@ -11817,10 +11719,7 @@ VReg gen(Node *node) {
                     x86_mov_ri(cg_sec, 8, X86_RCX, node->lhs->ty->size); // movq $size, %%rcx
                     cg_def_label(format(".L.retcopy.%d", c));
                     x86_cmp_ri(cg_sec, 8, X86_RCX, 0); // cmp $0, rcx
-                    {
-                        size_t o = asm_jcc_label(cg_sec, X86_E);
-                        asm_fixup_add(cg_sec, o, format(".L.retcopy_end.%d", c), 1);
-                    }
+                    size_t o_end = asm_jcc_label(cg_sec, X86_E);
                     x86_mov_rm(cg_sec, 1, X86_RAX, x86_mem_idx(REG(src), X86_RCX, 1, -1)); // movb -1(src, rcx), %%al
                     x86_mov_mr(cg_sec, 1, x86_mem_idx(X86_R9, X86_RCX, 1, -1), X86_RAX); // movb %%al, -1(r9, rcx)
                     x86_sub_ri(cg_sec, 8, X86_RCX, 1); // dec rcx
@@ -11828,7 +11727,7 @@ VReg gen(Node *node) {
                         size_t o = asm_jmp_label(cg_sec);
                         asm_fixup_add(cg_sec, o, format(".L.retcopy.%d", c), 0);
                     }
-                    cg_def_label(format(".L.retcopy_end.%d", c));
+                    asm_patch_jcc_fwd(cg_sec, o_end); // je lands here (retcopy_end)
                     x86_mov_rr(cg_sec, 8, X86_RAX, X86_R9); // movq %%r9, %%rax
                 }
                 free_reg(src);
@@ -11921,25 +11820,18 @@ VReg gen(Node *node) {
                             bool src_u = node->lhs->ty && node->lhs->ty->is_unsigned;
                             if (src_u && src_sz == 8) {
                                 // unsigned long long → float: handle high bit
-                                int c = ++rcc_label_count;
                                 asm_test(cg_sec, REG(r), REG(r), 8); // test r, r
-                                {
-                                    size_t o = asm_jcc_label(cg_sec, X86_S); // jcc label
-                                    asm_fixup_add(cg_sec, o, format(".L.u2f.high.%d", c), 1);
-                                }
+                                size_t o_high = asm_jcc_label(cg_sec, X86_S);
                                 asm_cvtsi2ss(cg_sec, REG(r), 8); // cvtsi2ss rr, %xmm0
-                                {
-                                    size_t o = asm_jmp_label(cg_sec); // jmp .L.u2f.end.%d
-                                    asm_fixup_add(cg_sec, o, format(".L.u2f.end.%d", c), 0);
-                                }
-                                cg_def_label(format(".L.u2f.high.%d", c)); // .L.u2f.high.%d:
+                                size_t o_end = asm_jmp_label(cg_sec); // jmp .L.u2f.end.%d
+                                asm_patch_jcc_fwd(cg_sec, o_high); // js lands here (u2f.high)
                                 x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq r, %rcx
                                 x86_and_ri(cg_sec, 8, REG(r), 1); // isolate sticky (round-to-odd) bit before halving
                                 x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq $1, %rcx
                                 x86_or_rr(cg_sec, 8, X86_RCX, REG(r)); // OR sticky bit back in (round-to-odd)
                                 asm_cvtsi2ss(cg_sec, X86_RCX, 8); // cvtsi2ss %rcx, %xmm0
                                 x86_addss(cg_sec, X86_XMM0, X86_XMM0); // addss %xmm0, %xmm0 (double it)
-                                cg_def_label(format(".L.u2f.end.%d", c)); // .L.u2f.end.%d:
+                                asm_patch_jmp_fwd(cg_sec, o_end); // jmp lands here (u2f.end)
                             } else if (src_u && src_sz <= 4) {
                                 // unsigned int/short/char → float: zero-extend to 64-bit,
                                 // then cvtsi2ss with 64-bit reg (value is non-negative 64-bit int)
@@ -11978,25 +11870,18 @@ VReg gen(Node *node) {
                             bool src_u = node->lhs->ty && node->lhs->ty->is_unsigned;
                             if (src_u && src_sz == 8) {
                                 // unsigned long long → double: handle high bit
-                                int c = ++rcc_label_count;
                                 asm_test(cg_sec, REG(r), REG(r), 8); // test r, r
-                                {
-                                    size_t o = asm_jcc_label(cg_sec, X86_S); // jcc label
-                                    asm_fixup_add(cg_sec, o, format(".L.u2f.high.%d", c), 1);
-                                }
+                                size_t o_high = asm_jcc_label(cg_sec, X86_S);
                                 asm_cvtsi2sd(cg_sec, r, 8); // cvtsi2sd rr, xmm0
-                                {
-                                    size_t o = asm_jmp_label(cg_sec); // jmp .L.u2f.end.%d
-                                    asm_fixup_add(cg_sec, o, format(".L.u2f.end.%d", c), 0);
-                                }
-                                cg_def_label(format(".L.u2f.high.%d", c)); // .L.u2f.high.%d:
+                                size_t o_end = asm_jmp_label(cg_sec); // jmp .L.u2f.end.%d
+                                asm_patch_jcc_fwd(cg_sec, o_high); // js lands here (u2f.high)
                                 x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq r, %rcx
                                 x86_and_ri(cg_sec, 8, REG(r), 1); // isolate sticky (round-to-odd) bit before halving
                                 x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq $1, %rcx
                                 x86_or_rr(cg_sec, 8, X86_RCX, REG(r)); // OR sticky bit back in (round-to-odd)
                                 x86_cvtsi2sd(cg_sec, 8, X86_XMM0, X86_RCX); // cvtsi2sd %rcx, %xmm0
                                 x86_addsd(cg_sec, X86_XMM0, X86_XMM0); // addsd %xmm0, %xmm0 (double it)
-                                cg_def_label(format(".L.u2f.end.%d", c)); // .L.u2f.end.%d:
+                                asm_patch_jmp_fwd(cg_sec, o_end); // jmp lands here (u2f.end)
                             } else if (src_u && src_sz <= 4) {
                                 // unsigned int/short/char → double: zero-extend to 64-bit
                                 asm_cvtsi2sd(cg_sec, r, 8); // cvtsi2sd rr, %xmm0
@@ -18080,7 +17965,6 @@ struct ObjFile *codegen(Program *prog) {
                     cg_def_label(format(".L.param_copy.%d", c));
                     arm64_subs_imm(cg_sec, 1, ARM64_XZR, ARM64_X9, 0, 0); // cmp x9, #0
                     size_t cj = asm_jcc_label(cg_sec, ARM64_EQ); // beq .L.param_copy_end.%d
-                    asm_fixup_add(cg_sec, cj, format(".L.param_copy_end.%d", c), 1);
                     arm64_sub_imm(cg_sec, 1, ARM64_X9, ARM64_X9, 1, 0); // sub x9, x9, #1
                     asm_ldur_phy(cg_sec, ARM64_X18, ARM64_X16, 0, 0); // ldurb w18, [x16]
                     asm_stur_phy(cg_sec, ARM64_X18, ARM64_X17, 0, 0); // sturb w18, [x17]
@@ -18088,7 +17972,7 @@ struct ObjFile *codegen(Program *prog) {
                     arm64_add_imm(cg_sec, 1, ARM64_X17, ARM64_X17, 1, 0); // add x17, x17, #1
                     size_t cj2 = asm_jmp_label(cg_sec); // b .L.param_copy.%d
                     asm_fixup_add(cg_sec, cj2, format(".L.param_copy.%d", c), 0);
-                    cg_def_label(format(".L.param_copy_end.%d", c));
+                    asm_patch_jcc_fwd(cg_sec, cj); // beq lands here (param_copy_end)
                 } else if (gp_param < 8) {
                     int sf = var->ty->size <= 4 ? 0 : 1; // word or dword
                     if (is_complex(var->ty) && var->ty->size > 8) {
@@ -18625,14 +18509,13 @@ struct ObjFile *codegen(Program *prog) {
                         x86_cmp_ri(cg_sec, 8, X86_R10, 0); // cmpq $0, %r10
                         size_t jz2 = cg_sec->len;
                         x86_jcc_rel32(cg_sec, X86_E, 0);
-                        asm_fixup_add(cg_sec, jz2, format(".L.pcopy2_end.%d", c), 1);
                         asm_movb_r11_r10_al(cg_sec, -1); // movb -1(%r11,%r10), %%al
                         asm_movb_al_rbp_r10(cg_sec, var->offset); // movb %%al, -(off)-1(%rbp,%r10)
                         x86_sub_ri(cg_sec, 8, X86_R10, 1); // subq $1, %r10
                         size_t jm2 = cg_sec->len;
                         x86_jmp_rel32(cg_sec, 0);
                         asm_fixup_add(cg_sec, jm2, format(".L.pcopy2.%d", c), 0);
-                        cg_def_label(format(".L.pcopy2_end.%d", c));
+                        asm_patch_jcc_fwd(cg_sec, jz2); // je lands here (pcopy2_end)
                         gp++;
                     } else {
                         // Passed on the stack: the slot holds a pointer.
@@ -18644,14 +18527,13 @@ struct ObjFile *codegen(Program *prog) {
                         x86_cmp_ri(cg_sec, 8, X86_R10, 0); // cmpq $0, %r10
                         size_t jz3 = cg_sec->len;
                         x86_jcc_rel32(cg_sec, X86_E, 0);
-                        asm_fixup_add(cg_sec, jz3, format(".L.pcopy2_end.%d", c), 1);
                         asm_movb_r11_r10_al(cg_sec, -1);
                         asm_movb_al_rbp_r10(cg_sec, var->offset);
                         x86_sub_ri(cg_sec, 8, X86_R10, 1);
                         size_t jm3 = cg_sec->len;
                         x86_jmp_rel32(cg_sec, 0);
                         asm_fixup_add(cg_sec, jm3, format(".L.pcopy2.%d", c), 0);
-                        cg_def_label(format(".L.pcopy2_end.%d", c));
+                        asm_patch_jcc_fwd(cg_sec, jz3); // je lands here (pcopy2_end)
                         stack_param_index2++;
                     }
                     continue;
@@ -18687,14 +18569,13 @@ struct ObjFile *codegen(Program *prog) {
                         x86_cmp_ri(cg_sec, 8, X86_R10, 0);
                         size_t jzw = cg_sec->len;
                         x86_jcc_rel32(cg_sec, X86_E, 0);
-                        asm_fixup_add(cg_sec, jzw, format(".L.pcopy2w_end.%d", c), 1);
                         asm_movb_r11_r10_al(cg_sec, -1);
                         asm_movb_al_rbp_r10(cg_sec, var->offset);
                         x86_sub_ri(cg_sec, 8, X86_R10, 1);
                         size_t jmw = cg_sec->len;
                         x86_jmp_rel32(cg_sec, 0);
                         asm_fixup_add(cg_sec, jmw, format(".L.pcopy2w.%d", c), 0);
-                        cg_def_label(format(".L.pcopy2w_end.%d", c));
+                        asm_patch_jcc_fwd(cg_sec, jzw); // je lands here (pcopy2w_end)
                         gp++;
                     } else {
                         int c = ++rcc_label_count;
@@ -18705,14 +18586,13 @@ struct ObjFile *codegen(Program *prog) {
                         x86_cmp_ri(cg_sec, 8, X86_R10, 0);
                         size_t jzw2 = cg_sec->len;
                         x86_jcc_rel32(cg_sec, X86_E, 0);
-                        asm_fixup_add(cg_sec, jzw2, format(".L.pcopy2w_end.%d", c), 1);
                         asm_movb_r11_r10_al(cg_sec, -1);
                         asm_movb_al_rbp_r10(cg_sec, var->offset);
                         x86_sub_ri(cg_sec, 8, X86_R10, 1);
                         size_t jmw2 = cg_sec->len;
                         x86_jmp_rel32(cg_sec, 0);
                         asm_fixup_add(cg_sec, jmw2, format(".L.pcopy2w.%d", c), 0);
-                        cg_def_label(format(".L.pcopy2w_end.%d", c));
+                        asm_patch_jcc_fwd(cg_sec, jzw2); // je lands here (pcopy2w_end)
                         stack_param_index2++;
                     }
                     continue;
@@ -18806,14 +18686,13 @@ struct ObjFile *codegen(Program *prog) {
                     x86_cmp_ri(cg_sec, 8, X86_R10, 0);
                     size_t js = cg_sec->len;
                     x86_jcc_rel32(cg_sec, X86_E, 0);
-                    asm_fixup_add(cg_sec, js, format(".L.param2_end.%d", c), 1);
                     asm_movb_r11_r10_al(cg_sec, -1);
                     asm_movb_al_rbp_r10(cg_sec, var->offset);
                     x86_sub_ri(cg_sec, 8, X86_R10, 1);
                     size_t jp = cg_sec->len;
                     x86_jmp_rel32(cg_sec, 0);
                     asm_fixup_add(cg_sec, jp, format(".L.param2.%d", c), 0);
-                    cg_def_label(format(".L.param2_end.%d", c));
+                    asm_patch_jcc_fwd(cg_sec, js); // je lands here (param2_end)
                     gp++;
                 } else {
                     // Stack argument — passed above return address
@@ -18854,14 +18733,13 @@ struct ObjFile *codegen(Program *prog) {
                         x86_cmp_ri(cg_sec, 8, X86_R10, 0);
                         size_t js2 = cg_sec->len;
                         x86_jcc_rel32(cg_sec, X86_E, 0);
-                        asm_fixup_add(cg_sec, js2, format(".L.param2_end.%d", c), 1);
                         asm_movb_r11_r10_al(cg_sec, -1); // movb -1(%r11,%r10), %%al
                         asm_movb_al_rbp_r10(cg_sec, var->offset);
                         x86_sub_ri(cg_sec, 8, X86_R10, 1);
                         size_t jp2 = cg_sec->len;
                         x86_jmp_rel32(cg_sec, 0);
                         asm_fixup_add(cg_sec, jp2, format(".L.param2.%d", c), 0);
-                        cg_def_label(format(".L.param2_end.%d", c));
+                        asm_patch_jcc_fwd(cg_sec, js2); // je lands here (param2_end)
                     } else {
                         int psz = var->ty->size <= 4 ? 4 : 8;
                         x86_mov_rm(cg_sec, psz, X86_RAX, x86_mem(X86_RBP, stack_off2)); // mov stack_off2(%rbp), %rax
