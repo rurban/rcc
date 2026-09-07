@@ -865,12 +865,12 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
         asm_str_x16_reg_uoff(cg_sec, rbuf, 16); // str x16, [x{rbuf}, #16]  (buf[2] = sp)
         asm_mov_imm(cg_sec, r, 4, 0); // mov r, #0  (setjmp returns 0 normally)
         {
-            size_t jmp_off = asm_jmp_label(cg_sec); // b .L.setjmp_end.c (skip resume block)
-            cg_def_label(format(".L.setjmp.%d", c)); // .L.setjmp.c: (longjmp jumps here)
-            asm_mov_retval(cg_sec, r, 8); // mov r, x0  (longjmp return value)
-            asm_fixup_add(cg_sec, jmp_off, format(".L.setjmp_end.%d", c), 0);
-            cg_def_label(format(".L.setjmp_end.%d", c)); // end of setjmp inline
+            size_t b_off = cg_sec->len;
+            arm64_b(cg_sec, 2); // b .+8 (skip the 4-byte mov r, x0 below)
+            asm_record(ASM_JMP, b_off, 1, -1, -1, -1, 0, 0, 0, NULL, 0, -1, false);
         }
+        cg_def_label(format(".L.setjmp.%d", c)); // .L.setjmp.c: (longjmp jumps here)
+        asm_mov_retval(cg_sec, r, 8); // mov r, x0  (longjmp return value)
 #else
         // x86_64: buf[0]=rbp, buf[1]=resume addr, buf[2]=rsp
         x86_mov_mr(cg_sec, 8, x86_mem(REG(rbuf), 0), X86_RBP); // movq %rbp, (rbuf)
@@ -878,12 +878,7 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
         x86_mov_mr(cg_sec, 8, x86_mem(REG(rbuf), 8), REG(r)); // movq r, 8(rbuf)
         x86_mov_mr(cg_sec, 8, x86_mem(REG(rbuf), 16), X86_RSP); // movq %rsp, 16(rbuf)
         x86_xor_rr(cg_sec, 4, X86_RAX, X86_RAX); // xorl %eax, %eax
-        {
-            size_t jmp_off = asm_jmp_label(cg_sec); // jmp .L.sja.c
-            cg_def_label(format(".L.sjr.%d", c)); // .L.sjr.c: (longjmp lands here, val in %rax)
-            asm_fixup_add(cg_sec, jmp_off, format(".L.sja.%d", c), 0);
-            cg_def_label(format(".L.sja.%d", c)); // .L.sja.c:
-        }
+        cg_def_label(format(".L.sjr.%d", c)); // .L.sjr.c: (longjmp lands here, val in %rax)
         x86_mov_rr(cg_sec, 8, REG(r), X86_RAX); // movq %rax, r
 #endif
         free_reg(rbuf);
