@@ -1,9 +1,24 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # RCC vs TCC vs all compilers benchmark (Unix version of run_bench.ps1)
 # Usage: ./bench/run_bench.sh [rcc-binary]
+#
+# Benchmarking method: every timed compile/execute is sampled COMPILE_RUNS
+# / RUNS times and reported as best-of-N with the worst-to-best spread (a
+# single sample is dominated by cold page-cache and scheduler noise, not
+# the compiler's actual cost -- same rationale as the rdtsc/cntvct phase
+# timer in src/main.c's -time). Every benched process is pinned to one
+# fixed CPU core (taskset) so cross-core migration doesn't add to that
+# noise, and where available a fork-free bash EPOCHREALTIME read replaces
+# the two `date` subprocess spawns previously sitting inside the bracket.
+# Override sample counts with BENCH_RUNS / BENCH_COMPILE_RUNS /
+# BENCH_LARGE_RUNS.
 
 set -e
+# EPOCHREALTIME (used by time_ms below) is formatted per LC_NUMERIC --
+# under e.g. de_DE it prints a comma decimal separator, which breaks the
+# `.`-based split and aborts the arithmetic. Force the POSIX radix point.
+export LC_NUMERIC=C
 
 cd "$(dirname "$0")/.." || exit 1
 SRC="bench/bench.c"
@@ -109,11 +124,44 @@ GCC_O2_EXE="bench/bench_gcc_o2"
 CLANG_EXE="bench/bench_clang"
 CLANG_O2_EXE="bench/bench_clang_o2"
 
-RUNS=3
+# Sample counts: execute is cheap to repeat for the small bench.c file
+# (ms-scale) so it gets more samples; the AWFY suite's execute is
+# seconds-scale per run, so it keeps the original (smaller) count to
+# bound total wall-clock cost. Compile and the whole-sqlite3.c compile
+# are progressively more expensive to repeat, so they get progressively
+# fewer samples.
+RUNS="${BENCH_RUNS:-5}"
+AWFY_RUNS="${BENCH_AWFY_RUNS:-3}"
+COMPILE_RUNS="${BENCH_COMPILE_RUNS:-3}"
+LARGE_RUNS="${BENCH_LARGE_RUNS:-2}"
+case "$RUNS" in ''|*[!0-9]*) RUNS=5 ;; esac
+case "$AWFY_RUNS" in ''|*[!0-9]*) AWFY_RUNS=3 ;; esac
+case "$COMPILE_RUNS" in ''|*[!0-9]*) COMPILE_RUNS=3 ;; esac
+case "$LARGE_RUNS" in ''|*[!0-9]*) LARGE_RUNS=2 ;; esac
+[ "$RUNS" -lt 1 ] && RUNS=1
+[ "$AWFY_RUNS" -lt 1 ] && AWFY_RUNS=1
+[ "$COMPILE_RUNS" -lt 1 ] && COMPILE_RUNS=1
+[ "$LARGE_RUNS" -lt 1 ] && LARGE_RUNS=1
 if [ "$(uname -s)" = "Darwin" ]; then
 	REPORT="bench/bench_report_darwin.md"
 else
 	REPORT="bench/bench_report.md"
+fi
+
+# Pin every benched process to one fixed CPU core: migration between
+# cores (differing turbo/cache state, other cores' load) is a major
+# wall-clock jitter source on a shared/loaded box, and is applied
+# uniformly to every compiler under test so it stays fair. Self-test
+# before adopting -- sandboxes/containers can reject sched_setaffinity.
+PIN=""
+if command -v taskset >/dev/null 2>&1; then
+	_ncpu="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+	_pin_core=$((_ncpu - 1))
+	[ "$_pin_core" -lt 0 ] && _pin_core=0
+	if taskset -c "$_pin_core" true >/dev/null 2>&1; then
+		PIN="taskset -c $_pin_core"
+		printf "Pinned benchmark processes to CPU core %s\n" "$_pin_core"
+	fi
 fi
 
 # The gortex code-index daemon reindexes on every source edit and can sit at
@@ -159,6 +207,20 @@ pause_gortex
 # time_ms: prints elapsed ms for a command
 # Usage: elapsed=$(time_ms cmd args...)
 time_ms() {
+	# Bash 5+: EPOCHREALTIME is a shell variable, no subprocess -- avoids
+	# the two `date` forks (and their own scheduling jitter) that would
+	# otherwise sit inside the measurement bracket. Falls back to `date`
+	# under bash <5, or when invoked via a plain POSIX sh.
+	if [ -n "${BASH_VERSINFO:-}" ] && [ "${BASH_VERSINFO[0]}" -ge 5 ]; then
+		_s="$EPOCHREALTIME"
+		_rc=0
+		"$@" >/dev/null || _rc=$?
+		_e="$EPOCHREALTIME"
+		_s_us=$(( ${_s%.*} * 1000000 + 10#${_s#*.} ))
+		_e_us=$(( ${_e%.*} * 1000000 + 10#${_e#*.} ))
+		echo $(((_e_us - _s_us) / 1000))
+		return $_rc
+	fi
 	# Prefer GNU date (gdate from coreutils on macOS/BSD); otherwise fall back
 	# to the system date.  BSD date does not support %N, so verify the output
 	# actually contains nanoseconds before using it.
@@ -197,38 +259,56 @@ run_bench() {
 	printf "\n--- %s ---\n" "$_label"
         list_c="$list_c|$_label"
 
-	# Compile
-        # shellcheck disable=SC2086
-	_compile_ms=$(time_ms $_compiler $_args 2>/dev/null) || true
-	if [ ! -x "$_exe" ]; then
-		printf "  COMPILE FAILED\n"
-		return 1
-	fi
-	printf "  Compile : %6s ms\n" "$_compile_ms"
+	# Compile: best-of-N, like execute below. A single compile sample is
+	# dominated by cold page-cache/first-touch faults, not the compiler's
+	# actual cost. Keep the exe from the LAST iteration for execute.
+	_cbest=""
+	_cworst=""
+	_i=0
+	while [ "$_i" -lt "$COMPILE_RUNS" ]; do
+		_i=$((_i + 1))
+		# shellcheck disable=SC2086
+		_compile_ms=$(time_ms $PIN $_compiler $_args 2>/dev/null) || true
+		if [ ! -x "$_exe" ]; then
+			printf "  COMPILE FAILED\n"
+			return 1
+		fi
+		if [ -z "$_cbest" ] || [ "$_compile_ms" -lt "$_cbest" ]; then _cbest=$_compile_ms; fi
+		if [ -z "$_cworst" ] || [ "$_compile_ms" -gt "$_cworst" ]; then _cworst=$_compile_ms; fi
+		[ "$_i" -lt "$COMPILE_RUNS" ] && rm -f "$_exe"
+	done
+	_compile_ms=$_cbest
+	_cpct=0
+	[ "$_cbest" -gt 0 ] && _cpct=$(( (_cworst - _cbest) * 100 / _cbest ))
+	printf "  Compile : %6s ms  (best of %d, spread %d%%)\n" "$_compile_ms" "$COMPILE_RUNS" "$_cpct"
+	[ "$_cpct" -ge 20 ] && printf "  WARNING : compile timing unstable (worst %s ms)\n" "$_cworst"
 
 	# Execute best of N
-	_best=1000
+	_best=""
+	_worst=""
 	_output=""
 	_i=0
-	while [ $_i -lt $RUNS ]; do
-		_output="$("$_exe")"
-		_exec_ms=$(time_ms "$_exe")
-		if [ "$_exec_ms" -lt "$_best" ]; then
-		    _best=$_exec_ms
-		fi
+	while [ "$_i" -lt "$RUNS" ]; do
+                # shellcheck disable=SC2086
+		_output="$($PIN "$_exe")"
+                # shellcheck disable=SC2086
+		_exec_ms=$(time_ms $PIN "$_exe")
+		if [ -z "$_best" ] || [ "$_exec_ms" -lt "$_best" ]; then _best=$_exec_ms; fi
+		if [ -z "$_worst" ] || [ "$_exec_ms" -gt "$_worst" ]; then _worst=$_exec_ms; fi
 		_i=$((_i + 1))
 	done
-        # shellcheck disable=SC2086
-        if [ $_best = 1000 ]; then
-            _best=$_exec_ms
-        fi
-	printf "  Execute : %6s ms  (best of %d)\n" "$_best" "$RUNS"
+	_epct=0
+	[ "$_best" -gt 0 ] && _epct=$(( (_worst - _best) * 100 / _best ))
+	printf "  Execute : %6s ms  (best of %d, spread %d%%)\n" "$_best" "$RUNS" "$_epct"
+	[ "$_epct" -ge 20 ] && printf "  WARNING : execute timing unstable (worst %s ms)\n" "$_worst"
 	printf "  Total   : %6s ms\n" $((_compile_ms + _best))
 
 	# Store for scoreboard — replace -/space with _ for safe variable names
 	_vname="$(echo "${_label%%(*}" | tr ' -' '__')"
 	eval "${_vname}_COMPILE=$_compile_ms"
+	eval "${_vname}_COMPILE_PCT=$_cpct"
 	eval "${_vname}_EXEC=$_best"
+	eval "${_vname}_EXEC_PCT=$_epct"
 	eval "${_vname}_TOTAL=$((_compile_ms + _best))"
 	eval "${_vname}_OUTPUT='$_output'"
 	rm -f "$_exe"
@@ -249,41 +329,59 @@ run_bench_awfy() {
 	printf "\n--- %s ---\n" "$_label"
 	list_awfy="$list_awfy|$_label"
 
-	# Compile
-	# shellcheck disable=SC2086
-	_compile_ms=$(time_ms $_compiler $_flags $AWFY_SRCS -o "$_exe" -lm 2>/dev/null) || true
-	if [ ! -x "$_exe" ]; then
-		printf "  COMPILE FAILED\n"
-		return 1
-	fi
-	printf "  Compile : %6s ms\n" "$_compile_ms"
+	# Compile: best-of-N, same rationale as run_bench.
+	_cbest=""
+	_cworst=""
+	_i=0
+	while [ "$_i" -lt "$COMPILE_RUNS" ]; do
+		_i=$((_i + 1))
+		# shellcheck disable=SC2086
+		_compile_ms=$(time_ms $PIN $_compiler $_flags $AWFY_SRCS -o "$_exe" -lm 2>/dev/null) || true
+		if [ ! -x "$_exe" ]; then
+			printf "  COMPILE FAILED\n"
+			return 1
+		fi
+		if [ -z "$_cbest" ] || [ "$_compile_ms" -lt "$_cbest" ]; then _cbest=$_compile_ms; fi
+		if [ -z "$_cworst" ] || [ "$_compile_ms" -gt "$_cworst" ]; then _cworst=$_compile_ms; fi
+		[ "$_i" -lt "$COMPILE_RUNS" ] && rm -f "$_exe"
+	done
+	_compile_ms=$_cbest
+	_cpct=0
+	[ "$_cbest" -gt 0 ] && _cpct=$(( (_cworst - _cbest) * 100 / _cbest ))
+	printf "  Compile : %6s ms  (best of %d, spread %d%%)\n" "$_compile_ms" "$COMPILE_RUNS" "$_cpct"
+	[ "$_cpct" -ge 20 ] && printf "  WARNING : compile timing unstable (worst %s ms)\n" "$_cworst"
 
-	# Execute best of N
-	_best=100000
+	# Execute best of N (AWFY_RUNS: each run is seconds-scale, unlike the
+	# small-file suite, so this stays smaller than RUNS to bound cost)
+	_best=""
+	_worst=""
 	_output=""
 	_i=0
-	while [ $_i -lt $RUNS ]; do
-		_output="$("$_exe" 2>&1)"
-		_exec_ms=$(time_ms "$_exe")
-		if [ "$_exec_ms" -lt "$_best" ]; then
-		    _best=$_exec_ms
-		fi
+	while [ "$_i" -lt "$AWFY_RUNS" ]; do
+                # shellcheck disable=SC2086
+		_output="$($PIN "$_exe" 2>&1)"
+                # shellcheck disable=SC2086
+		_exec_ms=$(time_ms $PIN "$_exe")
+		if [ -z "$_best" ] || [ "$_exec_ms" -lt "$_best" ]; then _best=$_exec_ms; fi
+		if [ -z "$_worst" ] || [ "$_exec_ms" -gt "$_worst" ]; then _worst=$_exec_ms; fi
 		_i=$((_i + 1))
 	done
-	if [ "$_best" = 100000 ]; then
-	    _best=$_exec_ms
-	fi
 	if printf '%s' "$_output" | grep -qi "failed with incorrect result"; then
 		printf "  RESULT  : INCORRECT\n"
 		rm -f "$_exe"
 		return 1
 	fi
-	printf "  Execute : %6s ms  (best of %d)\n" "$_best" "$RUNS"
+	_epct=0
+	[ "$_best" -gt 0 ] && _epct=$(( (_worst - _best) * 100 / _best ))
+	printf "  Execute : %6s ms  (best of %d, spread %d%%)\n" "$_best" "$AWFY_RUNS" "$_epct"
+	[ "$_epct" -ge 20 ] && printf "  WARNING : execute timing unstable (worst %s ms)\n" "$_worst"
 	printf "  Total   : %6s ms\n" $((_compile_ms + _best))
 
 	_vname="AWFY_$(echo "${_label%%(*}" | tr ' -' '__')"
 	eval "${_vname}_COMPILE=$_compile_ms"
+	eval "${_vname}_COMPILE_PCT=$_cpct"
 	eval "${_vname}_EXEC=$_best"
+	eval "${_vname}_EXEC_PCT=$_epct"
 	eval "${_vname}_TOTAL=$((_compile_ms + _best))"
 	rm -f "$_exe"
 	return 0
@@ -299,15 +397,15 @@ echo "  RCC substep timing  (-time)"
 echo "============================================"
 echo ""
 printf "\n--- RCC ---\n"
-rcc_time=$("$RCC" -time "$SRC" -o "$RCC_EXE" 2>&1 >/dev/null) || true
+rcc_time=$($PIN "$RCC" -time "$SRC" -o "$RCC_EXE" 2>&1 >/dev/null) || true
 printf '%s\n' "$rcc_time" | column -t
 rm -f "$RCC_EXE"
 printf "\n--- RCC -O1 ---\n"
-rcc_o1_time=$("$RCC" -time -O1 "$SRC" -o "$RCC_O1_EXE" 2>&1 >/dev/null) || true
+rcc_o1_time=$($PIN "$RCC" -time -O1 "$SRC" -o "$RCC_O1_EXE" 2>&1 >/dev/null) || true
 printf '%s\n' "$rcc_o1_time" | column -t
 rm -f "$RCC_O1_EXE"
 printf "\n--- RCC -O2 ---\n"
-rcc_o2_time=$("$RCC" -time -O2 "$SRC" -o "$RCC_O2_EXE" 2>&1 >/dev/null) || true
+rcc_o2_time=$($PIN "$RCC" -time -O2 "$SRC" -o "$RCC_O2_EXE" 2>&1 >/dev/null) || true
 printf '%s\n' "$rcc_o2_time" | column -t
 rm -f "$RCC_O2_EXE"
 
@@ -320,15 +418,15 @@ if download_sqlite; then
     echo ""
     printf "\n--- RCC ---\n"
     # shellcheck disable=SC2086
-    rcc_large_time=$("$RCC" -time $LARGE_CFLAGS 2>&1 >/dev/null) || true
+    rcc_large_time=$($PIN "$RCC" -time $LARGE_CFLAGS 2>&1 >/dev/null) || true
     printf '%s\n' "$rcc_large_time" | column -t
     printf "\n--- RCC -O1 ---\n"
     # shellcheck disable=SC2086
-    rcc_large_o1_time=$("$RCC" -time -O1 $LARGE_CFLAGS 2>&1 >/dev/null) || true
+    rcc_large_o1_time=$($PIN "$RCC" -time -O1 $LARGE_CFLAGS 2>&1 >/dev/null) || true
     printf '%s\n' "$rcc_large_o1_time" | column -t
     printf "\n--- RCC -O2 ---\n"
     # shellcheck disable=SC2086
-    rcc_large_o2_time=$("$RCC" -time -O2 $LARGE_CFLAGS 2>&1 >/dev/null) || true
+    rcc_large_o2_time=$($PIN "$RCC" -time -O2 $LARGE_CFLAGS 2>&1 >/dev/null) || true
     printf '%s\n' "$rcc_large_o2_time" | column -t
 fi
 
@@ -382,8 +480,8 @@ echo ""
 echo "============================================="
 echo "               SCOREBOARD"
 echo "============================================="
-printf "%-30s %10s %10s %10s\n" "Compiler " "Compile" "Execute" "Total"
-printf "%-30s %10s %10s %10s\n" "---------" "-------" "-------" "-----"
+printf "%-30s %10s %10s %10s %8s\n" "Compiler " "Compile" "Execute" "Total" "Spread"
+printf "%-30s %10s %10s %10s %8s\n" "---------" "-------" "-------" "-----" "------"
 oldifs="$IFS"
 IFS='|'
 for _c in $list_c; do
@@ -392,9 +490,17 @@ for _c in $list_c; do
 	eval "_cm=\${${_vname}_COMPILE:-}"
 	eval "_em=\${${_vname}_EXEC:-}"
 	eval "_tm=\${${_vname}_TOTAL:-}"
+	eval "_cp=\${${_vname}_COMPILE_PCT:-0}"
+	eval "_ep=\${${_vname}_EXEC_PCT:-0}"
 	[ -z "$_cm" ] && continue
         # shellcheck disable=SC2154
-	printf "%-30s %8s ms %8s ms %8s ms\n" "$_c" "$_cm" "$_em" "$_tm"
+	_sp=$_cp
+        # shellcheck disable=SC2154
+	[ "$_ep" -gt "$_sp" ] && _sp=$_ep
+	_spstr="${_sp}%"
+	[ "$_sp" -ge 20 ] && _spstr="${_sp}%!"
+        # shellcheck disable=SC2154
+	printf "%-30s %8s ms %8s ms %8s ms %8s\n" "$_c" "$_cm" "$_em" "$_tm" "$_spstr"
 done
 IFS="$oldifs"
 
@@ -448,8 +554,8 @@ echo ""
 echo "============================================="
 echo "        AWFY SCOREBOARD  (14-benchmark suite)"
 echo "============================================="
-printf "%-30s %10s %10s %10s\n" "Compiler " "Compile" "Execute" "Total"
-printf "%-30s %10s %10s %10s\n" "---------" "-------" "-------" "-----"
+printf "%-30s %10s %10s %10s %8s\n" "Compiler " "Compile" "Execute" "Total" "Spread"
+printf "%-30s %10s %10s %10s %8s\n" "---------" "-------" "-------" "-----" "------"
 oldifs="$IFS"
 IFS='|'
 for _c in $list_awfy; do
@@ -458,9 +564,15 @@ for _c in $list_awfy; do
 	eval "_cm=\${${_vname}_COMPILE:-}"
 	eval "_em=\${${_vname}_EXEC:-}"
 	eval "_tm=\${${_vname}_TOTAL:-}"
+	eval "_cp=\${${_vname}_COMPILE_PCT:-0}"
+	eval "_ep=\${${_vname}_EXEC_PCT:-0}"
 	[ -z "$_cm" ] && continue
         # shellcheck disable=SC2154
-	printf "%-30s %8s ms %8s ms %8s ms\n" "$_c" "$_cm" "$_em" "$_tm"
+	_sp=$_cp
+	[ "$_ep" -gt "$_sp" ] && _sp=$_ep
+	_spstr="${_sp}%"
+	[ "$_sp" -ge 20 ] && _spstr="${_sp}%!"
+	printf "%-30s %8s ms %8s ms %8s ms %8s\n" "$_c" "$_cm" "$_em" "$_tm" "$_spstr"
 done
 IFS="$oldifs"
 
@@ -470,27 +582,38 @@ if [ -f "$LARGE_SRC" ]; then
     echo "============================================="
     echo "     LARGE FILE (sqlite3.c)"
     echo "============================================="
-    printf "%-30s %10s\n" "Compiler" "Compile (ms)"
-    printf "%-30s %10s\n" "--------" "-----------"
+    printf "%-30s %10s %8s\n" "Compiler" "Compile (ms)" "Spread"
+    printf "%-30s %10s %8s\n" "--------" "-----------" "------"
 
     large_results=""
     nl='
 '
     _compile_large() {
-	# shellcheck disable=SC2086
 	_label="$1"
 	shift
 	printf "%-30s " "$_label"
 	_rc=0
-	_cm=$(time_ms "$@" 2>/dev/null) || _rc=$?
-	if [ "$_rc" -ne 0 ]; then
+	# shellcheck disable=SC2086
+	_cbest=$(time_ms $PIN "$@" 2>/dev/null) || _rc=$?
+	if [ "$_rc" -ne 0 ] || [ -z "$_cbest" ]; then
 	    printf "    FAIL\n"
-	else
-	    printf "%8s ms\n" "${_cm:-FAILED}"
-	    if [ -n "$_cm" ]; then
-		large_results="$large_results$(printf '| %-9s | %12s |' "$_label" "${_cm} ms")$nl"
-	    fi
+	    return
 	fi
+	_cworst=$_cbest
+	_j=1
+	while [ "$_j" -lt "$LARGE_RUNS" ]; do
+	    _j=$((_j + 1))
+	    # shellcheck disable=SC2086
+	    _cm=$(time_ms $PIN "$@" 2>/dev/null) || true
+	    if [ -n "$_cm" ]; then
+		[ "$_cm" -lt "$_cbest" ] && _cbest=$_cm
+		[ "$_cm" -gt "$_cworst" ] && _cworst=$_cm
+	    fi
+	done
+	_pct=0
+	[ "$_cbest" -gt 0 ] && _pct=$(( (_cworst - _cbest) * 100 / _cbest ))
+	printf "%8s ms %7s%%\n" "$_cbest" "$_pct"
+	large_results="$large_results$(printf '| %-9s | %12s | %6s |' "$_label" "${_cbest} ms" "${_pct}%")$nl"
     }
 
     # shellcheck disable=SC2086
@@ -559,8 +682,8 @@ fi # LARGE_SRC
 		printf "# Linux RCC Benchmark Results\n\n"
 	fi
 	printf "_Generated: %s_\n\n" "$(date '+%B %Y')"
-	printf "| Compiler  | Compile (ms) | Execute (ms) | Total (ms) |\n"
-	printf "| :-------- | -----------: | -----------: | ---------: |\n"
+	printf "| Compiler  | Compile (ms) | Execute (ms) | Total (ms) | Spread |\n"
+	printf "| :-------- | -----------: | -----------: | ---------: | -----: |\n"
 IFS='|'
 for _c in $list_c; do
 	[ -z "$_c" ] && continue
@@ -568,13 +691,17 @@ for _c in $list_c; do
 	eval "_cm=\${${_vname}_COMPILE:-}"
 	eval "_em=\${${_vname}_EXEC:-}"
 	eval "_tm=\${${_vname}_TOTAL:-}"
+	eval "_cp=\${${_vname}_COMPILE_PCT:-0}"
+	eval "_ep=\${${_vname}_EXEC_PCT:-0}"
 	[ -z "$_cm" ] && continue
-	printf "| %-9s | %12s | %12s | %10s |\n" "$_c" "$_cm" "$_em" "$_tm"
+	_sp=$_cp
+	[ "$_ep" -gt "$_sp" ] && _sp=$_ep
+	printf "| %-9s | %12s | %12s | %10s | %5s%% |\n" "$_c" "$_cm" "$_em" "$_tm" "$_sp"
 done
 IFS="$oldifs"
 printf "\n## Are-We-Fast-Yet Suite (14 benchmarks)\n\n"
-printf "| Compiler  | Compile (ms) | Execute (ms) | Total (ms) |\n"
-printf "| :-------- | -----------: | -----------: | ---------: |\n"
+printf "| Compiler  | Compile (ms) | Execute (ms) | Total (ms) | Spread |\n"
+printf "| :-------- | -----------: | -----------: | ---------: | -----: |\n"
 IFS='|'
 for _c in $list_awfy; do
 	[ -z "$_c" ] && continue
@@ -582,8 +709,12 @@ for _c in $list_awfy; do
 	eval "_cm=\${${_vname}_COMPILE:-}"
 	eval "_em=\${${_vname}_EXEC:-}"
 	eval "_tm=\${${_vname}_TOTAL:-}"
+	eval "_cp=\${${_vname}_COMPILE_PCT:-0}"
+	eval "_ep=\${${_vname}_EXEC_PCT:-0}"
 	[ -z "$_cm" ] && continue
-	printf "| %-9s | %12s | %12s | %10s |\n" "$_c" "$_cm" "$_em" "$_tm"
+	_sp=$_cp
+	[ "$_ep" -gt "$_sp" ] && _sp=$_ep
+	printf "| %-9s | %12s | %12s | %10s | %5s%% |\n" "$_c" "$_cm" "$_em" "$_tm" "$_sp"
 done
 IFS="$oldifs"
 printf "\n## RCC Substep Timing\n\n"
@@ -608,8 +739,8 @@ if [ -n "${rcc_large_time:-}" ]; then
 fi
 if [ -n "${large_results:-}" ]; then
 	printf "\n## Large File Compile-Only (sqlite3.c)\n\n"
-	printf "| Compiler  | Compile (ms) |\n"
-	printf "| :-------- | -----------: |\n"
+	printf "| Compiler  | Compile (ms) | Spread |\n"
+	printf "| :-------- | -----------: | -----: |\n"
 	printf '%s' "$large_results"
 fi
 } > "$REPORT"

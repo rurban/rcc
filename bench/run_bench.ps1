@@ -1,5 +1,11 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 $ErrorActionPreference = "Continue"
+# Benchmarking method: compile and execute are both sampled and reported
+# best-of-N with a worst-to-best spread (mirrors bench/run_bench.sh) --
+# a single sample is dominated by cold-cache/scheduler noise, not the
+# compiler's actual cost. Override with $env:BENCH_RUNS / $env:BENCH_COMPILE_RUNS.
+$RUNS = if ($env:BENCH_RUNS) { [int]$env:BENCH_RUNS } else { 5 }
+$COMPILE_RUNS = if ($env:BENCH_COMPILE_RUNS) { [int]$env:BENCH_COMPILE_RUNS } else { 3 }
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RootDir   = Split-Path -Parent $ScriptDir
 Set-Location $ScriptDir
@@ -65,43 +71,60 @@ function Run-Bench {
 
     Write-Host "--- $Label ---" -ForegroundColor $Color
 
-    # Compile (10s timeout via background job, avoids hang)
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $job = Start-Job -ScriptBlock {
-        param($Compiler, $ArgStr)
-        $p = Start-Process -FilePath $Compiler -ArgumentList $ArgStr -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
-        if ($p) { $p.ExitCode } else { -1 }
-    } -ArgumentList $Compiler, $ArgStr
-    $completed = Wait-Job $job -Timeout 10
-    if (-not $completed) {
-        Stop-Job $job -ErrorAction SilentlyContinue
-        Remove-Job $job -ErrorAction SilentlyContinue
-        Write-Host "  COMPILE FAILED (timed out after 30s)" -ForegroundColor Red
-        return $null
-    }
-    $exitCode = Receive-Job $job
-    Remove-Job $job
-    $sw.Stop()
-    $compileMs = $sw.ElapsedMilliseconds
+    # Compile: best-of-N (10s timeout per attempt via background job).
+    # A single sample is dominated by cold-cache/scheduler noise, not the
+    # compiler's actual cost.
+    $cBest = [long]::MaxValue
+    $cWorst = 0
+    for ($ci = 0; $ci -lt $COMPILE_RUNS; $ci++) {
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $job = Start-Job -ScriptBlock {
+            param($Compiler, $ArgStr)
+            $p = Start-Process -FilePath $Compiler -ArgumentList $ArgStr -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+            if ($p) { $p.ExitCode } else { -1 }
+        } -ArgumentList $Compiler, $ArgStr
+        $completed = Wait-Job $job -Timeout 10
+        if (-not $completed) {
+            Stop-Job $job -ErrorAction SilentlyContinue
+            Remove-Job $job -ErrorAction SilentlyContinue
+            Write-Host "  COMPILE FAILED (timed out after 10s)" -ForegroundColor Red
+            return $null
+        }
+        $exitCode = Receive-Job $job
+        Remove-Job $job
+        $sw.Stop()
+        $compileMs = $sw.ElapsedMilliseconds
 
-    if ($exitCode -ne 0 -or -not (Test-Path $ExePath)) {
-        Write-Host "  COMPILE FAILED (exit=$($exitCode))" -ForegroundColor Red
-        return $null
+        if ($exitCode -ne 0 -or -not (Test-Path $ExePath)) {
+            Write-Host "  COMPILE FAILED (exit=$($exitCode))" -ForegroundColor Red
+            return $null
+        }
+        if ($compileMs -lt $cBest) { $cBest = $compileMs }
+        if ($compileMs -gt $cWorst) { $cWorst = $compileMs }
     }
-    Write-Host ("  Compile : {0,6} ms" -f $compileMs) -ForegroundColor DarkGray
+    $compileMs = $cBest
+    $cPct = if ($cBest -gt 0) { [math]::Round((($cWorst - $cBest) * 100.0) / $cBest) } else { 0 }
+    Write-Host ("  Compile : {0,6} ms  (best of {1}, spread {2}%)" -f $compileMs, $COMPILE_RUNS, $cPct) -ForegroundColor DarkGray
+    if ($cPct -ge 20) {
+        Write-Host ("  WARNING : compile timing unstable (worst {0} ms)" -f $cWorst) -ForegroundColor Yellow
+    }
 
-    # Execute (measure 3 runs, take best)
+    # Execute: best of N
     $best = [long]::MaxValue
+    $worst = 0
     $output = ""
-    for ($i = 0; $i -lt 3; $i++) {
+    for ($i = 0; $i -lt $RUNS; $i++) {
         $sw2 = [System.Diagnostics.Stopwatch]::StartNew()
         $output = & $ExePath 2>&1 | Out-String
         $sw2.Stop()
-        if ($sw2.ElapsedMilliseconds -lt $best) {
-            $best = $sw2.ElapsedMilliseconds
-        }
+        if ($sw2.ElapsedMilliseconds -lt $best) { $best = $sw2.ElapsedMilliseconds }
+        if ($sw2.ElapsedMilliseconds -gt $worst) { $worst = $sw2.ElapsedMilliseconds }
     }
-    Write-Host ("  Execute : {0,6} ms  (best of 3)" -f $best) -ForegroundColor $Color
+    $ePct = if ($best -gt 0) { [math]::Round((($worst - $best) * 100.0) / $best) } else { 0 }
+    Write-Host ("  Execute : {0,6} ms  (best of {1}, spread {2}%)" -f $best, $RUNS, $ePct) -ForegroundColor $Color
+    if ($ePct -ge 20) {
+        Write-Host ("  WARNING : execute timing unstable (worst {0} ms)" -f $worst) -ForegroundColor Yellow
+    }
     Write-Host ("  Total   : {0,6} ms" -f ($compileMs + $best)) -ForegroundColor $Color
 
     # Cleanup
@@ -112,6 +135,7 @@ function Run-Bench {
         Compile   = $compileMs
         Execute   = $best
         Total     = $compileMs + $best
+        Spread    = [math]::Max($cPct, $ePct)
         Output    = $output.Trim()
     }
 }
@@ -168,10 +192,10 @@ Write-Host "=============================================" -ForegroundColor Cyan
 Write-Host "               SCOREBOARD"                     -ForegroundColor Cyan
 Write-Host "=============================================" -ForegroundColor Cyan
 Write-Host ""
-Write-Host ("{0,-25} {1,10} {2,10} {3,10}" -f "Compiler", "Compile", "Execute", "Total")
-Write-Host ("{0,-25} {1,10} {2,10} {3,10}" -f "--------", "-------", "-------", "-----")
+Write-Host ("{0,-25} {1,10} {2,10} {3,10} {4,8}" -f "Compiler", "Compile", "Execute", "Total", "Spread")
+Write-Host ("{0,-25} {1,10} {2,10} {3,10} {4,8}" -f "--------", "-------", "-------", "-----", "------")
 foreach ($r in $results) {
-    Write-Host ("{0,-25} {1,8} ms {2,8} ms {3,8} ms" -f $r.Label, $r.Compile, $r.Execute, $r.Total)
+    Write-Host ("{0,-25} {1,8} ms {2,8} ms {3,8} ms {4,6}%" -f $r.Label, $r.Compile, $r.Execute, $r.Total, $r.Spread)
 }
 
 # --- Head-to-head ---
@@ -219,10 +243,10 @@ $reportLines += "# Windows RCC Benchmark Results"
 $reportLines += ""
 $reportLines += "_Generated: $(Get-Date)_"
 $reportLines += ""
-$reportLines += "| Compiler                 | Compile (ms) | Execute (ms) | Total (ms) |"
-$reportLines += "| :----------------------- | -------------: | -------------: | ----------: |"
+$reportLines += "| Compiler                 | Compile (ms) | Execute (ms) | Total (ms) | Spread |"
+$reportLines += "| :----------------------- | -------------: | -------------: | ----------: | -----: |"
 foreach ($r in $results) {
-    $reportLines += ("| {0,-22} | {1,12} | {2,12} | {3,10} |" -f $r.Label, $r.Compile, $r.Execute, $r.Total)
+    $reportLines += ("| {0,-22} | {1,12} | {2,12} | {3,10} | {4,4}% |" -f $r.Label, $r.Compile, $r.Execute, $r.Total, $r.Spread)
 }
 $reportLines += ""
 if ($rcc_r -and $tcc_r) {
