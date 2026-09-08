@@ -3553,13 +3553,21 @@ static int run_unit_tests(void) {
     snprintf(unit_path, sizeof(unit_path), "%s/test", SCRIPT_DIR);
 #endif
     if (!file_exists(unit_path)) return 0;
+    {
+        char lp[PATH_MAX];
+        snprintf(lp, sizeof(lp), "%s/test/units_report_%s.log", SCRIPT_DIR, platform_suffix);
+        open_log(lp);
+    }
     printf("\n%sUnit tests (test/)%s\n", COL_CYAN, COL_RESET);
 
     total = passed = failed = todo = 0;
 
     struct dirent **nl;
     int n = scandir(unit_path, &nl, NULL, alphasort);
-    if (n < 0) return 0;
+    if (n < 0) {
+        close_log();
+        return 0;
+    }
 
     if (g_num_workers > 1 && only_test_count == 0) {
         /* Parallel path: collect, dispatch, evaluate */
@@ -3887,6 +3895,7 @@ static int run_unit_tests(void) {
                      total, passed, failed);
         write_summary(sp, sc);
     }
+    close_log();
     return failed > 0 ? 1 : 0;
 }
 
