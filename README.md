@@ -63,12 +63,12 @@ Linux:
 
 rcc -O1 -time:
 
-    preprocess  bench.c:   7916 us
-    parse       bench.c:    721 us
-    typecheck   bench.c:     87 us
-    opt         bench.c:     45 us
-    codegen     bench.c:   1247 us
-    link        bench_o1:   294 us
+    preprocess  bench.c:   9658 us
+    parse       bench.c:    725 us
+    typecheck   bench.c:     23 us
+    opt         bench.c:     62 us
+    codegen     bench.c:    332 us
+    link        bench_o1: 11732 us
 
 ### Are-We-Fast-Yet Suite
 

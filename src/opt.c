@@ -526,9 +526,70 @@ static Node *inlinable_return_expr(Function *fn) {
     return b->lhs;
 }
 
+// Name -> Function* lookup used by try_inline(). A linear scan of
+// prog->items per call site is O(items x call-sites): quadratic on a
+// single huge translation unit (e.g. the sqlite3.c amalgamation has
+// thousands of top-level functions and far more call sites), and was
+// the dominant cost of always_inline_pass()/optimize() there (measured
+// with `perf record`: ~14% of total compile time in try_inline's own
+// scan). Names are interned (str_intern(), see tokenize()/parser.c's
+// var-name convention), so a pointer-hashed table with `==` lookup is
+// exact, not approximate -- same invariant try_inline() already relies
+// on for its own name compare.
+#define INLINE_HASH_SIZE 4096
+typedef struct InlineHashNode InlineHashNode;
+struct InlineHashNode {
+    char *name;
+    Function *fn;
+    InlineHashNode *next;
+};
+static InlineHashNode *inline_htab[INLINE_HASH_SIZE];
+static InlineHashNode *inline_htab_nodes;
+
+static uint32_t inline_hash_ptr(const char *s) {
+    uint64_t v = (uint64_t)(uintptr_t)s;
+    v *= 0x9E3779B97F4A7C15ull; // fibonacci mix; interned ptrs are 8-byte aligned
+    return (uint32_t)(v >> 32);
+}
+
+// Rebuilds unconditionally -- optimize() and always_inline_pass() each
+// call this once per TU, so the O(items) rebuild cost is negligible next
+// to the O(items) *per lookup* scan it replaces. (A build-once-and-cache-
+// by-Program-pointer scheme was considered and rejected: nothing frees a
+// Program in this process, but eliminate_unused_static_inline()'s
+// parallel `fns` array below IS freed and reallocated per TU, and glibc
+// routinely reuses the same address for a same-sized alloc right after a
+// free -- a pointer-identity cache is a real staleness bug there, so
+// neither table caches on pointer identity, for consistency.)
+static void inline_htab_build(Program *prog) {
+    memset(inline_htab, 0, sizeof(inline_htab));
+    int n = 0;
+    for (TLItem *item = prog->items; item; item = item->next)
+        if (item->kind == TL_FUNC) n++;
+    free(inline_htab_nodes);
+    inline_htab_nodes = n ? malloc(sizeof(InlineHashNode) * (size_t)n) : NULL;
+    int i = 0;
+    for (TLItem *item = prog->items; item; item = item->next)
+        if (item->kind == TL_FUNC) {
+            uint32_t h = inline_hash_ptr(item->fn->name) % INLINE_HASH_SIZE;
+            inline_htab_nodes[i].name = item->fn->name;
+            inline_htab_nodes[i].fn = item->fn;
+            inline_htab_nodes[i].next = inline_htab[h];
+            inline_htab[h] = &inline_htab_nodes[i];
+            i++;
+        }
+}
+
+static Function *inline_htab_lookup(const char *name) {
+    uint32_t h = inline_hash_ptr(name) % INLINE_HASH_SIZE;
+    for (InlineHashNode *nd = inline_htab[h]; nd; nd = nd->next)
+        if (nd->name == name) return nd->fn;
+    return NULL;
+}
+
 // Try to inline a call. On success returns the replacement expression;
 // otherwise NULL (leaving the call unchanged).
-static Node *try_inline(Program *prog, Node *call) {
+static Node *try_inline(Node *call) {
     // A direct call carries its target either in funcname or, for an
     // in-scope function, as an ND_LVAR in lhs. Names are interned, so a
     // pointer compare identifies the callee.
@@ -548,12 +609,7 @@ static Node *try_inline(Program *prog, Node *call) {
         ((rt->kind == TY_STRUCT || rt->kind == TY_UNION) && !rt->is_vector))
         return NULL;
 
-    Function *fn = NULL;
-    for (TLItem *item = prog->items; item; item = item->next)
-        if (item->kind == TL_FUNC && item->fn->name == name) {
-            fn = item->fn;
-            break;
-        }
+    Function *fn = inline_htab_lookup(name);
     if (!fn || !fn->body || fn->is_variadic || (fn->ty && fn->ty->is_variadic))
         return NULL;
     // __attribute__((always_inline)) forces inlining at every -O level
@@ -1257,7 +1313,7 @@ static Node *optimize_node(Program *prog, Node *node) {
         // try_inline), so the real GCC SIMD headers' `extern __inline
         // __always_inline__` wrappers inline at -O0 exactly like GCC's.
         {
-            Node *inl = try_inline(prog, node);
+            Node *inl = try_inline(node);
             if (inl) return inl;
         }
 
@@ -1321,6 +1377,7 @@ static Node *optimize_node(Program *prog, Node *node) {
 }
 
 void optimize(Program *prog) {
+    inline_htab_build(prog);
     for (TLItem *item = prog->items; item; item = item->next) {
         if (item->kind != TL_FUNC)
             continue;
@@ -1386,13 +1443,14 @@ static Node *always_inline_node(Program *prog, Node *node) {
         prev_arg = o;
     }
     if (node->kind == ND_FUNCALL) {
-        Node *inl = try_inline(prog, node);
+        Node *inl = try_inline(node);
         if (inl) return inl;
     }
     return node;
 }
 
 void always_inline_pass(Program *prog) {
+    inline_htab_build(prog);
     for (TLItem *item = prog->items; item; item = item->next) {
         if (item->kind != TL_FUNC)
             continue;
@@ -1449,11 +1507,66 @@ static bool text_mentions_ident(const char *text, const char *name) {
     return false;
 }
 
-static Function *dce_lookup(Function **fns, int n, const char *name) {
+// Content-hashed name/asm_name -> Function* lookup, built once per
+// eliminate_unused_static_inline() call by dce_htab_build() below. The old
+// version linear-scanned fns[0..n-1] with strcmp per lookup and was called
+// once per ND_FUNCALL/ND_LVAR node in the *entire* live closure -- O(n *
+// call-sites), the dominant cost (~16% of total compile time, per `perf
+// record`) compiling a huge single-TU amalgamation like sqlite3.c. Hashed
+// by string bytes (not by interned pointer): Function.asm_name is not
+// always str_intern()'d (e.g. nested-function mangled names come from
+// format()), so a byte-equal-but-distinct pointer must still hit -- same
+// result the old strcmp scan gave, just O(1) average instead of O(n).
+#define DCE_HASH_SIZE 8192
+typedef struct DceHashNode DceHashNode;
+struct DceHashNode {
+    const char *key;
+    Function *fn;
+    DceHashNode *next;
+};
+static DceHashNode *dce_htab[DCE_HASH_SIZE];
+static DceHashNode *dce_htab_nodes;
+
+static uint32_t dce_hash_str(const char *s) {
+    uint32_t h = 2166136261u;
+    for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u;
+    return h;
+}
+
+static void dce_htab_build(Function **fns, int n) {
+    memset(dce_htab, 0, sizeof(dce_htab));
+    free(dce_htab_nodes);
+    dce_htab_nodes = n ? malloc(sizeof(DceHashNode) * (size_t)(2 * n)) : NULL;
+    int ni = 0;
+    // Insert in reverse index order: each insert prepends to its bucket,
+    // so the lowest-index match ends up at the chain head and wins on
+    // lookup -- same tie-break the old ascending linear scan gave (see
+    // dce_scan_node's ND_LVAR case comment: two different nested
+    // functions can share a `name`, and the fns[] index order matters).
+    for (int i = n - 1; i >= 0; i--) {
+        Function *f = fns[i];
+        uint32_t h = dce_hash_str(f->name) % DCE_HASH_SIZE;
+        dce_htab_nodes[ni].key = f->name;
+        dce_htab_nodes[ni].fn = f;
+        dce_htab_nodes[ni].next = dce_htab[h];
+        dce_htab[h] = &dce_htab_nodes[ni];
+        ni++;
+        if (f->asm_name) {
+            uint32_t h2 = dce_hash_str(f->asm_name) % DCE_HASH_SIZE;
+            dce_htab_nodes[ni].key = f->asm_name;
+            dce_htab_nodes[ni].fn = f;
+            dce_htab_nodes[ni].next = dce_htab[h2];
+            dce_htab[h2] = &dce_htab_nodes[ni];
+            ni++;
+        }
+    }
+}
+
+static Function *dce_lookup(const char *name) {
     if (!name) return NULL;
-    for (int i = 0; i < n; i++)
-        if (!strcmp(fns[i]->name, name) || (fns[i]->asm_name && !strcmp(fns[i]->asm_name, name)))
-            return fns[i];
+    uint32_t h = dce_hash_str(name) % DCE_HASH_SIZE;
+    for (DceHashNode *nd = dce_htab[h]; nd; nd = nd->next)
+        if (!strcmp(nd->key, name)) return nd->fn;
     return NULL;
 }
 
@@ -1473,7 +1586,7 @@ static void dce_mark(Function *fn, Function ***wl, int *wl_len, int *wl_cap) {
 static void dce_scan_node(Node *node, Function **fns, int n, Function ***wl, int *wl_len, int *wl_cap) {
     for (; node; node = node->next) {
         if (node->kind == ND_FUNCALL) {
-            Function *f = dce_lookup(fns, n, node->funcname);
+            Function *f = dce_lookup(node->funcname);
             if (f) dce_mark(f, wl, wl_len, wl_cap);
         } else if (node->kind == ND_LVAR && node->var && node->var->is_function) {
             // asm_name (when set) is always a unique, unambiguous symbol —
@@ -1484,9 +1597,9 @@ static void dce_scan_node(Node *node, Function **fns, int n, Function ***wl, int
             // name, silently marking the wrong one live. Try asm_name
             // first; name is the fallback for ordinary (non-mangled)
             // functions.
-            Function *f = node->var->asm_name ? dce_lookup(fns, n, node->var->asm_name) : NULL;
+            Function *f = node->var->asm_name ? dce_lookup(node->var->asm_name) : NULL;
             if (!f)
-                f = dce_lookup(fns, n, node->var->name);
+                f = dce_lookup(node->var->name);
             if (f) dce_mark(f, wl, wl_len, wl_cap);
         } else if (node->kind == ND_ASM && node->asm_template) {
             for (int i = 0; i < n; i++)
@@ -1538,6 +1651,7 @@ void eliminate_unused_static_inline(Program *prog) {
     int i = 0;
     for (TLItem *item = prog->items; item; item = item->next)
         if (item->kind == TL_FUNC) fns[i++] = item->fn;
+    dce_htab_build(fns, n);
 
     Function **wl = NULL;
     int wl_len = 0, wl_cap = 0;
@@ -1604,7 +1718,7 @@ void eliminate_unused_static_inline(Program *prog) {
     }
     for (int k = 0; k < n; k++)
         if (fns[k]->alias_target) {
-            Function *t = dce_lookup(fns, n, fns[k]->alias_target);
+            Function *t = dce_lookup(fns[k]->alias_target);
             if (t) dce_mark(t, &wl, &wl_len, &wl_cap);
         }
     // A global declaration's alias_target (e.g. `int init_module(void)
@@ -1614,7 +1728,7 @@ void eliminate_unused_static_inline(Program *prog) {
     // didn't see it.
     for (LVar *g = prog->globals; g; g = g->next)
         if (g->alias_target) {
-            Function *t = dce_lookup(fns, n, g->alias_target);
+            Function *t = dce_lookup(g->alias_target);
             if (t) dce_mark(t, &wl, &wl_len, &wl_cap);
         }
     // A global's initializer taking a candidate's address (a function
@@ -1623,7 +1737,7 @@ void eliminate_unused_static_inline(Program *prog) {
     // once global_initializer() has already consumed the initializer AST.
     for (LVar *g = prog->globals; g; g = g->next)
         for (Reloc *r = g->relocs; r; r = r->next) {
-            Function *f = dce_lookup(fns, n, r->label);
+            Function *f = dce_lookup(r->label);
             if (f) dce_mark(f, &wl, &wl_len, &wl_cap);
         }
     // Raw top-level asm (outside any function) mentioning a candidate's
@@ -1666,7 +1780,7 @@ void eliminate_unused_static_inline(Program *prog) {
             if (!cf && v->ty && v->ty->kind == TY_ARRAY && v->ty->base)
                 cf = v->ty->base->cleanup_func;
             if (cf) {
-                Function *cfn = dce_lookup(fns, n, cf);
+                Function *cfn = dce_lookup(cf);
                 if (cfn) dce_mark(cfn, &wl, &wl_len, &wl_cap);
             }
         }
