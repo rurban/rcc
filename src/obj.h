@@ -278,6 +278,7 @@ struct ObjFile {
     // so growing can rehash without touching the strings.
     struct SymHashNode {
         uint32_t hash;
+        uint32_t len; // name length, checked before strcmp to skip same-hash/different-length collisions
         int sym_idx;
         struct SymHashNode *next;
     } **sym_htab;

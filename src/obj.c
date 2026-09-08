@@ -112,12 +112,14 @@ void secbuf_patch64le(SecBuf *s, size_t off, uint64_t v) {
 
 #define SYM_HT_INIT 4096 // power of two
 
-static uint32_t sym_hash(const char *name) {
+static uint32_t sym_hash_len(const char *name, uint32_t *out_len) {
     uint32_t h = 2166136261u;
-    for (const char *s = name; *s; s++) {
+    const char *s = name;
+    for (; *s; s++) {
         h ^= (uint8_t)*s;
         h *= 16777619;
     }
+    *out_len = (uint32_t)(s - name);
     return h;
 }
 
@@ -224,10 +226,14 @@ UnwindEntry *objfile_add_unwind(ObjFile *obj) {
 
 int objfile_add_sym(ObjFile *obj, const char *name, int section,
                     uint64_t offset, uint64_t size, SymBind bind, SymType type) {
-    // Fast path: hash table lookup
-    uint32_t h = sym_hash(name);
+    // Fast path: hash table lookup. Length is checked before memcmp so a
+    // same-bucket collision with a different-length name (the common case:
+    // FNV-1a spreads well, but a 32/64-bucket table still sees same-hash
+    // different-name entries) is rejected in O(1) instead of scanning the
+    // shared prefix.
+    uint32_t len, h = sym_hash_len(name, &len);
     for (struct SymHashNode *n = obj->sym_htab[h & (obj->sym_htab_size - 1)]; n; n = n->next) {
-        if (n->hash == h && strcmp(obj->syms[n->sym_idx].name, name) == 0) {
+        if (n->hash == h && n->len == len && memcmp(obj->syms[n->sym_idx].name, name, len) == 0) {
             // Update to defined version if previously undefined
             if (obj->syms[n->sym_idx].section == SEC_UNDEF && section != SEC_UNDEF) {
                 obj->syms[n->sym_idx].section = section;
@@ -260,6 +266,7 @@ int objfile_add_sym(ObjFile *obj, const char *name, int section,
     // Insert into hash table
     struct SymHashNode *node = malloc(sizeof(struct SymHashNode));
     node->hash = h;
+    node->len = len;
     node->sym_idx = idx;
     uint32_t b = h & (obj->sym_htab_size - 1);
     node->next = obj->sym_htab[b];
@@ -270,9 +277,9 @@ int objfile_add_sym(ObjFile *obj, const char *name, int section,
 }
 
 int objfile_find_sym(ObjFile *obj, const char *name) {
-    uint32_t h = sym_hash(name);
+    uint32_t len, h = sym_hash_len(name, &len);
     for (struct SymHashNode *n = obj->sym_htab[h & (obj->sym_htab_size - 1)]; n; n = n->next)
-        if (n->hash == h && strcmp(obj->syms[n->sym_idx].name, name) == 0)
+        if (n->hash == h && n->len == len && memcmp(obj->syms[n->sym_idx].name, name, len) == 0)
             return n->sym_idx;
     return -1;
 }

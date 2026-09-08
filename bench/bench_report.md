@@ -4,110 +4,110 @@ _Generated: September 2026_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) | Spread |
 | :-------- | -----------: | -----------: | ---------: | -----: |
-| RCC       |           24 |          715 |        739 |     5% |
-| RCC -O1   |           25 |          741 |        766 |    24% |
-| RCC -O2   |           26 |          711 |        737 |     9% |
-| TCC       |            5 |          497 |        502 |    20% |
-| SLIMCC    |           33 |          520 |        553 |     3% |
-| XCC       |            9 |          361 |        370 |    22% |
-| KEFIR     |          182 |          588 |        770 |     8% |
-| KEFIR -O1 |          196 |          311 |        507 |     9% |
-| SCC       |           32 |          554 |        586 |    19% |
-| LACC      |           25 |          780 |        805 |     4% |
-| ANTCC     |           25 |          428 |        453 |     6% |
-| CAKE      |           89 |          486 |        575 |     8% |
-| CCC       |           34 |          553 |        587 |    21% |
-| GCC -O0   |           54 |          486 |        540 |     5% |
-| GCC -O2   |          148 |          177 |        325 |     2% |
-| Clang -O0 |           77 |          476 |        553 |     4% |
-| Clang -O2 |          134 |          180 |        314 |    11% |
+| RCC       |           23 |          693 |        716 |     4% |
+| RCC -O1   |           24 |          692 |        716 |     4% |
+| RCC -O2   |           23 |          694 |        717 |     5% |
+| TCC       |            5 |          485 |        490 |     1% |
+| SLIMCC    |           31 |          499 |        530 |     3% |
+| XCC       |            8 |          358 |        366 |     1% |
+| KEFIR     |          176 |          569 |        745 |     1% |
+| KEFIR -O1 |          184 |          306 |        490 |     4% |
+| SCC       |           32 |          535 |        567 |    17% |
+| LACC      |           24 |          755 |        779 |     4% |
+| ANTCC     |           23 |          412 |        435 |     4% |
+| CAKE      |           87 |          477 |        564 |     1% |
+| CCC       |           32 |          536 |        568 |    16% |
+| GCC -O0   |           54 |          478 |        532 |     3% |
+| GCC -O2   |          146 |          175 |        321 |     1% |
+| Clang -O0 |           78 |          462 |        540 |     2% |
+| Clang -O2 |          126 |          176 |        302 |     1% |
 
 ## Are-We-Fast-Yet Suite (14 benchmarks)
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) | Spread |
 | :-------- | -----------: | -----------: | ---------: | -----: |
-| RCC       |          387 |         6140 |       6527 |     8% |
-| RCC -O1   |          394 |         6983 |       7377 |    13% |
-| RCC -O2   |          400 |         6411 |       6811 |     4% |
-| TCC       |           66 |         5297 |       5363 |     6% |
-| SLIMCC    |          259 |         5139 |       5398 |     2% |
-| KEFIR     |         4516 |         5465 |       9981 |     1% |
-| KEFIR -O1 |         5003 |         3833 |       8836 |     5% |
-| ANTCC     |          191 |         3853 |       4044 |     6% |
-| CCC       |          876 |         4742 |       5618 |     5% |
-| GCC -O0   |          886 |         5257 |       6143 |     2% |
-| GCC -O2   |         1985 |         2685 |       4670 |     7% |
-| Clang -O0 |          889 |         4830 |       5719 |    10% |
-| Clang -O2 |         1746 |         3519 |       5265 |    23% |
+| RCC       |          363 |         5826 |       6189 |     4% |
+| RCC -O1   |          376 |         6605 |       6981 |     0% |
+| RCC -O2   |          359 |         6110 |       6469 |     3% |
+| TCC       |           67 |         5036 |       5103 |     2% |
+| SLIMCC    |          250 |         4872 |       5122 |     0% |
+| KEFIR     |         4393 |         5280 |       9673 |     0% |
+| KEFIR -O1 |         4819 |         3666 |       8485 |     1% |
+| ANTCC     |          184 |         3715 |       3899 |     0% |
+| CCC       |          852 |         4452 |       5304 |     1% |
+| GCC -O0   |          836 |         4811 |       5647 |     0% |
+| GCC -O2   |         1838 |         2517 |       4355 |     1% |
+| Clang -O0 |          867 |         4581 |       5448 |     0% |
+| Clang -O2 |         1589 |         2552 |       4141 |     0% |
 
 ## RCC Substep Timing
 
 ```
 RCC:
-  preprocess  bench.c       :   9756 us
-  parse       bench.c       :    639 us
+  preprocess  bench.c       :   9339 us
+  parse       bench.c       :    576 us
   typecheck   bench.c       :      4 us
-  codegen     bench.c       :    297 us
-  link        bench_rcc     :  10873 us
+  codegen     bench.c       :    387 us
+  link        bench_rcc     :  11745 us
 
 RCC -O1:
-  preprocess  bench.c       :   9658 us
-  parse       bench.c       :    725 us
-  typecheck   bench.c       :     23 us
-  opt         bench.c       :     62 us
-  codegen     bench.c       :    332 us
-  link        bench_o1      :  11732 us
+  preprocess  bench.c       :   9580 us
+  parse       bench.c       :    616 us
+  typecheck   bench.c       :      4 us
+  opt         bench.c       :     47 us
+  codegen     bench.c       :    300 us
+  link        bench_o1      :  10851 us
 
 RCC -O2:
-  preprocess  bench.c       :   9910 us
-  parse       bench.c       :    653 us
+  preprocess  bench.c       :   9716 us
+  parse       bench.c       :    570 us
   typecheck   bench.c       :      4 us
-  opt         bench.c       :     52 us
-  codegen     bench.c       :    357 us
-  link        bench_o2      :  11981 us
+  opt         bench.c       :     47 us
+  codegen     bench.c       :    382 us
+  link        bench_o2      :  10241 us
 ```
 
 ## RCC Substep Timing -- sqlite3.c
 
 ```
 RCC:
-  preprocess  sqlite3.c     : 277898 us
-  parse       sqlite3.c     : 152438 us
-  typecheck   sqlite3.c     :   8650 us
-  codegen     sqlite3.c     : 205280 us
-  link        sqlite3.so    :   9623 us
+  preprocess  sqlite3.c     : 250473 us
+  parse       sqlite3.c     : 151179 us
+  typecheck   sqlite3.c     :   8226 us
+  codegen     sqlite3.c     : 201546 us
+  link        sqlite3.so    :   9406 us
 
 RCC -O1:
-  preprocess  sqlite3.c     : 253440 us
-  parse       sqlite3.c     : 155261 us
-  typecheck   sqlite3.c     :   8653 us
-  opt         sqlite3.c     :  35293 us
-  codegen     sqlite3.c     : 202559 us
-  link        sqlite3.so    :  11052 us
+  preprocess  sqlite3.c     : 242406 us
+  parse       sqlite3.c     : 146264 us
+  typecheck   sqlite3.c     :   8162 us
+  opt         sqlite3.c     :  35959 us
+  codegen     sqlite3.c     : 199531 us
+  link        sqlite3.so    :   9902 us
 
 RCC -O2:
-  preprocess  sqlite3.c     : 262238 us
-  parse       sqlite3.c     : 163122 us
-  typecheck   sqlite3.c     :   8828 us
-  opt         sqlite3.c     :  47462 us
-  codegen     sqlite3.c     : 210236 us
-  link        sqlite3.so    :  10342 us
+  preprocess  sqlite3.c     : 243520 us
+  parse       sqlite3.c     : 145877 us
+  typecheck   sqlite3.c     :   8396 us
+  opt         sqlite3.c     :  45575 us
+  codegen     sqlite3.c     : 200867 us
+  link        sqlite3.so    :  10032 us
 ```
 
 ## Large File Compile-Only (sqlite3.c)
 
 | Compiler  | Compile (ms) | Spread |
 | :-------- | -----------: | -----: |
-| RCC       |       889 ms |     0% |
-| RCC -O1   |       873 ms |     0% |
-| RCC -O2   |       876 ms |     3% |
-| TCC       |       120 ms |     2% |
-| SLIMCC    |       801 ms |    13% |
-| KEFIR     |     19221 ms |    19% |
-| KEFIR -O1 |     34448 ms |     2% |
-| ANTCC     |       400 ms |     7% |
-| CCC       |     13086 ms |     1% |
-| GCC -O0   |      4162 ms |     1% |
-| GCC -O2   |     26555 ms |     0% |
-| Clang -O0 |      1840 ms |     1% |
-| Clang -O2 |     20599 ms |     1% |
+| RCC       |       720 ms |     0% |
+| RCC -O1   |       725 ms |     0% |
+| RCC -O2   |       741 ms |     0% |
+| TCC       |        98 ms |     0% |
+| SLIMCC    |       644 ms |     1% |
+| KEFIR     |     18305 ms |     0% |
+| KEFIR -O1 |     33077 ms |     0% |
+| ANTCC     |       387 ms |     1% |
+| CCC       |     12652 ms |     0% |
+| GCC -O0   |      4026 ms |     0% |
+| GCC -O2   |     25530 ms |     0% |
+| Clang -O0 |      1790 ms |     0% |
+| Clang -O2 |     19853 ms |     0% |

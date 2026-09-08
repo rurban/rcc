@@ -1497,15 +1497,20 @@ static const char *var_sym_label(LVar *var) {
 
 static const char *asm_sym_name(const char *name);
 // Assembly label for a function: respects __asm__ names (used as-is) and
-// applies sym_name() to regular C identifiers.
-static const char *func_label(char *name) {
+// applies sym_name() to regular C identifiers. out_fn, if non-NULL, gets
+// the resolved same-TU Function* (NULL when name has no local definition,
+// e.g. an external libc call) -- callers that also need it (emit_direct_call)
+// get it from this single func_htab walk instead of a second one.
+static const char *func_label2(char *name, Function **out_fn) {
     uint32_t h = func_hash_name(name) % FUNC_HASH_SIZE;
     for (TLItem *item = func_htab[h]; item; item = item->hash_next)
         if (item->fn->name == name) {
+            if (out_fn) *out_fn = item->fn;
             if (item->fn->asm_name && !is_fortify_redirect(item->fn->name, item->fn->asm_name))
                 return item->fn->asm_name;
             return asm_sym_name(sym_name(item->fn->name));
         }
+    if (out_fn) *out_fn = NULL;
     return asm_sym_name(sym_name(name));
 }
 
@@ -1526,9 +1531,19 @@ static void emit_direct_call(char *name, bool is_asm_label) {
     if (cg_dry_run) return;
     if (is_asm_reserved(name))
         name = format(".L_rcc_%s", name);
-    const char *label = is_asm_label ? asm_sym_name(name) : func_label(name);
+    // Callee's own ObjFile symbol index is cached on its Function the first
+    // time any call site resolves it (mirrors tcc's Sym->c): every later
+    // call to the same function -- the common case in a huge single-TU
+    // amalgamation like sqlite3.c, where one helper can have thousands of
+    // call sites -- skips the name hash+compare in objfile_find_sym
+    // entirely. asm-label calls and calls with no local definition (e.g.
+    // external libc calls) have no Function to cache on and keep resolving
+    // by name every time, same as before.
+    Function *target_fn = NULL;
+    const char *label = is_asm_label ? asm_sym_name(name) : func_label2(name, &target_fn);
     size_t off = asm_call_label(cg_sec); // bl %s
-    int sidx = objfile_find_sym(cg_obj, label);
+    int sidx = target_fn && target_fn->cg_sym_idx ? target_fn->cg_sym_idx - 1 : objfile_find_sym(cg_obj, label);
+    if (target_fn && sidx >= 0) target_fn->cg_sym_idx = sidx + 1;
 #ifdef ARCH_ARM64
     // Same-section STATIC function: patch the displacement directly, no
     // relocation. A same-TU GLOBAL/WEAK function must NOT take this
@@ -1549,8 +1564,10 @@ static void emit_direct_call(char *name, bool is_asm_label) {
         secbuf_patch32le(cg_sec, off, insn);
         return;
     }
-    if (sidx < 0)
+    if (sidx < 0) {
         sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
+        if (target_fn) target_fn->cg_sym_idx = sidx + 1;
+    }
     objfile_add_reloc(cg_obj, SEC_TEXT, off, sidx, R_AARCH64_CALL26, 0);
 #else
     // Same-section STATIC function: patch the displacement directly, no
@@ -1576,8 +1593,10 @@ static void emit_direct_call(char *name, bool is_asm_label) {
         secbuf_patch32le(cg_sec, off + 1, (uint32_t)disp);
         return;
     }
-    if (sidx < 0)
+    if (sidx < 0) {
         sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
+        if (target_fn) target_fn->cg_sym_idx = sidx + 1;
+    }
     // call label
     objfile_add_reloc(cg_obj, SEC_TEXT, off + 1, sidx, R_X86_64_PLT32, -4);
 #endif

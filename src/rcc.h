@@ -925,6 +925,12 @@ struct Function {
     char **target_clones; // NULL-terminated array of clone target strings
     int n_target_clones; // count of target_clones entries (excluding terminator)
     char *target_attr; // __attribute__((target("..."))) string
+    // Cached ObjFile symbol-table index for this function's own label,
+    // resolved once and reused by every call site (mirrors tcc's Sym->c).
+    // 0 = not yet resolved for the current ObjFile; else index+1. codegen.c
+    // only, reset implicitly each TU since Function itself is rebuilt fresh
+    // per input file (see parser.c's per-file reset: `globals = NULL`).
+    int cg_sym_idx;
 };
 
 typedef struct StrLit StrLit;

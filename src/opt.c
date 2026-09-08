@@ -1517,24 +1517,46 @@ static bool text_mentions_ident(const char *text, const char *name) {
 // always str_intern()'d (e.g. nested-function mangled names come from
 // format()), so a byte-equal-but-distinct pointer must still hit -- same
 // result the old strcmp scan gave, just O(1) average instead of O(n).
-#define DCE_HASH_SIZE 8192
+//
+// Table is sized to the actual entry count (up to 2*n: name + asm_name per
+// function) each build, not a fixed constant: a fixed 8192-bucket table
+// left sqlite3.c's several-thousand functions on multi-entry chains, and
+// every chain step cost a strcmp (~14% of total compile time, per `perf
+// record` on sqlite3.c -- the single largest hotspot in the compiler).
+// f->name is almost always str_intern()'d (parser identifiers), so the
+// pointer-equality check catches the common case for free before ever
+// calling strcmp; the length check then rejects the rest of same-hash
+// collisions in O(1) instead of scanning a shared prefix.
 typedef struct DceHashNode DceHashNode;
 struct DceHashNode {
     const char *key;
+    uint32_t len;
     Function *fn;
     DceHashNode *next;
 };
-static DceHashNode *dce_htab[DCE_HASH_SIZE];
+static DceHashNode **dce_htab;
+static uint32_t dce_htab_size;
 static DceHashNode *dce_htab_nodes;
 
-static uint32_t dce_hash_str(const char *s) {
+static uint32_t dce_hash_str(const char *s, uint32_t *out_len) {
     uint32_t h = 2166136261u;
-    for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u;
+    const char *p = s;
+    for (; *p; p++) h = (h ^ (unsigned char)*p) * 16777619u;
+    *out_len = (uint32_t)(p - s);
     return h;
 }
 
 static void dce_htab_build(Function **fns, int n) {
-    memset(dce_htab, 0, sizeof(dce_htab));
+    uint32_t need = n > 0 ? (uint32_t)n * 4 : 1; // up to 2 entries/fn, load factor ~0.5
+    uint32_t size = 1024;
+    while (size < need) size <<= 1;
+    if (size != dce_htab_size) {
+        free(dce_htab);
+        dce_htab = calloc(size, sizeof(*dce_htab));
+        dce_htab_size = size;
+    } else {
+        memset(dce_htab, 0, sizeof(*dce_htab) * dce_htab_size);
+    }
     free(dce_htab_nodes);
     dce_htab_nodes = n ? malloc(sizeof(DceHashNode) * (size_t)(2 * n)) : NULL;
     int ni = 0;
@@ -1545,15 +1567,17 @@ static void dce_htab_build(Function **fns, int n) {
     // functions can share a `name`, and the fns[] index order matters).
     for (int i = n - 1; i >= 0; i--) {
         Function *f = fns[i];
-        uint32_t h = dce_hash_str(f->name) % DCE_HASH_SIZE;
+        uint32_t flen, h = dce_hash_str(f->name, &flen) & (dce_htab_size - 1);
         dce_htab_nodes[ni].key = f->name;
+        dce_htab_nodes[ni].len = flen;
         dce_htab_nodes[ni].fn = f;
         dce_htab_nodes[ni].next = dce_htab[h];
         dce_htab[h] = &dce_htab_nodes[ni];
         ni++;
         if (f->asm_name) {
-            uint32_t h2 = dce_hash_str(f->asm_name) % DCE_HASH_SIZE;
+            uint32_t alen, h2 = dce_hash_str(f->asm_name, &alen) & (dce_htab_size - 1);
             dce_htab_nodes[ni].key = f->asm_name;
+            dce_htab_nodes[ni].len = alen;
             dce_htab_nodes[ni].fn = f;
             dce_htab_nodes[ni].next = dce_htab[h2];
             dce_htab[h2] = &dce_htab_nodes[ni];
@@ -1564,9 +1588,9 @@ static void dce_htab_build(Function **fns, int n) {
 
 static Function *dce_lookup(const char *name) {
     if (!name) return NULL;
-    uint32_t h = dce_hash_str(name) % DCE_HASH_SIZE;
+    uint32_t len, h = dce_hash_str(name, &len) & (dce_htab_size - 1);
     for (DceHashNode *nd = dce_htab[h]; nd; nd = nd->next)
-        if (!strcmp(nd->key, name)) return nd->fn;
+        if (nd->key == name || (nd->len == len && !memcmp(nd->key, name, len))) return nd->fn;
     return NULL;
 }
 
