@@ -597,6 +597,12 @@ static char *reg8[] = {"%r10b", "%r11b", "%bl", "%r12b", "%r13b", "%r14b", "%r15
 
 static int used_regs = 0;
 static int ever_used_regs = 0;
+#ifdef BENCH
+// Cumulative Pass-1 (dry-run) wall time across every function in this
+// compilation, printed under -time when built with -DBENCH -- see the
+// Pass 1/Pass 2 split below (rcc's two-pass frame-size discovery).
+static uint64_t dbg_pass1_us = 0;
+#endif
 
 #ifdef ARCH_ARM64
 void emit_mov_imm64(Arm64Reg reg, uint64_t val);
@@ -17067,6 +17073,10 @@ struct ObjFile *codegen(Program *prog) {
         fn_trampoline_off = 0;
         fn_trampoline_total = 0;
 
+#ifdef BENCH
+        struct timespec dbg_p1_t0, dbg_p1_t1;
+        clock_gettime(CLOCK_MONOTONIC, &dbg_p1_t0);
+#endif
         // Pass 1: Generate dummy function body to discover register usage
         SecBuf _dummy;
         secbuf_init(&_dummy);
@@ -17572,6 +17582,11 @@ struct ObjFile *codegen(Program *prog) {
             VReg r = gen(n);
             if (r != -1) free_reg(r);
         }
+#ifdef BENCH
+        clock_gettime(CLOCK_MONOTONIC, &dbg_p1_t1);
+        dbg_pass1_us += (uint64_t)(dbg_p1_t1.tv_sec - dbg_p1_t0.tv_sec) * 1000000ull +
+            (uint64_t)(dbg_p1_t1.tv_nsec - dbg_p1_t0.tv_nsec) / 1000ull;
+#endif
         // Pass 2: Emit binary prologue, body, epilogue
         cg_sec = saved_sec;
         secbuf_free(&_dummy);
@@ -19131,5 +19146,10 @@ struct ObjFile *codegen(Program *prog) {
     // Flush DWARF debug line info
     if (objfile_has_debug(cg_obj))
         objfile_flush_debug_line(cg_obj, cg_obj->text.len);
+#ifdef BENCH
+    if (opt_time)
+        fprintf(stderr, "  pass1       %-20s: %6llu us\n", "(dry-run, cumulative)",
+                (unsigned long long)dbg_pass1_us);
+#endif
     return cg_obj;
 }

@@ -21,6 +21,14 @@ CFLAGS += -fsanitize=address -fno-omit-frame-pointer
 LDFLAGS += -fsanitize=address
 endif
 
+# BENCH=1: compile in the codegen Pass-1/Pass-2 split timer (see
+# codegen.c's dbg_pass1_us) so `rcc -time` also reports how much of
+# codegen's time is the Pass-1 dry-run register/stack-usage discovery
+# pass, vs Pass 2's real emission. Off by default: zero overhead.
+ifeq ($(BENCH),1)
+CFLAGS += -DBENCH
+endif
+
 # Detect clang vs gcc
 IS_CLANG := $(shell $(CC) --version 2>/dev/null | grep -c clang)
 
