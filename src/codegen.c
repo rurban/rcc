@@ -10623,6 +10623,24 @@ VReg gen(Node *node) {
         }
         VReg r2 = gen(node->rhs);
         VReg r1 = gen_addr(node->lhs);
+        // gen_addr(lhs) may have spilled r2 and reused its slot for the
+        // address (VReg identity is the physical register index): the
+        // register then holds the address while the spill slot still
+        // holds the rhs value. Move the address aside, reload the rhs,
+        // and store through the fresh register -- a plain store here
+        // degenerates into a self-store (mov %rsi,(%rsi)).
+        if (r1 == r2 && (spilled_regs & (1 << r2))) {
+            VReg ra = alloc_reg_avoid2(r2, -1);
+            asm_mov_reg_reg(cg_sec, ra, r1, 8);
+#ifdef ARCH_ARM64
+            asm_ldur_fp(cg_sec, r2, spill_offset(r2)); // ldr x(r2), [x29, #-off]
+#else
+            asm_mov_rbp_reg(cg_sec, r2, 8, spill_offset(r2)); // mov r2, [rbp-off]
+#endif
+            spilled_regs &= ~(1 << r2);
+            pop_spill_slot(r2);
+            r1 = ra;
+        }
 #ifdef ARCH_ARM64
         emit_store(node->lhs->ty, r2, r1, 0);
 #else
