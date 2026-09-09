@@ -1,3 +1,5 @@
+static int test_pack_overflow_bitfield(void);
+
 int printf(const char *, ...);
 
 /* Register-allocator aliasing bug found via qbe (test/third_party/
@@ -67,5 +69,46 @@ int main() {
     if (g_arg1.type != 0 || g_arg1.val != 4) return 7;
 
 
+    int po = test_pack_overflow_bitfield();
+    if (po) return 10 + po;
+    return 0;
+}
+
+/* csmith fuzzing (test/csmith/1513742-{reduced_refmismatch_O0_22,
+ * fail_refmismatch_{7,22,34}}.c): #pragma pack(1) struct S0 {
+ * signed f0:25; unsigned f1:12; signed f2:31; uint64_t f3; } packs
+ * f2 starting at bit 37, so its 31 bits need 5 bytes (bit_off=5,
+ * needed=(5+31+7)/8=5) -- more than its declared "int" unit (4
+ * bytes) -- and the dense-packing layout in parser.c correctly
+ * widens mem->bf_load_size to 8 for this. But global_init_member()
+ * (static-initializer writer) computed `unit_sz` from mem->ty->size
+ * alone, ignoring bf_load_size: it read/wrote the bitfield's old/new
+ * value through a 4-byte (uint32_t) window, silently truncating the
+ * top 4 bits of f2's sign-extended value (bits 32..35 of the shifted
+ * 64-bit new_val) instead of spilling into the 5th byte. Every
+ * struct laid out with rcc's compiler read back f2 as a positive
+ * garbage value (134208944) instead of -8784, and the byte at
+ * offset+4 stayed 0x00 instead of gcc's 0x0f. Fixed by using
+ * mem->bf_load_size (clamped to 8) as global_init_member's unit_sz,
+ * matching the read/write codegen paths.
+ */
+#pragma pack(1)
+struct __attribute__((gcc_struct)) PackOverflow {
+    signed f0 : 25;
+    unsigned f1 : 12;
+    signed f2 : 31;
+    unsigned long long f3;
+};
+#pragma pack()
+static struct PackOverflow g_pack_overflow = {-4607, 49, -8784, 0};
+
+static int test_pack_overflow_bitfield(void) {
+    if (sizeof(struct PackOverflow) != 17) return 1;
+    if (g_pack_overflow.f0 != -4607) return 2;
+    if (g_pack_overflow.f1 != 49) return 3;
+    if (g_pack_overflow.f2 != -8784) return 4; /* was 134208944 */
+    if (g_pack_overflow.f3 != 0) return 5;
+    unsigned char *p = (unsigned char *)&g_pack_overflow;
+    if (p[8] != 0x0f) return 6; /* was 0x00: top nibble of f2 dropped */
     return 0;
 }

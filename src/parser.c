@@ -7467,7 +7467,8 @@ static Token *global_init_member(Token *tok, LVar *var, Member *mem, int base_of
         long long val = 0;
         if (eval_const_expr(node, &val)) {
             int off = base_offset + mem->offset;
-            int unit_sz = mem->ty->size;
+            int unit_sz = mem->bf_load_size ? mem->bf_load_size : mem->ty->size;
+            if (unit_sz > 8) unit_sz = 8;
             unsigned long long mask;
             unsigned long long new_val;
             if (mem->bit_width == 64) {
