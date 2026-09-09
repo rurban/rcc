@@ -1402,23 +1402,48 @@ static bool so_mark_defined(const char *path, const char **names,
 }
 
 // Index of a shared object's exported (global/weak, defined) .dynsym
-// names, built once per library instead of re-opening/re-parsing/
-// re-scanning the whole dynamic symbol table on every query. The old
-// so_has_symbol(path, name) redid this full ELF parse (mmap + walk
-// PT_DYNAMIC + linear-scan every dynsym entry) for every (candidate
-// symbol x library) pair when deciding which of the executable's own
-// definitions to export -- O(n_syms * n_libs * dynsym_size) opens of
-// libc.so.6's ~thousands of dynamic symbols. Building this index once
-// per library and then doing O(1) hash lookups turns that into
-// O(n_libs * dynsym_size + n_syms * n_libs). Walks PT_DYNAMIC (not
-// section headers) so it works on a .so this linker itself produced,
-// which carries no section header table at all.
+// names. Every glibc .so (both DT_HASH and DT_GNU_HASH) and every .so
+// this linker itself produces (DT_HASH, see the DT_HASH auto_dyn_ent
+// below) already carries a symbol hash table for exactly this lookup
+// -- so the fast path here queries that on-disk SysV .hash table
+// directly (elf_hash(name) -> bucket -> chain, O(1) average, no scan
+// at all) instead of re-deriving an index ourselves. Only a shared
+// object with neither hash table (DT_GNU_HASH-only, no DT_HASH) falls
+// back to a one-time full-scan-and-build custom hash set. Either way
+// this replaces the old so_has_symbol(path, name), which re-opened,
+// re-mmap'd and linearly rescanned the *entire* .dynsym for every
+// (candidate symbol, library) pair -- O(n_syms * n_libs * dynsym_size)
+// file re-parses. Walks PT_DYNAMIC (not section headers) so it works
+// even without a section header table.
 typedef struct {
     ElfFile ef;
+    // Fast path: direct lookup against the shared object's own DT_HASH
+    // (SysV .hash) table -- bucket/chain arrays point into ef.image.
+    const uint8_t *hash_bucket, *hash_chain;
+    uint32_t nbucket, nchain;
+    uint64_t sym_off, str_off, strsz;
+    bool have_hash;
+    // Fallback (DT_HASH absent): a custom hash set built by a one-time
+    // full scan, same query interface.
     const char **names; // open-addressing hash set; NULL slot = empty
-    uint32_t cap; // power of two, 0 if build failed
+    uint32_t cap; // power of two, 0 if unused/build failed
 } SoSymSet;
 
+// Standard SysV ELF hash (elf(5)/System V ABI); the same algorithm
+// every linker (including this one, see DT_HASH above) used to build
+// the on-disk .hash table this queries.
+static uint32_t elf_sysv_hash(const char *name) {
+    uint32_t h = 0, g;
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
+        h = (h << 4) + *p;
+        if ((g = h & 0xf0000000)) h ^= g >> 24;
+        h &= ~g;
+    }
+    return h;
+}
+
+// FNV-1a, only for the DT_HASH-absent fallback's self-built set (any
+// hash works there since we both build and query it ourselves).
 static uint32_t so_sym_hash(const char *s) {
     uint32_t h = 2166136261u;
     for (; *s; s++) {
@@ -1435,6 +1460,20 @@ static void so_symset_insert(SoSymSet *set, const char *name) {
         h = (h + 1) & (set->cap - 1);
     }
     set->names[h] = name;
+}
+
+// True iff dynsym entry `idx` is a GLOBAL/WEAK symbol defined in this
+// object (not merely imported) whose name matches `name`.
+static bool so_symset_entry_matches(const SoSymSet *set, uint64_t idx, const char *name) {
+    uint64_t off = set->sym_off + idx * 24;
+    if (off + 24 > set->ef.size) return false;
+    const uint8_t *se = set->ef.image + off;
+    if (r16le(se + 6) == SHN_UNDEF) return false; // imported, not defined here
+    uint8_t bind = se[4] >> 4;
+    if (bind != STB_GLOBAL && bind != STB_WEAK) return false;
+    uint32_t nidx = r32le(se);
+    if (nidx >= set->strsz) return false;
+    return strcmp((const char *)(set->ef.image + set->str_off + nidx), name) == 0;
 }
 
 static void so_symset_build(const char *path, SoSymSet *set) {
@@ -1480,8 +1519,8 @@ static void so_symset_build(const char *path, SoSymSet *set) {
         elf_close(ef);
         return;
     }
-    uint64_t symtab_vaddr = 0, strtab_vaddr = 0, strsz = 0;
-    bool have_symtab = false, have_strtab = false;
+    uint64_t symtab_vaddr = 0, strtab_vaddr = 0, hash_vaddr = 0, strsz = 0;
+    bool have_symtab = false, have_strtab = false, have_hash_tag = false;
     for (uint64_t off = dyn_off; off + 16 <= dyn_off + dyn_filesz; off += 16) {
         uint64_t tag = r64le(ef->image + off);
         uint64_t val = r64le(ef->image + off + 8);
@@ -1494,14 +1533,17 @@ static void so_symset_build(const char *path, SoSymSet *set) {
             have_strtab = true;
         } else if (tag == DT_STRSZ) {
             strsz = val;
+        } else if (tag == DT_HASH) {
+            hash_vaddr = val;
+            have_hash_tag = true;
         }
     }
     if (!have_symtab || !have_strtab || !strsz) {
         elf_close(ef);
         return;
     }
-    uint64_t sym_off = 0, str_off = 0;
-    bool mapped_sym = false, mapped_str = false;
+    uint64_t sym_off = 0, str_off = 0, hash_off = 0;
+    bool mapped_sym = false, mapped_str = false, mapped_hash = !have_hash_tag;
     for (int i = 0; i < n_loads; i++) {
         if (!mapped_sym && symtab_vaddr >= loads[i].vaddr &&
             symtab_vaddr < loads[i].vaddr + loads[i].filesz) {
@@ -1513,17 +1555,40 @@ static void so_symset_build(const char *path, SoSymSet *set) {
             str_off = loads[i].offset + (strtab_vaddr - loads[i].vaddr);
             mapped_str = true;
         }
+        if (have_hash_tag && !mapped_hash && hash_vaddr >= loads[i].vaddr &&
+            hash_vaddr < loads[i].vaddr + loads[i].filesz) {
+            hash_off = loads[i].offset + (hash_vaddr - loads[i].vaddr);
+            mapped_hash = true;
+        }
     }
     if (!mapped_sym || !mapped_str || sym_off + 24 > ef->size) {
         elf_close(ef);
         return;
     }
-    // Two passes: count first so the hash set can be sized up front
-    // (load factor capped at 50%), then insert.
+    set->sym_off = sym_off;
+    set->str_off = str_off;
+    set->strsz = strsz;
+    if (have_hash_tag && mapped_hash && hash_off + 8 <= ef->size) {
+        uint32_t nbucket = r32le(ef->image + hash_off);
+        uint32_t nchain = r32le(ef->image + hash_off + 4);
+        uint64_t bucket_off = hash_off + 8;
+        uint64_t chain_off = bucket_off + (uint64_t)nbucket * 4;
+        if (nbucket > 0 && chain_off + (uint64_t)nchain * 4 <= ef->size) {
+            set->hash_bucket = ef->image + bucket_off;
+            set->hash_chain = ef->image + chain_off;
+            set->nbucket = nbucket;
+            set->nchain = nchain;
+            set->have_hash = true;
+            // ef stays mmapped until so_symset_free(); no scan needed.
+            return;
+        }
+    }
+    // Fallback: no usable DT_HASH -- build our own set with one full
+    // scan (same cost the old so_has_symbol() paid on *every* query).
     uint32_t count = 0;
     for (uint64_t off = sym_off; off + 24 <= ef->size; off += 24) {
         const uint8_t *se = ef->image + off;
-        if (r16le(se + 6) == SHN_UNDEF) continue; // imported, not defined here
+        if (r16le(se + 6) == SHN_UNDEF) continue;
         uint8_t bind = se[4] >> 4;
         if (bind != STB_GLOBAL && bind != STB_WEAK) continue;
         count++;
@@ -1546,10 +1611,18 @@ static void so_symset_build(const char *path, SoSymSet *set) {
         const char *sname = (const char *)(ef->image + str_off + nidx);
         so_symset_insert(set, sname);
     }
-    // ef stays mmapped (names[] point into ef.image) until so_symset_free().
 }
 
 static bool so_symset_has(const SoSymSet *set, const char *name) {
+    if (set->have_hash) {
+        uint32_t i = r32le(set->hash_bucket + (elf_sysv_hash(name) % set->nbucket) * 4);
+        while (i != 0 /* STN_UNDEF */) {
+            if (i >= set->nchain) break; // malformed table, stop rather than run off
+            if (so_symset_entry_matches(set, i, name)) return true;
+            i = r32le(set->hash_chain + i * 4);
+        }
+        return false;
+    }
     if (set->cap == 0) return false;
     uint32_t h = so_sym_hash(name) & (set->cap - 1);
     while (set->names[h]) {
