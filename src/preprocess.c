@@ -3342,8 +3342,17 @@ static char *build_quoted_spelling(const char *bytes, int len, int *out_len) {
     return sp;
 }
 static Token *concat_strings(Token *tok) {
-    Token head = {};
-    Token *tail = &head;
+    // Rebuilds the list by relinking existing nodes, not copy_token()-ing
+    // every one: real code is overwhelmingly non-string tokens, so the
+    // old unconditional copy_token() on the pass-through path (below)
+    // meant one arena allocation + a full Token-struct memcpy for nearly
+    // every token in the file -- a second full-list materialization on
+    // top of the preprocessing scan that already built `tok`. Nothing
+    // reads the pre-call `tok` list afterward (out_append(), which built
+    // it, already takes the same liberty of mutating a token's ->next
+    // once appended), so relinking the original nodes is safe; only the
+    // merge cases still need `arena_alloc`, for the merged byte buffer.
+    Token *head = NULL, *tail = NULL;
     for (Token *t = tok; t && t->kind != TK_EOF;) {
         if (t->kind == TK_STR && can_concat_strings(t, t->next)) {
             // Greedily absorb every following concatenable string literal, not
@@ -3360,21 +3369,27 @@ static Token *concat_strings(Token *tok) {
                 mlen += q->len;
                 if (!pfx) pfx = q->string_literal_prefix;
             }
-            Token *n = copy_token(t);
-            n->str = str_intern(merged, mlen);
-            n->len = mlen;
-            n->string_literal_prefix = pfx;
+            // Mutate t into the merged token in place instead of
+            // allocating a fresh copy: t is already being spliced out of
+            // its old neighbors (q becomes its successor once linked
+            // below), and this list owns it exclusively (see above).
+            t->str = str_intern(merged, mlen);
+            t->len = mlen;
+            t->string_literal_prefix = pfx;
             int sn;
             char *sp = build_quoted_spelling(merged, mlen, &sn);
-            n->ptr = sp;
-            n->val = sn;
-            tail = tail->next = n;
+            t->ptr = sp;
+            t->val = sn;
+            if (tail) tail->next = t;
+            else
+                head = t;
+            tail = t;
             t = q;
             continue;
         }
         // Check if current token merges with the previous output token
         // (handles "a" MACRO "c" where MACRO expands to "b").
-        if (t->kind == TK_STR && tail != &head && tail->kind == TK_STR && can_concat_strings(tail, t)) {
+        if (t->kind == TK_STR && tail && tail->kind == TK_STR && can_concat_strings(tail, t)) {
             int len1 = tail->len, len2 = t->len;
             char *merged = arena_alloc(len1 + len2);
             memcpy(merged, tail->str ? tail->str : "", len1);
@@ -3389,7 +3404,10 @@ static Token *concat_strings(Token *tok) {
             t = t->next;
             continue;
         }
-        tail = tail->next = copy_token(t);
+        if (tail) tail->next = t;
+        else
+            head = t;
+        tail = t;
         t = t->next;
     }
     // Preserve the terminating EOF (the loop above stops before it). This also
@@ -3397,9 +3415,14 @@ static Token *concat_strings(Token *tok) {
     // dereferences the returned list, so it must never come back NULL.
     Token *eof = tok;
     while (eof && eof->kind != TK_EOF) eof = eof->next;
-    if (eof) tail = tail->next = copy_token(eof);
-    tail->next = NULL;
-    return head.next;
+    if (eof) {
+        if (tail) tail->next = eof;
+        else
+            head = eof;
+        tail = eof;
+    }
+    if (tail) tail->next = NULL;
+    return head;
 }
 // Re-render a preprocessed token stream back to flat text, the same way
 // pp_print_tokens() does for -E output, but into a heap buffer instead of
