@@ -69,6 +69,20 @@ repos:
         entry: perl -S podchecker -warnings
         language: system
         files: \.pod$
+      - id: news-check
+        # Lint-mode only (no VERSION arg): checks NEWS heading format
+        # and newest-first ordering. NOT Perl's Test::CheckChanges --
+        # wrong ecosystem/format (expects a CPAN-style Changes file)
+        # and the wrong invariant besides: whether NEWS documents a
+        # *specific released version* is a release-time check (see
+        # `make release`, which runs this same script in release
+        # mode), not a per-commit one -- an in-progress "[planned]"
+        # entry is expected and correct on every ordinary commit.
+        name: news-check
+        entry: test/news-check.sh
+        language: system
+        files: ^NEWS$
+        pass_filenames: false
       - id: cppcheck
         name: cppcheck
         entry: ./cppcheck-timeout.sh

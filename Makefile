@@ -457,6 +457,29 @@ else
 endif
 	rm -rf rcc-$(VERSION)-src
 
+# Cut and publish a signed release. Builds the dist archives (VERSION
+# must be given explicitly, e.g. VERSION=v1.2.1, since the default
+# git-describe VERSION won't match a NEWS heading until tagged), runs
+# the same release-readiness checks CPAN modules use -- clean tree,
+# correct branch, GPG-signed HEAD commit -- (see
+# ~/Perl/Cpanel-JSON-XS/Makefile.PL's `release` target) plus
+# test/news-check.sh, then hands off to tools/mk-release.sh for
+# tag/push/CI-wait/sign/GH-release. Usage: make release VERSION=v1.2.1
+release: dist
+	if test "$(shell git rev-parse --abbrev-ref HEAD)" != "main" || \
+           test "$(shell git diff --raw)" != "" || \
+           test "$(shell git diff --cached --raw)" != "" ; then \
+          echo 'You are not on a clean main branch, aborting.'; \
+          exit 1; \
+	fi
+	if test "$(shell git log -1 --pretty=%G?)" != "G" && \
+           test "$(shell git log -1 --pretty=%G?)" != "U" ; then \
+          echo 'HEAD commit is not GPG-signed (git commit -S), aborting.'; \
+          exit 1; \
+	fi
+	test/news-check.sh $(VERSION)
+	tools/mk-release.sh $(VERSION)
+
 leanclean:
 	rm -f src/sysinc_paths.h src/gcc_predefined.h fred.txt qemu*.core test/torture/core.*
 	if command -v git > /dev/null 2>&1; then \
@@ -476,5 +499,5 @@ TAGS: $(SRCS) src/rcc.h
 .PHONY: all clean leanclean test check check-full check-torture check-all test-all
 .PHONY: test-full test-torture test-unit check-unit test-compliance check-compliance test-ctest check-ctest test-link check-link
 .PHONY: test-thirdparty check-thirdparty thirdparty-list
-.PHONY: lint lint-changed bench install dist prof man tcc FORCE
+.PHONY: lint lint-changed bench install dist release prof man tcc FORCE
 FORCE:
