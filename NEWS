@@ -1,0 +1,43 @@
+This is the NEWS file for RCC, the Regoshi C Compiler. It summarizes
+user-visible changes for each release, most recent first. For the
+complete list of changes see the git log.
+
+* Changes in 1.2.1 (2026-09-13) (Reini Urban) [planned]
+
+  - Compile-time performance: faster lexer (ASCII fast path), faster
+    linker (indexed/DT_HASH symbol lookups instead of rescanning
+    .dynsym per symbol), faster preprocessor (concat_strings() relinks
+    tokens instead of cloning the stream); better benchmarks
+  - Added test/gcc-bugs/, a suite of ~600 reproducers for GCC's open
+    bug tracker.
+  - Fixed a parser segfault on sizeof() with unbalanced parens and
+    several further gcc-bugs regressions (const-init, vector_size,
+    enum attribute, atomic pointer, __has_builtin, alignas).
+  - Implemented sqrt() on a vector-of-2-doubles, 3 missing GCC
+    diagnostics, duplicate-function-definition detection, and the GCC
+    extension accepting a missing ';' at the end of a struct/union.
+
+* Changes in v1.2.0 (2026-09-04) (Reini Urban)
+
+  - New linux/elf x86_64 and darwin-aarch64 backends, native
+    assembler and linker.
+  - Also a much faster preprocessor, which doesn't retokenize, but
+    dumps the pp tokens only on -E to a string.
+  - New test suites from ncc, c-testsuite and gcc torture, running in
+    parallel. Also many more unit-tests for all fixed bugs.
+  - New bench suites for middle sized, and larged sized code.
+  - Fixed all the bugs, and added all C23 and C29 features.
+  - Added a comprehensive C compiler test overview table.
+  - Compiles the linux kernel and all ~270 slimcc third_party test
+    projects.
+  - Compiled code is slower, but more correct than with all other
+    compilers. And it compiles almost as fast as tinycc, with just
+    much more features.
+
+* Changes in v1.1.0 (2026-04-15) (Hosokawa-t)
+
+  release: LGPL-2.1 license, RELEASE build with includes/bench/tests
+
+* Changes in v1.0.0 (2026-04-14) (Hosokawa-t)
+
+  Final Native Performance Mastery: Beat GCC and TCC natively
