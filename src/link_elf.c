@@ -1401,26 +1401,57 @@ static bool so_mark_defined(const char *path, const char **names,
     return true;
 }
 
-// True iff the shared object defines (exports in .dynsym) a global/weak
-// symbol with this name. Used to decide which of the executable's own
-// definitions must be exported so ld.so's global-scope lookup can
-// resolve the library's interposable references to them. Walks
-// PT_DYNAMIC (not section headers) so it works on a .so this linker
-// itself produced, which carries no section header table at all.
-static bool so_has_symbol(const char *path, const char *name) {
+// Index of a shared object's exported (global/weak, defined) .dynsym
+// names, built once per library instead of re-opening/re-parsing/
+// re-scanning the whole dynamic symbol table on every query. The old
+// so_has_symbol(path, name) redid this full ELF parse (mmap + walk
+// PT_DYNAMIC + linear-scan every dynsym entry) for every (candidate
+// symbol x library) pair when deciding which of the executable's own
+// definitions to export -- O(n_syms * n_libs * dynsym_size) opens of
+// libc.so.6's ~thousands of dynamic symbols. Building this index once
+// per library and then doing O(1) hash lookups turns that into
+// O(n_libs * dynsym_size + n_syms * n_libs). Walks PT_DYNAMIC (not
+// section headers) so it works on a .so this linker itself produced,
+// which carries no section header table at all.
+typedef struct {
     ElfFile ef;
-    if (elf_open(path, &ef) != 0) return false;
-    if (ef.size < 64 || memcmp(ef.image, "\x7f"
-                                         "ELF",
-                               4) != 0) {
-        elf_close(&ef);
-        return false;
+    const char **names; // open-addressing hash set; NULL slot = empty
+    uint32_t cap; // power of two, 0 if build failed
+} SoSymSet;
+
+static uint32_t so_sym_hash(const char *s) {
+    uint32_t h = 2166136261u;
+    for (; *s; s++) {
+        h ^= (unsigned char)*s;
+        h *= 16777619u;
     }
-    uint64_t e_phoff = r64le(ef.image + 32);
-    uint16_t e_phnum = r16le(ef.image + 56);
+    return h;
+}
+
+static void so_symset_insert(SoSymSet *set, const char *name) {
+    uint32_t h = so_sym_hash(name) & (set->cap - 1);
+    while (set->names[h]) {
+        if (strcmp(set->names[h], name) == 0) return; // duplicate export
+        h = (h + 1) & (set->cap - 1);
+    }
+    set->names[h] = name;
+}
+
+static void so_symset_build(const char *path, SoSymSet *set) {
+    memset(set, 0, sizeof(*set));
+    ElfFile *ef = &set->ef;
+    if (elf_open(path, ef) != 0) return;
+    if (ef->size < 64 || memcmp(ef->image, "\x7f"
+                                           "ELF",
+                                4) != 0) {
+        elf_close(ef);
+        return;
+    }
+    uint64_t e_phoff = r64le(ef->image + 32);
+    uint16_t e_phnum = r16le(ef->image + 56);
     if (!e_phoff || e_phnum == 0) {
-        elf_close(&ef);
-        return false;
+        elf_close(ef);
+        return;
     }
     typedef struct {
         uint64_t vaddr, offset, filesz;
@@ -1431,8 +1462,8 @@ static bool so_has_symbol(const char *path, const char *name) {
     bool have_dyn = false;
     for (int i = 0; i < e_phnum; i++) {
         uint64_t ph_off = e_phoff + (uint64_t)i * 56;
-        if (ph_off + 56 > ef.size) break;
-        const uint8_t *ph = ef.image + ph_off;
+        if (ph_off + 56 > ef->size) break;
+        const uint8_t *ph = ef->image + ph_off;
         uint32_t p_type = r32le(ph);
         if (p_type == PT_DYNAMIC) {
             dyn_off = r64le(ph + 8);
@@ -1445,15 +1476,15 @@ static bool so_has_symbol(const char *path, const char *name) {
             n_loads++;
         }
     }
-    if (!have_dyn || dyn_off + dyn_filesz > ef.size) {
-        elf_close(&ef);
-        return false;
+    if (!have_dyn || dyn_off + dyn_filesz > ef->size) {
+        elf_close(ef);
+        return;
     }
     uint64_t symtab_vaddr = 0, strtab_vaddr = 0, strsz = 0;
     bool have_symtab = false, have_strtab = false;
     for (uint64_t off = dyn_off; off + 16 <= dyn_off + dyn_filesz; off += 16) {
-        uint64_t tag = r64le(ef.image + off);
-        uint64_t val = r64le(ef.image + off + 8);
+        uint64_t tag = r64le(ef->image + off);
+        uint64_t val = r64le(ef->image + off + 8);
         if (tag == DT_NULL) break;
         if (tag == DT_SYMTAB) {
             symtab_vaddr = val;
@@ -1466,8 +1497,8 @@ static bool so_has_symbol(const char *path, const char *name) {
         }
     }
     if (!have_symtab || !have_strtab || !strsz) {
-        elf_close(&ef);
-        return false;
+        elf_close(ef);
+        return;
     }
     uint64_t sym_off = 0, str_off = 0;
     bool mapped_sym = false, mapped_str = false;
@@ -1483,26 +1514,54 @@ static bool so_has_symbol(const char *path, const char *name) {
             mapped_str = true;
         }
     }
-    if (!mapped_sym || !mapped_str || sym_off + 24 > ef.size) {
-        elf_close(&ef);
-        return false;
+    if (!mapped_sym || !mapped_str || sym_off + 24 > ef->size) {
+        elf_close(ef);
+        return;
     }
-    bool found = false;
-    for (uint64_t off = sym_off; off + 24 <= ef.size; off += 24) {
-        const uint8_t *se = ef.image + off;
+    // Two passes: count first so the hash set can be sized up front
+    // (load factor capped at 50%), then insert.
+    uint32_t count = 0;
+    for (uint64_t off = sym_off; off + 24 <= ef->size; off += 24) {
+        const uint8_t *se = ef->image + off;
         if (r16le(se + 6) == SHN_UNDEF) continue; // imported, not defined here
+        uint8_t bind = se[4] >> 4;
+        if (bind != STB_GLOBAL && bind != STB_WEAK) continue;
+        count++;
+    }
+    uint32_t cap = 16;
+    while (cap < count * 2) cap *= 2;
+    set->names = calloc(cap, sizeof(char *));
+    if (!set->names) {
+        elf_close(ef);
+        return;
+    }
+    set->cap = cap;
+    for (uint64_t off = sym_off; off + 24 <= ef->size; off += 24) {
+        const uint8_t *se = ef->image + off;
+        if (r16le(se + 6) == SHN_UNDEF) continue;
         uint8_t bind = se[4] >> 4;
         if (bind != STB_GLOBAL && bind != STB_WEAK) continue;
         uint32_t nidx = r32le(se);
         if (nidx >= strsz) continue;
-        const char *sname = (const char *)(ef.image + str_off + nidx);
-        if (strcmp(sname, name) == 0) {
-            found = true;
-            break;
-        }
+        const char *sname = (const char *)(ef->image + str_off + nidx);
+        so_symset_insert(set, sname);
     }
-    elf_close(&ef);
-    return found;
+    // ef stays mmapped (names[] point into ef.image) until so_symset_free().
+}
+
+static bool so_symset_has(const SoSymSet *set, const char *name) {
+    if (set->cap == 0) return false;
+    uint32_t h = so_sym_hash(name) & (set->cap - 1);
+    while (set->names[h]) {
+        if (strcmp(set->names[h], name) == 0) return true;
+        h = (h + 1) & (set->cap - 1);
+    }
+    return false;
+}
+
+static void so_symset_free(SoSymSet *set) {
+    free(set->names);
+    if (set->ef.image) elf_close(&set->ef);
 }
 
 // Extract DT_SONAME from an arbitrary ELF shared object by walking its
@@ -2195,6 +2254,12 @@ int link_elf(LinkState *s) {
             }
             for (int p = 0; p < n_scan && n_lib_paths < 64; p++)
                 snprintf(lib_paths[n_lib_paths++], sizeof(lib_paths[0]), "%s", scan_paths[p]);
+            // Build each library's exported-symbol index once (was:
+            // so_has_symbol() re-parsed + re-scanned the whole .dynsym
+            // per (candidate symbol, library) pair below).
+            SoSymSet lib_symsets[64];
+            for (int p = 0; p < n_lib_paths; p++)
+                so_symset_build(lib_paths[p], &lib_symsets[p]);
             for (int i = 0; i < s->n_syms; i++) {
                 LinkSym *sym = &s->syms[i];
                 if (sym->sec < 0 || sym->bind == STB_LOCAL || dyn_idx[i] ||
@@ -2211,7 +2276,7 @@ int link_elf(LinkState *s) {
                 if (already) continue;
                 bool referenced = false;
                 for (int p = 0; p < n_lib_paths && !referenced; p++)
-                    referenced = so_has_symbol(lib_paths[p], sym->name);
+                    referenced = so_symset_has(&lib_symsets[p], sym->name);
                 if (!referenced) continue;
                 if (n_exp == cap_exp) {
                     cap_exp = cap_exp ? cap_exp * 2 : 16;
@@ -2225,6 +2290,8 @@ int link_elf(LinkState *s) {
                 }
                 exp_syms[n_exp++] = i;
             }
+            for (int p = 0; p < n_lib_paths; p++)
+                so_symset_free(&lib_symsets[p]);
         }
 
         // Genuine-undefined-symbol gate (dynamic executables only).
