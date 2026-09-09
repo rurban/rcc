@@ -1105,7 +1105,17 @@ Token *lex_one(char **pp, int *plineno) {
                 uint32_t c;
                 do {
                     p = pos;
-                    c = decode_utf8(&pos, p);
+                    // Fast path: identifiers are overwhelmingly ASCII;
+                    // avoid the decode_utf8() call (never inlined even
+                    // under LTO -- profiled hot, ~2 calls per lex_one)
+                    // for the common single-byte case. Mirrors
+                    // decode_utf8()'s own ASCII branch exactly.
+                    if ((unsigned char)*p < 128) {
+                        pos = p + 1;
+                        c = (unsigned char)*p;
+                    } else {
+                        c = decode_utf8(&pos, p);
+                    }
                 } while (is_ident2(*p) || (is32_ident2(c) && pos != p));
                 cur = cur->next = new_token(TK_IDENT, start, p, cur_lineno);
                 int kw = keyword_id(start, p - start, NULL);
