@@ -64,6 +64,11 @@ repos:
 
   - repo: local
     hooks:
+      - id: podchecker
+        name: podchecker
+        entry: perl -S podchecker -warnings
+        language: system
+        files: \.pod$
       - id: cppcheck
         name: cppcheck
         entry: ./cppcheck-timeout.sh

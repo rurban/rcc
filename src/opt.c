@@ -1646,6 +1646,17 @@ static void dce_scan_node(Node *node, Function **fns, int n, Function ***wl, int
     }
 }
 
+// Hash set of the `omitted` name list built by the second pass below.
+// Hashed by string bytes with dce_hash_str() (same scheme as DceHashNode
+// above): the old version was linear - O(globals * n_omitted) => O(1).
+// Table sized to the actual omitted count each call, load factor ~0.5.
+typedef struct OmitHashNode OmitHashNode;
+struct OmitHashNode {
+    const char *key;
+    uint32_t len;
+    OmitHashNode *next;
+};
+
 void eliminate_unused_static_inline(Program *prog) {
 #ifdef _WIN32
     // Disabled for the mingw/Windows target: omitting genuinely-unused
@@ -1839,17 +1850,33 @@ void eliminate_unused_static_inline(Program *prog) {
     }
 
     // Second pass: drop any global whose decl_fn_name names an omitted
-    // function. O(globals * n_omitted) — n_omitted is bounded by this
-    // TU's own static-function count, never large enough to matter.
+    // function, via the hash set built below instead of a linear scan.
     if (n_omitted > 0) {
+        uint32_t otab_size = 16;
+        while (otab_size < (uint32_t)n_omitted * 2) otab_size <<= 1;
+        OmitHashNode **otab = calloc(otab_size, sizeof(*otab));
+        OmitHashNode *onodes = malloc(sizeof(OmitHashNode) * (size_t)n_omitted);
+        for (int k = 0; k < n_omitted; k++) {
+            uint32_t len, h = dce_hash_str(omitted[k], &len) & (otab_size - 1);
+            onodes[k].key = omitted[k];
+            onodes[k].len = len;
+            onodes[k].next = otab[h];
+            otab[h] = &onodes[k];
+        }
+
         LVar **glink = &prog->globals;
         for (LVar *g = prog->globals; g;) {
             LVar *gnext = g->next;
             bool drop = false;
             if (g->decl_fn_name) {
-                for (int k = 0; k < n_omitted; k++)
-                    if (!strcmp(g->decl_fn_name, omitted[k])) {
+                uint32_t len, h = dce_hash_str(g->decl_fn_name, &len) & (otab_size - 1);
+                for (OmitHashNode *nd = otab[h]; nd; nd = nd->next)
+                    if (nd->key == g->decl_fn_name ||
+                        (nd->len == len && !memcmp(nd->key, g->decl_fn_name, len))) {
                         drop = true;
+                        if (opt_v && opt_W)
+                            fprintf(stderr, "%s note: eliminate dead function %s\n", prog->in_path,
+                                    g->decl_fn_name);
                         break;
                     }
             }
@@ -1859,6 +1886,8 @@ void eliminate_unused_static_inline(Program *prog) {
                 glink = &g->next;
             g = gnext;
         }
+        free(onodes);
+        free(otab);
     }
     free(omitted);
 

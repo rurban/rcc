@@ -352,6 +352,7 @@ Gated on `-W`:
 | `declaration of '%s' shadows a global declaration`               | see above                                                                                                                                                                                  |
 | `spilling %s to stack in %s` / `spilling %s (%s) to stack in %s` | register allocator ran out of the fixed 8 (x86-64) / 12 (ARM64) general-purpose registers for a live function and used a stack spill slot instead — informational, not a correctness issue |
 | `unreachable statement elided`                                   | dead-code elision after a `noreturn` call (also requires `-v`)                                                                                                                             |
+| `note: eliminate dead function %s`                               | a block-scope `static` global is dropped because its owning `static`/`inline` function was itself DCE-omitted as unreferenced (also requires `-v`)                                         |
 
 Gated on `-pedantic` (promoted to an error only by `-pedantic-errors`, independent of bare `-Werror`):
 

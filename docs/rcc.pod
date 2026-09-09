@@ -229,7 +229,7 @@ flag of the same name, which is on by default).
 =item B<-Wno-homoglyph>
 
 Disable Unicode identifier homoglyph/confusable warnings (see
-L</"Unicode identifier safety">).
+L</"UNICODE IDENTIFIER SAFETY">).
 
 =item B<-Wno-c23-c2y-compat>
 
@@ -244,7 +244,7 @@ condition is proven never-satisfiable — by C<eval_const_expr> (a
 literal condition) or, at B<-O3>, the contract range prover — and so
 compiles to an unconditional C<__builtin_unreachable()>, silently
 discarding whatever code follows it in the same block at B<-O1>+ (see
-L</"Contracts">).
+L</CONTRACTS>).
 
 =item B<-Wno->I<name>, B<-Werror=>I<name> (any other I<name>)
 
@@ -280,7 +280,7 @@ unrolling).
 Everything B<-O2> does, plus the contract range prover: propagates
 each in-scope variable's own declared-type range through straight-line
 integer arithmetic (no floating point, no SSA, no interprocedural
-analysis — see L</"Contracts">) to statically decide C<pre>/C<post>/
+analysis — see L</CONTRACTS>) to statically decide C<pre>/C<post>/
 C<contract_assert>/C<contract_assume> conditions eval_const_expr's
 literal-constant fold alone can't: a provably-true condition's runtime
 check is elided; a provably-false one is a compile error (C<pre>/
@@ -564,8 +564,8 @@ warnings are always active regardless of B<-W>:
 
 =item *
 
-Homoglyph/confusable Unicode identifiers (via the bundled libu8ident
-TR39 check) — disable with B<-Wno-homoglyph>.
+Homoglyph/confusable Unicode identifiers (see L</"UNICODE IDENTIFIER
+SAFETY">) — disable with B<-Wno-homoglyph>.
 
 =item *
 
@@ -643,12 +643,18 @@ Register-spill notices from the codegen register allocator
 (C<spilling %s to stack in %s>) — informational; occurs when a
 function needs more live values than the fixed 8 (x86-64) / 12 (ARM64)
 general-purpose register set, and rcc must use a stack spill slot
-instead.
+instead. (also requires B<-v>)
 
 =item *
 
 Dead-code notice C<unreachable statement elided> (also requires
 B<-v>).
+
+=item *
+
+C<note: eliminate dead function %s> — a block-scope C<static> global is
+dropped because its owning C<static>/C<inline> function was itself
+DCE-omitted as unreferenced (also requires B<-v>).
 
 =back
 
@@ -677,8 +683,62 @@ C<__sync_*> functions, x86 SIMD intrinsics, a handful of C<#pragma>
 directives, computed C<goto>, IEEE 754-2008 C<_Decimal32/64/128>, and
 the full unratified C29/C2y checklist unconditionally. The complete,
 per-symbol reference lives in F<docs/rcc.md> (installed to the
-documentation directory, see L</FILES>) rather than duplicated here, to
-keep this manual page in sync with the implementation without drifting.
+documentation directory, see L</FILES>).
+
+=head1 CONTRACTS
+
+rcc accepts function contracts loosely following Jens Gustedt's
+"Contracts for C" proposal (a C adaptation of C++26's C<P2900>). This
+is an rcc-specific extension, not part of accepted C23/C29, but part
+of C++29.
+
+A C<pre(COND)> / C<post([NAME:] COND)> contract-specifier trails a
+function declarator's parameter list, before the C<{> of a definition
+or the C<;> of a prototype-only declaration:
+
+  void *my_malloc(long size) pre(size > 0) post(r: r != 0) {
+      ...
+  }
+
+C<pre(COND)> declares a precondition on the arguments; C<post(COND)>
+and C<post(NAME: COND)> declare a postcondition at exit, optionally
+binding the return value to C<NAME>. C<contract_assert(COND[, "msg"])>
+is an always-on C<assert()> (never disabled by C<NDEBUG>);
+C<contract_assume(COND[, "msg"])> promises C<COND> holds without
+checking it — reaching it with C<COND> false is undefined behavior
+(compiles to C<if (!(COND)) __builtin_unreachable();> verbatim).
+
+All four are ordinary identifiers, not keywords, so existing code
+using them as function/variable names is unaffected; guard the
+feature behind rcc's predefined C<__RCC__> macro for portability to
+other compilers.
+
+A condition that is an integer constant expression is discharged
+entirely at compile time; B<-O3>'s contract range prover extends this
+to non-constant straight-line integer conditions it can still prove.
+Otherwise the condition is checked at runtime, printing a diagnostic
+and calling C<abort()> on violation — except C<contract_assume>, whose
+violation is undefined behavior rather than a diagnosed abort (see
+B<-Wno-contract-assume-false>). Full semantics (repeat-contract rules
+on separate prototypes, C<post(NAME:...)> on a C<void> function, etc.)
+are documented in F<docs/rcc.md> (see L</FILES>).
+
+=head1 UNICODE IDENTIFIER SAFETY
+
+rcc validates every identifier against Unicode TR39 (via a bundled,
+locally optimized C<libu8ident>) to catch homoglyph/confusable and
+mixed-script spoofing (e.g. Cyrillic C<а> vs Latin C<a>) — always on
+unless suppressed with B<-Wno-homoglyph>. Checks performed include:
+disallowed/restricted codepoints (per C<IdentifierStatus.txt>),
+invalid or mixed scripts within one identifier, invalid nonspacing-mark
+sequences and base+mark combinations (TR39 5.4/5.5), and Greek/Latin
+letter confusables. The Latin confusables C<0>, C<1>, C<I> and C<`> are
+explicitly allowed.
+
+C<#pragma unicode> I<ScriptName> whitelists an additional Unicode
+script (e.g. C<Greek>, C<Cyrillic>) for the remainder of the
+translation unit, for code that intentionally mixes scripts (e.g.
+mathematical notation using Greek identifiers alongside Latin ones).
 
 =head1 ENVIRONMENT
 
