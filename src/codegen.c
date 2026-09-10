@@ -5675,6 +5675,34 @@ static void cond_finish_branch(VReg r, VReg branch_r) {
     }
 }
 
+// Reload `val` into a fresh, independent register if `addr` (typically the
+// result of a gen_addr() call made AFTER `val` was computed) turned out to
+// alias it -- gen_addr()'s own internal alloc_reg() calls can spill val's
+// register to make room and hand the same physical index back as addr,
+// silently making them the same VReg. Any later `asm_mov_reg_reg(dst, val,
+// ...)` would then copy addr's value (the address) instead of val's
+// original value. `val`'s pre-spill content is still sitting in addr's
+// spill slot at this point; reload it into a register that is guaranteed
+// to differ from addr. Idempotent (no-op) when val != addr.
+// Found via csmith 2295024: `g_899.f8 &= (...)`'s `VReg r2 = gen(rhs); ...
+// VReg ra = gen_addr(lhs);` -- gen_addr aliased ra with r2, and the merge
+// step's `mov rv, r2` copied the container address into the new bitfield
+// value instead of the actual rhs.
+static VReg protect_from_addr_alias(VReg val, VReg addr) {
+    if (val != addr || !(spilled_regs & (1 << addr)))
+        return val;
+    VReg fresh = alloc_reg_avoid2(addr, -1);
+#ifdef ARCH_ARM64
+    asm_ldur_fp(cg_sec, fresh, spill_offset(addr)); // ldr x{fresh}, [x29, #-spill_offset]
+#else
+    asm_mov_rbp_reg(cg_sec, fresh, 8, spill_offset(addr)); // mov fresh, [rbp-off]
+#endif
+    spilled_regs &= ~(1 << addr);
+    spill_victim &= ~(1 << addr);
+    pop_spill_slot(addr);
+    return fresh;
+}
+
 // Ensure a VReg's value is actually sitting in its physical register,
 // reloading from its spill slot first if a later alloc_reg() call stole
 // the register out from under it. Needed anywhere a VReg is computed once
@@ -10431,7 +10459,12 @@ VReg gen(Node *node) {
 
             if (rhs_reads_same) {
                 VReg ra = gen_addr(node->lhs);
-                VReg rt = alloc_reg();
+                r2 = protect_from_addr_alias(r2, ra);
+                // alloc_reg() alone could spill ra's own register and hand
+                // back the same physical index, aliasing rt with ra; the
+                // BF_LOAD below then destroys the container address before
+                // the mask/store logic can use it again.
+                VReg rt = alloc_reg_avoid2(ra, -1);
                 int eff_sz_rhs = unit_sz > 8 ? 8 : unit_sz;
                 BF_LOAD(eff_sz_rhs, ra, rt);
 #ifdef ARCH_ARM64
@@ -10478,7 +10511,8 @@ VReg gen(Node *node) {
             // Simple assignment: read-modify-write
             free_reg(gen_addr(node->lhs));
             VReg ra = gen_addr(node->lhs);
-            VReg rt = alloc_reg();
+            r2 = protect_from_addr_alias(r2, ra);
+            VReg rt = alloc_reg_avoid2(ra, -1); // avoid aliasing the container address (see rhs_reads_same above)
             int eff_sz = unit_sz > 8 ? 8 : unit_sz;
             BF_LOAD(eff_sz, ra, rt);
             emit_mov_imm64(ARM64_X16, ~mask);
@@ -10548,7 +10582,8 @@ VReg gen(Node *node) {
             // Simple assignment: read-modify-write
             free_reg(gen_addr(node->lhs)); // discard; re-gen below
             VReg ra = gen_addr(node->lhs);
-            VReg rt = alloc_reg();
+            r2 = protect_from_addr_alias(r2, ra);
+            VReg rt = alloc_reg_avoid2(ra, -1); // avoid aliasing the container address (see rhs_reads_same above)
             int eff_sz = unit_sz > 8 ? 8 : unit_sz;
             BF_LOAD(eff_sz, ra, rt);
             asm_movabs_phy(cg_sec, X86_RAX, (uint64_t)(~mask)); // movabs $(uint64_t)(~mask), rX86_RAX
