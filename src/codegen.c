@@ -5650,6 +5650,31 @@ void free_reg(VReg i) {
     reg_owner[i] = NULL;
 }
 
+// Merge a ternary branch's just-computed value into the ternary's shared
+// result register `r`. `branch_r` is `r` itself when gen() for this
+// branch spilled r's OWN physical register (still marked used from an
+// earlier branch, or pre-allocated before either branch ran) to free it
+// up for some scratch temporary, and then landed the branch's real
+// result straight into that same slot -- the plain mov below is then a
+// no-op, but a plain free_reg() would wrongly RESTORE the spill slot (a
+// stale/garbage value from before this branch ran; a ternary's arms are
+// mutually exclusive at runtime, so it has no further use) on top of
+// the value just computed. Discard the spill bookkeeping instead.
+// Found via csmith 2278747: `(*p) = safe_div_func_int32_t_s_s(x, x)`
+// inlined at -O2, the else-arm's own division result got clobbered by
+// exactly this stale restore.
+static void cond_finish_branch(VReg r, VReg branch_r) {
+    if (branch_r == R_NONE) return;
+    if (branch_r != r) {
+        asm_mov_reg_reg(cg_sec, r, branch_r, 8); // mov rbranch_r -> rr
+        free_reg(branch_r);
+    } else if (spilled_regs & (1 << branch_r)) {
+        spilled_regs &= ~(1 << branch_r);
+        spill_victim &= ~(1 << branch_r);
+        pop_spill_slot(branch_r);
+    }
+}
+
 // Ensure a VReg's value is actually sitting in its physical register,
 // reloading from its spill slot first if a later alloc_reg() call stole
 // the register out from under it. Needed anywhere a VReg is computed once
@@ -6344,16 +6369,14 @@ VReg gen_addr(Node *node) {
             free_reg(cond);
             gen_flonum_branch_if_zero_preloaded(NULL, format(".L.else.%d", c));
             VReg then_r = gen_addr(node->then);
-            asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
-            free_reg(then_r);
+            cond_finish_branch(r, then_r);
             {
                 size_t o = asm_jmp_label(cg_sec); // b .L.end.%d
                 asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 0);
             }
             cg_def_label(format(".L.else.%d", c));
             VReg else_r = gen_addr(node->els);
-            asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
-            free_reg(else_r);
+            cond_finish_branch(r, else_r);
             cg_def_label(format(".L.end.%d", c));
             return r;
         }
@@ -6366,16 +6389,14 @@ VReg gen_addr(Node *node) {
             // halves instead.
             gen_int128_branch_if_zero(cond, false, NULL, format(".L.else.%d", c));
             VReg then_r = gen_addr(node->then);
-            asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
-            free_reg(then_r);
+            cond_finish_branch(r, then_r);
             {
                 size_t o = asm_jmp_label(cg_sec); // b .L.end.%d
                 asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 0);
             }
             cg_def_label(format(".L.else.%d", c));
             VReg else_r = gen_addr(node->els);
-            asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
-            free_reg(else_r);
+            cond_finish_branch(r, else_r);
             cg_def_label(format(".L.end.%d", c));
             return r;
         }
@@ -6388,16 +6409,14 @@ VReg gen_addr(Node *node) {
             asm_fixup_add(cg_sec, o, format(".L.else.%d", c), 1);
         }
         int then_r = gen_addr(node->then);
-        asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
-        free_reg(then_r);
+        cond_finish_branch(r, then_r);
         {
             size_t o = asm_jmp_label(cg_sec); // b .L.end.%d
             asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 0);
         }
         cg_def_label(format(".L.else.%d", c));
         VReg else_r = gen_addr(node->els);
-        asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
-        free_reg(else_r);
+        cond_finish_branch(r, else_r);
         cg_def_label(format(".L.end.%d", c));
 #else
         asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
@@ -6407,16 +6426,14 @@ VReg gen_addr(Node *node) {
             asm_fixup_add(cg_sec, o, format(".L.else.%d", c), 1);
         }
         VReg then_r = gen_addr(node->then);
-        asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
-        free_reg(then_r);
+        cond_finish_branch(r, then_r);
         {
             size_t o = asm_jmp_label(cg_sec); // je .L.else.%d
             asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 0);
         }
         cg_def_label(format(".L.else.%d", c));
         VReg else_r = gen_addr(node->els);
-        asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
-        free_reg(else_r);
+        cond_finish_branch(r, else_r);
         cg_def_label(format(".L.end.%d", c));
 #endif
         return r;
@@ -10987,7 +11004,15 @@ VReg gen(Node *node) {
             return old;
         }
         VReg r = gen_addr(node->lhs);
-        VReg r2 = alloc_reg();
+        // alloc_reg() alone could spill r's own register (still marked
+        // used) and hand back the same physical index -- r2 would then
+        // alias r, and loading the current value into r2 destroys the
+        // address in r before the increment/reload below reads it back
+        // through r. Found via csmith 2278747: `++(**g_1978)` under
+        // register pressure clobbered the address with the loaded
+        // value, then incremented/read through the resulting garbage
+        // pointer.
+        VReg r2 = alloc_reg_avoid2(r, -1);
         int sz = node->lhs->ty->size;
         // Handle bitfield post-increment/decrement with proper read-modify-write
         if (node->lhs->kind == ND_MEMBER && node->lhs->member &&
@@ -12500,8 +12525,7 @@ VReg gen(Node *node) {
         r = R_NONE;
         if (then_r != R_NONE) {
             r = alloc_reg();
-            asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
-            free_reg(then_r);
+            cond_finish_branch(r, then_r);
         }
         size_t cj2 = asm_jmp_label(cg_sec); // .L.end.%d:
         asm_fixup_add(cg_sec, cj2, end_label, 0); // fixup add for forward branch
@@ -12510,8 +12534,7 @@ VReg gen(Node *node) {
         if (else_r != R_NONE) {
             if (r == R_NONE)
                 r = alloc_reg();
-            asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
-            free_reg(else_r);
+            cond_finish_branch(r, else_r);
         }
         cg_def_label(end_label); // .L.end.%d:
         return r;
