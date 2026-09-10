@@ -143,7 +143,7 @@ CLANG_O2_EXE="bench/bench_clang_o2"
 # bound total wall-clock cost. Compile and the whole-sqlite3.c compile
 # are progressively more expensive to repeat, so they get progressively
 # fewer samples.
-RUNS="${BENCH_RUNS:-5}"
+RUNS="${BENCH_RUNS:-3}"
 AWFY_RUNS="${BENCH_AWFY_RUNS:-3}"
 COMPILE_RUNS="${BENCH_COMPILE_RUNS:-3}"
 LARGE_RUNS="${BENCH_LARGE_RUNS:-2}"

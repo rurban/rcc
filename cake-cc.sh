@@ -59,4 +59,4 @@ for src in $SOURCES; do
 done
 
 # shellcheck disable=SC2086
-exec $GCC $GCC_ARGS -o "$OUTPUT" $C89_FILES
+$GCC $GCC_ARGS -o "$OUTPUT" $C89_FILES
