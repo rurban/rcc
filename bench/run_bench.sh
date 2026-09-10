@@ -43,6 +43,18 @@ CCC="$(which ccc 2>/dev/null || true)"
 if [ -z "$CCC" ] && [ -e "../claudes-c-compiler/target/release/ccc" ]; then
    CCC="../claudes-c-compiler/target/release/ccc"
 fi
+# blitzy-c-compiler: https://github.com/blitzy-public-samples/blitzy-c-compiler
+# INSTALL:
+#  gh repo clone https://github.com/rurban/blitzy-c-compiler/
+#  cd blitzy-c-compiler; cargo build --release
+# Deliberately NOT resolved via PATH: bcc locates its builtin headers
+# (stdarg.h, stddef.h, ...) relative to its own binary path
+# (exe_dir/../../include), so a PATH/cargo-install copy with no include/
+# next to it fails to preprocess anything. Only the sibling-repo build
+# below has that include/ dir alongside it.
+if [ -z "$BCC" ] && [ -e "../blitzy-c-compiler/target/release/bcc" ]; then
+   BCC="../blitzy-c-compiler/target/release/bcc"
+fi
 CPROC="$(which cproc 2>/dev/null || true)"
 if [ -z "$CPROC" ] && [ -x ../cproc/cproc ]; then
 	CPROC="../cproc/cproc"
@@ -119,6 +131,7 @@ LACC_EXE="bench/bench_lacc"
 ANTCC_EXE="bench/bench_antcc"
 CAKE_EXE="bench/bench_cake"
 CCC_EXE="bench/bench_ccc"
+BCC_EXE="bench/bench_bcc"
 GCC_EXE="bench/bench_gcc"
 GCC_O2_EXE="bench/bench_gcc_o2"
 CLANG_EXE="bench/bench_clang"
@@ -190,7 +203,7 @@ resume_gortex() {
 cleanup() {
 	rm -f "$RCC_EXE" "$RCC_O1_EXE" "$RCC_O2_EXE" "$TCC_EXE" "$GCC_EXE" "$GCC_O2_EXE" "$CLANG_EXE" "$CLANG_O2_EXE" "$CPROC_EXE" "$SCC_EXE" "$LACC_EXE" "$ANTCC_EXE" "$CAKE_EXE"
 
-	rm -f "$KEFIR_EXE" "$SLIMCC_EXE" "$XCC_EXE" "$CCC_EXE" "$LARGE_SO"
+	rm -f "$KEFIR_EXE" "$SLIMCC_EXE" "$XCC_EXE" "$CCC_EXE" "$BCC_EXE" "$LARGE_SO"
 	# Must run on every exit path: a paused daemon left behind is worse than a
 	# noisy benchmark.
 	resume_gortex
@@ -466,6 +479,9 @@ fi
 if [ -n "$CAKE_CC" ]; then
    run_bench "CAKE" "$CAKE_CC" "$SRC -o $CAKE_EXE" "$CAKE_EXE" || true
 fi
+if [ -n "$BCC" ]; then
+   run_bench "BCC" "$BCC" "$SRC -o $BCC_EXE" "$BCC_EXE" || true
+fi
 if [ -n "$CCC" ]; then
    run_bench "CCC" "$CCC" "$SRC -o $CCC_EXE" "$CCC_EXE" || true
 fi
@@ -542,6 +558,9 @@ if [ -n "$CAKE_CC" ]; then
 fi
 if [ -n "$CCC" ]; then
    run_bench_awfy "CCC" "$CCC" "-std=c99" "bench/awfy_ccc" || true
+fi
+if [ -n "$BCC" ]; then
+   run_bench_awfy "BCC" "$BCC" "-std=c99" "bench/awfy_bcc" || true
 fi
 run_bench_awfy "GCC -O0" "$GCC" "-O0 -w -std=c99 -Wno-error=incompatible-pointer-types" "bench/awfy_gcc" || true
 run_bench_awfy "GCC -O2" "$GCC" "-O2 -w -std=c99 -Wno-error=incompatible-pointer-types" "bench/awfy_gcc_o2" || true
@@ -661,6 +680,10 @@ if [ -f "$LARGE_SRC" ]; then
     if [ -n "$CCC" ]; then
         # shellcheck disable=SC2086
 	_compile_large "CCC" "$CCC" $LARGE_CFLAGS
+    fi
+    if [ -n "$BCC" ]; then
+        # shellcheck disable=SC2086
+	_compile_large "BCC" "$BCC" $LARGE_CFLAGS
     fi
     # shellcheck disable=SC2086
     _compile_large "GCC -O0" "$GCC" -O0 $LARGE_CFLAGS

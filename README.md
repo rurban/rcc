@@ -116,20 +116,21 @@ Without gcc-bugs, rcc has 0 fails.
 
 | Compiler | Passed | Failed | Skipped | Notes                     |
 | -------- | ------ | ------ | ------- | ------------------------- |
-| rcc      | 4819   | 79     | 404     | 98%, 20c/58e/1r failures  |
-| gcc      | 4816   | 244    | 246     | 95%, 96c/41e/5r failures  |
-| ccc      | 4556   | 494    | 251     | 90%, 46c/86e/5r failures  |
-| clang    | 4239   | 821    | 241     | 83%, 112c/40e/3r failures |
-| tcc      | 3135   | 643    | 1526    | 82%, 116c/4r failures     |
-| kefir    | 3410   | 1193   | 702     | 74%, 96c/3r failures      |
-| antcc    | 2405   | 1364   | 1535    | 63%, 158c/3r failures     |
-| slimcc   | 2518   | 1574   | 1212    | 61%, 148c/2r failures     |
-| cake     | 2678   | 2111   | 515     | 55%, 437c/3r failures     |
-| lacc     | 1757   | 2337   | 1209    | 42%, 250c/1r failures     |
+| rcc      | 4467   | 79     | 404     | 98%, 20c/58e/1r failures  |
+| gcc      | 4489   | 218    | 246     | 95%, 96c/41e/5r failures  |
+| ccc      | 4219   | 478    | 251     | 89%, 46c/86e/5r failures  |
+| clang    | 3915   | 792    | 241     | 83%, 112c/40e/3r failures |
+| tcc      | 2792   | 633    | 1526    | 81%, 116c/4r failures     |
+| kefir    | 3079   | 1171   | 702     | 72%, 96c/3r failures      |
+| antcc    | 2104   | 1312   | 1535    | 61%, 158c/3r failures     |
+| slimcc   | 2178   | 1561   | 1212    | 58%, 148c/2r failures     |
+| cake     | 2395   | 2041   | 515     | 53%, 437c/3r failures     |
+| lacc     | 1539   | 2202   | 1209    | 41%, 250c/1r failures     |
 | compcert | 1674   | 2525   | 399     | 40%, 2336c/141r failures  |
-| scc      | 1679   | 3029   | 595     | 35%, 272c failures        |
-| xcc      | 994    | 2892   | 1417    | 25%, 227c failures        |
-| cproc    | 538    | 4225   | 540     | 11%, 288c/2r failures     |
+| scc      | 1420   | 2935   | 595     | 32%, 272c failures        |
+| bcc      | 1257   | 3501   | 549     | 26%, 129c failures        |
+| xcc      | 913    | 2620   | 1417    | 25%, 227c failures        |
+| cproc    | 439    | 3971   | 540     | 9%, 288c/2r failures      |
 
 <!-- TEST_RESULTS_TABLE_END -->
 

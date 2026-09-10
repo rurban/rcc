@@ -53,6 +53,7 @@ test_report_linux_cproc.md
 test_report_linux_antcc.md
 test_report_linux_cake.md
 test_report_linux_ccomp.md
+test_report_linux_bcc.md
 test/tcc_test_linux_ccc.md
 test/tcc_test_linux_tcc.md
 test/tcc_test_linux_gcc.md
@@ -66,6 +67,7 @@ test/tcc_test_linux_cproc.md
 test/tcc_test_linux_antcc.md
 test/tcc_test_linux_cake.md
 test/tcc_test_linux_ccomp.md
+test/tcc_test_linux_bcc.md
 test/tcc_test_musl.md
 test/tcc_test_musl_cross.md
 test/csmith

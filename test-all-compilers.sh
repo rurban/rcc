@@ -6,7 +6,7 @@
 # files that run_tests writes for each suite.
 #
 # Usage: ./test-all-compilers.sh [compiler...]
-#   With no args: rcc gcc ccc clang tcc kefir antcc slimcc lacc scc xcc
+#   With no args: rcc gcc ccc clang bcc tcc kefir antcc slimcc lacc scc xcc
 #                 cproc cake compcert (whichever are found).
 #   With args: only run/report the named compilers, e.g.
 #     ./test-all-compilers.sh gcc clang
@@ -58,6 +58,13 @@ CCC="$(resolve_bin ccc)"
 if [ -z "$CCC" ] && [ -x ../claudes-c-compiler/target/release/ccc ]; then
 	CCC="../claudes-c-compiler/target/release/ccc"
 fi
+# bcc is deliberately NOT resolved via PATH: it locates its builtin
+# headers relative to its own binary path (exe_dir/../../include), so a
+# PATH/cargo-install copy with no include/ next to it fails to preprocess.
+# https://github.com/rurban/blitzy-c-compiler/ bcc v0.1.1
+if [ -z "$BCC" ] && [ -e "../blitzy-c-compiler/target/release/bcc" ]; then
+	BCC="../blitzy-c-compiler/target/release/bcc"
+fi
 CPROC="$(resolve_bin cproc)"
 if [ -z "$CPROC" ] && [ -x ../cproc/cproc ]; then
 	CPROC="../cproc/cproc"
@@ -86,11 +93,12 @@ make -s rcc run_tests
 # name:binary:suffix triples, in README row order. suffix is the
 # "_<compiler-basename>" run_tests appends to report filenames for
 # any binary whose basename doesn't contain "rcc" (see run_tests.c).
-ROW_NAMES="rcc gcc ccc clang tcc kefir antcc slimcc cake lacc compcert scc xcc cproc"
+ROW_NAMES="rcc gcc ccc clang bcc tcc kefir antcc slimcc cake lacc compcert scc xcc cproc"
 bin_for() {
 	case "$1" in
 	rcc) echo "$RCC" ;;
 	gcc) echo "$GCC" ;;
+	bcc) echo "$BCC" ;;
 	ccc) echo "$CCC" ;;
 	clang) echo "$CLANG" ;;
 	tcc) echo "$TCC" ;;
