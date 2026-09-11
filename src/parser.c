@@ -14644,9 +14644,19 @@ static Node *to_assign(Node *binary) {
 
 static Node *assign(Token **rest, Token *tok) {
     Node *node = conditional(&tok, tok);
-    if (equalc(tok, "="))
-        node = new_binary(ND_ASSIGN, node, assign(&tok, tok->next), tok);
-    else if (equalc(tok, "+="))
+    if (equalc(tok, "=")) {
+        Node *rhs = assign(&tok, tok->next);
+        // Arrays are non-modifiable lvalues (C11 6.3.2.1p1/6.5.16p2):
+        // gcc rejects `array = scalar` ("assignment to expression with
+        // array type"). rcc additionally supports TCC's `array = array`
+        // whole-object-copy extension (tinycc tests2/34_array_assignment.c),
+        // so only reject when the rhs isn't itself an array.
+        if (node->ty && node->ty->kind == TY_ARRAY && (!rhs->ty || rhs->ty->kind != TY_ARRAY))
+            error_tok(tok, "assignment to expression with array type");
+        if (node->ty && node->ty->kind == TY_FUNC)
+            error_tok(tok, "assignment to expression with function type");
+        node = new_binary(ND_ASSIGN, node, rhs, tok);
+    } else if (equalc(tok, "+="))
         node = to_assign(new_binary(ND_ADD, node, assign(&tok, tok->next), tok));
     else if (equalc(tok, "-="))
         node = to_assign(new_binary(ND_SUB, node, assign(&tok, tok->next), tok));
