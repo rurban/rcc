@@ -2147,12 +2147,24 @@ static int expr_reg_pressure(Node *n) {
     case ND_LT:
     case ND_LE:
     case ND_LOGAND:
-    case ND_LOGOR: {
+    case ND_LOGOR:
+    case ND_ASSIGN:
+    case ND_COMMA: {
         int l = expr_reg_pressure(n->lhs);
         int r = expr_reg_pressure(n->rhs);
         int p = (l > r ? l : r) + 1;
         return p > depth_limit ? depth_limit : p;
     }
+    // A compound assignment desugars to `(tmp = &lhs), (*tmp = (rhs OP
+    // *tmp))` (see parser.c's to_assign()): the address held in `tmp`
+    // stays live in its own register across the whole rhs evaluation, on
+    // top of whatever registers rhs itself needs. ND_ASSIGN/ND_COMMA above
+    // already charge for that nesting; ND_DEREF/ND_ADDR still need their
+    // own +1 so a bare `*p` or `&x` operand doesn't undercount to 0 the
+    // way the `default:` case below would.
+    case ND_DEREF:
+    case ND_ADDR:
+        return expr_reg_pressure(n->lhs) + 1;
     case ND_NEG:
     case ND_BITNOT:
     case ND_NOT:
