@@ -2181,6 +2181,8 @@ static int expr_reg_pressure(Node *n) {
     }
 }
 
+VReg alloc_reg_avoid2(VReg avoid1, VReg avoid2);
+
 static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     int nargs = 0;
     for (Node *arg = node->args; arg; arg = arg->next)
@@ -3879,7 +3881,6 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     for (int i = 0; i < NUM_REGS; i++)
         live_now += (used_regs >> i) & 1;
     bool use_staging = (live_now + nreg_args_count + stack_scratch >= NUM_REGS);
-
     // Bitmask of scratch registers holding already-computed register-passed
     // arguments. Built up incrementally as each arg is evaluated below (an
     // arg that gets staged to memory is NOT added: its register is legitimately
@@ -4154,12 +4155,23 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     // the write clobbers the source value.  Pass 0: rsi-sourced args.  Pass 1: rest.
     // With staging, values are in unique stack slots so no ordering conflict
     // exists; a single pass suffices, reloading each staged value first.
+    // With staging, once an argument whose ABI slot is %rsi (arg_gp_idx
+    // 1, or 0 for a 2-register struct/int128/complex pair starting at
+    // rdi) has been placed, %rsi holds a value that must survive intact
+    // until the call. reg64[7] ("%rsi") is ALSO the 8th allocatable
+    // scratch register alloc_reg() hands out for later arguments'
+    // reloads -- without reserving it, a later argument's own staged
+    // reload silently overwrites the earlier argument's already-placed
+    // %rsi value before the call ever executes (409-line-deep csmith
+    // 1105826-reduced_refmismatch_O0_413: func_31's 2nd argument, a
+    // pointer chained through 3 nested calls, arrived as garbage).
+    bool rsi_arg_locked = false;
     for (int pass = 0; pass < (use_staging ? 1 : 2); pass++) {
         for (int i = 0; i < nargs; i++) {
             if (arg_stack_idx[i] >= 0)
                 continue;
             if (use_staging && arg_stage[i]) {
-                arg_regs[i] = alloc_reg();
+                arg_regs[i] = rsi_arg_locked ? alloc_reg_avoid2(7, 7) : alloc_reg();
                 asm_mov_rbp_reg(cg_sec, arg_regs[i], 8, arg_stage[i]); // movq -arg_stage[i](%rbp), arg_regs[i]
                 // Value is fresh from the staging slot — skip
                 // materialize_reg: any spilled_regs bit the register
@@ -4249,6 +4261,12 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             } else {
                 x86_mov_rr(cg_sec, 8, cg_x86_argreg[arg_gp_idx[i]], REG(arg_regs[i])); // movslq %s, %s
             }
+            // gp_idx 0 (rdi) alone never touches rsi, but a 2-register
+            // struct/int128/complex pair starting at rdi DOES (rdi+rsi) --
+            // conservatively lock on either 0 or 1 rather than re-deriving
+            // the exact 1-vs-2-register case here.
+            if (arg_gp_idx[i] == 0 || arg_gp_idx[i] == 1)
+                rsi_arg_locked = true;
             // Release the staging-load register.  When it was a recycled
             // outer VReg (spilled_regs still set from an earlier spill),
             // don't restore — the outer expression needs its value in the
