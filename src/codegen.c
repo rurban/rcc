@@ -10020,8 +10020,21 @@ VReg gen(Node *node) {
         if ((node->lhs->ty->kind == TY_ARRAY || node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || node->lhs->ty->kind == TY_COMPLEX) && !(node->lhs->ty->is_vector && (node->lhs->ty->size == 16 || node->lhs->ty->size == 8))) {
             int c = ++rcc_label_count;
             bool lhs_vla_struct = (node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION) && node->lhs->ty->vla_len_expr;
-            VReg dst = lhs_vla_struct ? gen(node->lhs) : gen_addr(node->lhs);
+            VReg dst;
             VReg src;
+            // Chain assignment (`g_50 = (*p = l_2144)`): the rhs is itself a
+            // struct/union/array ND_ASSIGN, whose recursive gen() call below
+            // performs its own register allocation/spilling. dst, computed
+            // via a plain gen_addr()/gen() with nothing marking it
+            // "protected", has no guard against being clobbered by that
+            // recursion. Evaluate the chained rhs FIRST and compute dst
+            // afterward instead of trying to shield a register across
+            // arbitrary recursive codegen.
+            bool chain_assign = node->rhs->kind == ND_ASSIGN && node->rhs->ty &&
+                (node->rhs->ty->kind == TY_STRUCT || node->rhs->ty->kind == TY_UNION || node->rhs->ty->kind == TY_ARRAY);
+            if (chain_assign)
+                src = gen(node->rhs);
+            dst = lhs_vla_struct ? gen(node->lhs) : gen_addr(node->lhs);
             if (node->rhs->kind == ND_FUNCALL && node->rhs->ty &&
                 (node->rhs->ty->kind == TY_STRUCT || node->rhs->ty->kind == TY_UNION || node->rhs->ty->kind == TY_COMPLEX)) {
 #ifndef ARCH_ARM64
@@ -10165,7 +10178,9 @@ VReg gen(Node *node) {
                 return dst;
             }
 
-            if (node->rhs->ty && (node->rhs->ty->kind == TY_STRUCT || node->rhs->ty->kind == TY_UNION || node->rhs->ty->kind == TY_ARRAY))
+            if (chain_assign) {
+                // src already computed above, before dst.
+            } else if (node->rhs->ty && (node->rhs->ty->kind == TY_STRUCT || node->rhs->ty->kind == TY_UNION || node->rhs->ty->kind == TY_ARRAY))
                 // For chain assignments (d = e = a[0] = c), use gen() to trigger
                 // inner assignment evaluation, not gen_addr() which skips it.
                 src = (node->rhs->kind == ND_ASSIGN) ? gen(node->rhs) : gen_addr(node->rhs);
@@ -10175,6 +10190,14 @@ VReg gen(Node *node) {
                 src = gen_addr(node->rhs); // need source address, not loaded value
             else
                 src = gen(node->rhs);
+            // Computing src above may have evicted dst's register under
+            // register pressure (a spill victim, not a free_reg()) and
+            // handed that SAME physical register number to src -- dst and
+            // src then silently alias the same VReg, with dst's real
+            // address sitting forgotten in its spill slot. Recover it into
+            // a fresh register before anything below reads/writes through
+            // dst. No-op when dst was never spilled.
+            dst = protect_from_addr_alias(dst, dst);
             // Complex-to-complex assignment with differing real-floating base
             // types (e.g. _Complex float = _Complex double or vice versa):
             // convert each component instead of doing a raw byte copy.
