@@ -526,6 +526,22 @@ static void emit_loc(Node *node) {
     last_debug_line = line;
 }
 int fn_struct_ret_off = 0; // next free offset within the struct-ret-buf area
+// Per-function cache of the comparison lhs-protect stack slot (see the
+// ND_EQ/NE/LT/LE cmp path in gen()), indexed by comparison-nesting depth.
+// A slot is allocated once per depth level (lazily, on first use) and
+// reused by every comparison that reaches that depth over the function's
+// lifetime -- never two comparisons at the SAME depth at once, since a
+// deeper comparison's own protect window is fully nested inside and
+// completes before the outer one resumes. Bounds the extra stack cost to
+// the expression's max nesting depth instead of its total comparison
+// count: allocating a fresh alloc_wide_slot() per comparison permanently
+// grew a function's frame by one slot for every comparison with a call in
+// its rhs (fn_struct_ret_off never shrinks mid-function), which blew up
+// real stack usage badly enough to break other tests on tighter Windows
+// stack budgets.
+#define CMP_LHS_PROTECT_MAX_DEPTH 64
+static int cmp_lhs_protect_depth = 0;
+static int cmp_lhs_protect_slots[CMP_LHS_PROTECT_MAX_DEPTH];
 int fn_struct_ret_total = 0; // high-water mark of struct-ret-buf space used
 // Same two-pass-stable allocation scheme as fn_struct_ret_off/total, for
 // GNU nested-function trampoline slots (see rcc.h's TRAMPOLINE_SIZE);
@@ -2181,6 +2197,36 @@ static int expr_reg_pressure(Node *n) {
     }
 }
 
+// True if `n`'s subtree could invoke gen_funcall during codegen -- a
+// direct call, or a GNU statement expression (the safe_math.h-style
+// `({ ... })` macros csmith relies on can get "outlined" into a real
+// call), anywhere inside it. Used to gate the comparison codegen's
+// unconditional lhs-protect staging (see the ND_EQ/NE/LT/LE path in
+// gen()) to only the rare case that actually needs it -- gen_funcall's
+// argument-staging release is the only known mechanism that clobbers a
+// live outer register without ever setting spilled_regs. Staging
+// unconditionally for every comparison in a function permanently grows
+// that function's stack frame by one slot per comparison (fn_struct_ret_off
+// never shrinks mid-function), which blew up real stack usage badly
+// enough to break other tests under tighter stack budgets.
+static bool node_may_call(Node *n) {
+    if (!n)
+        return false;
+    if (n->kind == ND_FUNCALL || n->kind == ND_STMT_EXPR)
+        return true;
+    if (node_may_call(n->lhs)) return true;
+    if (node_may_call(n->rhs)) return true;
+    if (node_may_call(n->cond)) return true;
+    if (node_may_call(n->then)) return true;
+    if (node_may_call(n->els)) return true;
+    if (node_may_call(n->stmt_expr_result)) return true;
+    for (Node *s = n->body; s; s = s->next)
+        if (node_may_call(s)) return true;
+    for (Node *a = n->args; a; a = a->next)
+        if (node_may_call(a)) return true;
+    return false;
+}
+
 VReg alloc_reg_avoid2(VReg avoid1, VReg avoid2);
 
 static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
@@ -3722,12 +3768,19 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     return r;
 #else
     // === x86_64 (Windows + Linux) calling convention ===
-    int saved_scratch = used_regs & 3;
-    // The hidden_ret_reg exclusion only applies to the has_hidden_retbuf path,
-    // where temp_ret_reg (r10/r11) is reloaded via a frame-relative `lea`
-    // after the call. If there's no hidden retbuf, hidden_ret_reg (if set)
-    // just holds a destination address from gen_addr() that must survive the
-    // call like any other live register.
+    // reg64[7] ("%rsi") is caller-saved (SysV/Win64 both), and is ALSO an
+    // ABI argument-passing register -- but ANY call, even one whose OWN
+    // arguments never touch rsi, is free to clobber it internally as
+    // ordinary scratch. r10/r11 (bits 0-1) get this same unconditional
+    // save-before/restore-after treatment because they're pure scratch
+    // registers never used for argument passing; rsi needs it for the
+    // exact same caller-saved reason, just with one more register alias
+    // to juggle. This is a plain shadow copy alongside the allocator's
+    // own spill bookkeeping (used_regs/spilled_regs untouched here) --
+    // if the allocator ALSO needs the register mid-call, it spills and
+    // restores it through its normal path independently; this wrapper
+    // just guarantees the value set here also survives regardless.
+    int saved_scratch = used_regs & 0x83;
     if (saved_scratch & 1) {
         asm_mov_phyreg_rbp(cg_sec, X86_R10, 8, spill_offset(0)); // mov [rbp-spill_offset(0)], X86_R10
         // Keep r10 marked as in-use so alloc_reg() doesn't reuse it for the
@@ -3736,6 +3789,9 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     if (saved_scratch & 2) {
         asm_mov_phyreg_rbp(cg_sec, X86_R11, 8, spill_offset(1)); // mov [rbp-spill_offset(1)], X86_R11
         // Same for r11.
+    }
+    if (saved_scratch & 0x80) {
+        asm_mov_phyreg_rbp(cg_sec, X86_RSI, 8, spill_offset(7)); // mov [rbp-spill_offset(7)], X86_RSI
     }
 
     VReg callee_reg = -1;
@@ -4185,6 +4241,31 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 // before reading REG(arg_regs[i]).
                 materialize_reg(arg_regs[i]);
             }
+            // reg64[7] ("%rsi") aliases the SysV arg2 register (and the
+            // rdi+rsi pair start for a 2-register struct/int128/integer-
+            // complex argument). The placement writes below go straight
+            // into the physical ABI register with no used_regs check --
+            // if VReg index 7 currently holds a live OUTER value (e.g. an
+            // enclosing comparison's other operand), placing this
+            // argument here silently clobbers it with no spilled_regs
+            // bit ever set, so the outer expression later reads garbage
+            // out of a register it never knew was stolen. Evict it like
+            // any other spill victim first; the outer expression detects
+            // spilled_regs and recovers the value from its slot.
+            {
+                bool arg_is_two_reg =
+                    (argv[i]->ty && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) &&
+                     argv[i]->ty->size > 8 && struct_returns_in_gp_regs(argv[i]->ty)) ||
+                    (argv[i]->ty && is_int128_like(argv[i]->ty)) ||
+                    (argv[i]->ty && is_complex(argv[i]->ty) &&
+                     !(argv[i]->ty->base && is_flonum(argv[i]->ty->base)) && argv[i]->ty->size > 8);
+                bool targets_rsi = (arg_gp_idx[i] == 1) || (arg_gp_idx[i] == 0 && arg_is_two_reg);
+                if (targets_rsi && (used_regs & (1 << 7)) && arg_regs[i] != 7) {
+                    asm_mov_reg_rbp(cg_sec, 7, 8, push_spill_slot(7));
+                    spilled_regs |= (1 << 7);
+                    spill_count++;
+                }
+            }
             if (argv[i]->ty && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) &&
                 argv[i]->ty->size > 8 && struct_returns_in_gp_regs(argv[i]->ty)) {
                 // SysV: 9-16 byte all-integer struct passed as a raw
@@ -4329,6 +4410,10 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     if (saved_scratch & 1) {
         used_regs |= 1;
         asm_mov_rbp(cg_sec, X86_R10, 8, spill_offset(0)); // mov [rbp-spill_offset(0], X86_R10)
+    }
+    if (saved_scratch & 0x80) {
+        used_regs |= 0x80;
+        asm_mov_rbp(cg_sec, X86_RSI, 8, spill_offset(7)); // mov [rbp-spill_offset(7)], X86_RSI
     }
 
     if (has_hidden_retbuf) {
@@ -16391,35 +16476,86 @@ VReg gen(Node *node) {
             }
 #endif
         } else {
+            // Comparisons: r_lhs must survive whatever gen(rhs) does
+            // internally -- a nested call's argument marshalling, a
+            // &&/|| or ternary merge sharing a result register, or
+            // anything else that can silently reuse r_lhs's physical
+            // register through a mechanism the spilled_regs bitmask
+            // never observes (it only tracks the allocator's OWN
+            // spill-victim evictions). Back up r_lhs to a dedicated
+            // stack slot before rhs runs (without freeing its
+            // register -- this costs nothing extra: the original,
+            // unfixed code also left r_lhs live throughout rhs's
+            // evaluation) so it can be recovered if anything DOES
+            // disturb it; verify afterward and only pay for a reload
+            // in that rare case, keeping normal register pressure and
+            // eviction behavior identical to before for the common
+            // case where nothing touches r_lhs.
+            int lhs_protect_slot = -1;
+            int my_protect_depth = -1;
+            if (!strcmp(inst, "cmp") && node_may_call(node->rhs)) {
+                my_protect_depth = cmp_lhs_protect_depth++;
+                if (my_protect_depth < CMP_LHS_PROTECT_MAX_DEPTH) {
+                    if (cmp_lhs_protect_slots[my_protect_depth] < 0)
+                        cmp_lhs_protect_slots[my_protect_depth] = alloc_wide_slot(8);
+                    lhs_protect_slot = cmp_lhs_protect_slots[my_protect_depth];
+                } else {
+                    lhs_protect_slot = alloc_wide_slot(8);
+                }
+#ifdef ARCH_ARM64
+                asm_stur_fp(cg_sec, r_lhs, lhs_protect_slot); // str x{r_lhs}, [x29, #-slot]
+#else
+                x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -lhs_protect_slot), REG(r_lhs)); // mov r_lhs, -slot(%rbp)
+#endif
+            }
+            int lhs_reg_before = r_lhs;
             VReg r_rhs = gen(node->rhs);
+            if (my_protect_depth >= 0)
+                cmp_lhs_protect_depth--; // rhs's own nested comparisons (if any) are done
+            if (lhs_protect_slot >= 0) {
+                bool r_lhs_intact = r_lhs == lhs_reg_before && r_lhs != r_rhs &&
+                    (used_regs & (1 << r_lhs)) && !(spilled_regs & (1 << r_lhs));
+                if (!r_lhs_intact) {
+                    if (spilled_regs & (1 << lhs_reg_before)) {
+                        spilled_regs &= ~(1 << lhs_reg_before);
+                        pop_spill_slot(lhs_reg_before); // dangling entry from whatever disturbed it
+                    }
+                    r_lhs = alloc_reg_avoid2(r_rhs, -1);
+#ifdef ARCH_ARM64
+                    asm_ldur_fp(cg_sec, r_lhs, lhs_protect_slot); // ldr x{r_lhs}, [x29, #-slot]
+#else
+                    x86_mov_rm(cg_sec, 8, REG(r_lhs), x86_mem(X86_RBP, -lhs_protect_slot)); // mov -slot(%rbp), r_lhs
+#endif
+                }
+            }
 #ifdef ARCH_ARM64
             // Sign-extend rhs to 64 bits when operation is 64-bit but rhs was
             // computed as 32-bit signed. ARM64: use sxtw.
             if (sz == 8 && op_size(node->rhs->ty) == 4 && !use_unsigned(node->rhs->ty))
                 asm_movsx(cg_sec, r_rhs, r_rhs, 8, 4); // movsx8->r_rhs rr_rhs, rr_rhs
             if (!strcmp(inst, "cmp")) {
+                // r_lhs was freshly staged/reloaded above into a register
+                // distinct from r_rhs -- a plain compare is always safe.
                 asm_cmp_reg_reg(cg_sec, r_lhs, r_rhs, sz); // cmp rr_rhs, rr_lhs
-            } else {
-                if (!strcmp(inst, "add")) {
-                    if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
-                        asm_ldur_fp_phy(cg_sec, ARM64_X16, spill_offset(r_lhs));
-                        spilled_regs &= ~(1 << r_lhs);
-                        pop_spill_slot(r_lhs); // consumed by the add below
-                        arm64_add_reg(cg_sec, sz == 8 ? 1 : 0, REG(r_lhs), REG(r_lhs), ARM64_X16, ARM64_LSL, 0);
-                    } else {
-                        asm_add_reg_reg(cg_sec, r_lhs, r_rhs, sz);
-                    }
-                } else if (!strcmp(inst, "sub"))
-                    asm_sub_reg_reg(cg_sec, r_lhs, r_rhs, sz); // sub rr_lhs, rr_rhs
-                else if (!strcmp(inst, "mul"))
-                    asm_mul_reg_reg(cg_sec, r_lhs, r_rhs, sz); // imul rr_lhs, rr_rhs
-                else if (!strcmp(inst, "and"))
-                    asm_and_reg_reg(cg_sec, r_lhs, r_rhs, sz); // and rr_lhs, rr_rhs
-                else if (!strcmp(inst, "eor"))
-                    asm_eor_reg_reg(cg_sec, r_lhs, r_rhs, sz); // xor rr_lhs, rr_rhs
-                else if (!strcmp(inst, "orr"))
-                    asm_or_reg_reg(cg_sec, r_lhs, r_rhs, sz); // or rr_lhs, rr_rhs
-            }
+            } else if (!strcmp(inst, "add")) {
+                if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
+                    asm_ldur_fp_phy(cg_sec, ARM64_X16, spill_offset(r_lhs));
+                    spilled_regs &= ~(1 << r_lhs);
+                    pop_spill_slot(r_lhs); // consumed by the add below
+                    arm64_add_reg(cg_sec, sz == 8 ? 1 : 0, REG(r_lhs), REG(r_lhs), ARM64_X16, ARM64_LSL, 0);
+                } else {
+                    asm_add_reg_reg(cg_sec, r_lhs, r_rhs, sz);
+                }
+            } else if (!strcmp(inst, "sub"))
+                asm_sub_reg_reg(cg_sec, r_lhs, r_rhs, sz); // sub rr_lhs, rr_rhs
+            else if (!strcmp(inst, "mul"))
+                asm_mul_reg_reg(cg_sec, r_lhs, r_rhs, sz); // imul rr_lhs, rr_rhs
+            else if (!strcmp(inst, "and"))
+                asm_and_reg_reg(cg_sec, r_lhs, r_rhs, sz); // and rr_lhs, rr_rhs
+            else if (!strcmp(inst, "eor"))
+                asm_eor_reg_reg(cg_sec, r_lhs, r_rhs, sz); // xor rr_lhs, rr_rhs
+            else if (!strcmp(inst, "orr"))
+                asm_or_reg_reg(cg_sec, r_lhs, r_rhs, sz); // or rr_lhs, rr_rhs
             // Pointer subtraction: divide byte difference by element size
             if (node->kind == ND_SUB && node->lhs->ty->base && node->rhs->ty->base) {
                 int elem_sz = node->lhs->ty->base->size;
@@ -16502,13 +16638,9 @@ VReg gen(Node *node) {
                     asm_or_reg_reg(cg_sec, r_lhs, r_rhs, sz);
                 }
             } else if (!strcmp(inst, "cmp")) {
-                if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
-                    asm_cmp_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));
-                    spilled_regs &= ~(1 << r_lhs);
-                    pop_spill_slot(r_lhs); // consumed by the cmp; pop the slot
-                } else {
-                    asm_cmp_reg_reg(cg_sec, r_lhs, r_rhs, sz);
-                }
+                // r_lhs was freshly staged/reloaded above into a register
+                // distinct from r_rhs -- a plain compare is always safe.
+                asm_cmp_reg_reg(cg_sec, r_lhs, r_rhs, sz);
             }
             // Pointer subtraction: divide byte difference by element size
             if (node->kind == ND_SUB && node->lhs->ty->base && node->rhs->ty->base) {
@@ -17221,6 +17353,9 @@ struct ObjFile *codegen(Program *prog) {
         fn_struct_ret_total = 0;
         fn_trampoline_off = 0;
         fn_trampoline_total = 0;
+        cmp_lhs_protect_depth = 0;
+        for (int _ci = 0; _ci < CMP_LHS_PROTECT_MAX_DEPTH; _ci++)
+            cmp_lhs_protect_slots[_ci] = -1;
 
 #ifdef BENCH
         struct timespec dbg_p1_t0, dbg_p1_t1;
@@ -17769,6 +17904,9 @@ struct ObjFile *codegen(Program *prog) {
         memset(spill_depth, 0, sizeof(spill_depth));
         fn_struct_ret_off = 0; // reset for Pass 2 (fn_struct_ret_total already computed)
         fn_trampoline_off = 0; // reset for Pass 2 (fn_trampoline_total already computed)
+        cmp_lhs_protect_depth = 0;
+        for (int _ci = 0; _ci < CMP_LHS_PROTECT_MAX_DEPTH; _ci++)
+            cmp_lhs_protect_slots[_ci] = -1;
         cg_label_ht_reset();
         asm_fixup_ht_reset();
 
