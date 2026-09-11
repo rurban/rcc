@@ -10287,7 +10287,7 @@ VReg gen(Node *node) {
             asm_patch_jcc_fwd(cg_sec, _cj); // beq lands here (copy_end)
 #else
             {
-                VReg cnt = alloc_reg(); // dedicated counter, doesn't conflict with src/dst
+                VReg cnt = alloc_reg_avoid2(src, dst); // dedicated counter, must not conflict with src/dst
                 if (copy_is_vla_struct && r_vla_sz >= 0)
                     asm_mov_reg_reg(cg_sec, cnt, r_vla_sz, 8); // movq r_vla_sz, cnt
                 else
