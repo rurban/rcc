@@ -404,7 +404,7 @@ docs/rcc.1: docs/rcc.pod
 # Rebuild with the installed include path so rcc finds its headers
 # without needing -I after installation.
 install: $(TARGET)
-	$(MAKE) clean
+	rm -f $(TARGET) src/preprocess$(OBJ_EXT) src/main$(OBJ_EXT)
 	$(MAKE) RCC_INCDIR="$(INCDIR)"
 ifeq ($(OS),Windows_NT)
 	install -d "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(BINDIR)),$(BINDIR))" "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(INCDIR)),$(INCDIR))" "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(DOCDIR)),$(DOCDIR))"
