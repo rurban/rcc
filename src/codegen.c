@@ -10386,10 +10386,18 @@ VReg gen(Node *node) {
             } else
                 asm_mov_reg_rbp(cg_sec, r2, node->lhs->ty->size, node->lhs->var->offset); // mov rr2, [rbp-node->lhs->ty->size]
 #endif
-            // Truncate result to match the variable's type width for unsigned narrow types
-            if (node->lhs->ty->is_unsigned && node->lhs->ty->size < 4) {
-                int mask = (1 << (node->lhs->ty->size * 8)) - 1;
-                asm_and_imm(cg_sec, r2, 4, mask); // and $mask, reg[r2]
+            // The assignment expression's value must match the variable's
+            // type after conversion: mask (zero-extend) unsigned narrow
+            // types, sign-extend signed narrow types. Without this, `(x =
+            // rhs)` used in a larger expression leaks rhs's full width
+            // instead of the truncated/sign-extended stored value.
+            if (node->lhs->ty->size < 4 && is_integer(node->lhs->ty)) {
+                if (node->lhs->ty->is_unsigned) {
+                    int mask = (1 << (node->lhs->ty->size * 8)) - 1;
+                    asm_and_imm(cg_sec, r2, 4, mask); // and $mask, reg[r2]
+                } else {
+                    asm_movsx(cg_sec, r2, r2, 4, node->lhs->ty->size); // movsx r2, r2
+                }
             }
             return r2;
         }
@@ -10708,6 +10716,18 @@ VReg gen(Node *node) {
             asm_mov_reg_mem(cg_sec, r2, r1, st_sz); // movl/movq r2, (%r1)
         }
 #endif
+        // Assignment expression's value must be the truncated/converted
+        // stored value, not the raw rhs (see the matching local-var fixup
+        // above). Global vars, array elements, and pointer derefs all
+        // fall through to this generic store path.
+        if (node->lhs->ty->size < 4 && is_integer(node->lhs->ty)) {
+            if (node->lhs->ty->is_unsigned) {
+                int mask = (1 << (node->lhs->ty->size * 8)) - 1;
+                asm_and_imm(cg_sec, r2, 4, mask); // and $mask, reg[r2]
+            } else {
+                asm_movsx(cg_sec, r2, r2, 4, node->lhs->ty->size); // movsx r2, r2
+            }
+        }
         free_reg(r1);
         return r2;
     }
