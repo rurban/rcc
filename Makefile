@@ -403,7 +403,8 @@ docs/rcc.1: docs/rcc.pod
 
 # Rebuild with the installed include path so rcc finds its headers
 # without needing -I after installation.
-install: $(TARGET)
+# TODO: seperate INST_TARGET with src/preprocess$(INST_OBJ_EXT) src/main$(INST_OBJ_EXT)
+install:
 	rm -f $(TARGET) src/preprocess$(OBJ_EXT) src/main$(OBJ_EXT)
 	$(MAKE) RCC_INCDIR="$(INCDIR)"
 ifeq ($(OS),Windows_NT)
@@ -413,6 +414,7 @@ ifeq ($(OS),Windows_NT)
 	install -m 644 README.md docs/rcc.md test/tcc_test*.md test_report*.md LICENSE bench/bench_report*.md "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(DOCDIR)),$(DOCDIR))/"
 	install -d "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))"
 	install -m 755 $(RCC_LIB) "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))/"
+	install -m 644 $(LIBDFP_A) "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))/"
 	if test -n "$(MINGW_O)"; then install -d "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))"; install -m 644 $(MINGW_O) "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))/"; fi
 else
 	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(INCDIR)" "$(DESTDIR)$(DOCDIR)"
@@ -421,6 +423,7 @@ else
 	install -m 644 README.md docs/*.md test/tcc_test*.md test_report*.md LICENSE bench/bench_report*.md "$(DESTDIR)$(DOCDIR)/"
 	install -d "$(DESTDIR)$(LIBDIR)"
 	install -m 644 $(RCC_LIB) "$(DESTDIR)$(LIBDIR)/"
+	install -m 644 $(LIBDFP_A) "$(DESTDIR)$(LIBDIR)/"
 	@if test -n "$(MINGW_O)"; then install -m 644 $(MINGW_O) "$(DESTDIR)$(LIBDIR)/"; fi
 	@if test -n "$(DARWIN_O)"; then install -m 644 $(DARWIN_O) "$(DESTDIR)$(LIBDIR)/"; fi
 	@if command -v $(POD2MAN) > /dev/null 2>&1; then \
