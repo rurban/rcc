@@ -15,13 +15,12 @@ if [ -e /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll ] && [ ! -e libwinpthrea
     cp /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll .
 fi
 
+make leanclean
+make CC=x86_64-w64-mingw32-gcc
 if [ -n "${1:-}" ]; then
-    make CC=x86_64-w64-mingw32-gcc
     ./run_tests.exe ./rcc.exe "$@"
 else
-    make leanclean
-    make CC=x86_64-w64-mingw32-gcc
-    echo "==> Running full test suite sequentially in_proc via run_tests.exe..."
+    echo "==> Running full test suite in parallel in_proc via run_tests.exe..."
     echo ""
     ./run_tests.exe ./rcc.exe --all --parallel
 fi

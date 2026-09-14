@@ -10,6 +10,7 @@ a.arm64
 lib/rcc_darwin.dylib
 rcc_lib.dll
 rcc_lib.so
+rcc_lib-inst.so
 lib/libdfp.a
 lib/libdfp.lib
 lib/libdfp-arm64.a
@@ -17,6 +18,7 @@ lib/libdfp-darwin.a
 a.out
 *.o
 *.obj
+src/*.inst.*
 *.s
 *.i
 *.tmp
@@ -30,6 +32,7 @@ rcc-arm64
 rcc-darwin
 rcc-musl
 rcc_prof
+rcc-inst
 /linux.sh
 actual.txt
 fred.txt

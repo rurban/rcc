@@ -15,6 +15,9 @@ RCC_LIB_LDFLAGS = -shared -fPIC
 # (e.g. MSYS2/MinGW-w64), not "x86_64-w64-mingw32-gcc".
 RCC_GCC = $(CC)
 
+INST_TARGET = rcc-inst
+INST_OBJ_EXT = .inst.o
+
 ifeq ($(ASAN),1)
 CFLAGS = -std=c11 -Wall -Wextra -g -Isrc
 CFLAGS += -fsanitize=address -fno-omit-frame-pointer
@@ -63,6 +66,7 @@ DOCDIR = $(PREFIX)/share/doc/rcc
 MANDIR = $(PREFIX)/share/man/man1
 SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/cg_builtins.c src/cg_vectors.c src/opt.c src/alloc.c src/unicode.c src/keywords.c src/obj.c src/asm.c src/link.c
 TARGET_EXT = $(OBJS)
+INST_TARGET_EXT = $(INST_OBJS)
 RUN_TESTS = run_tests
 
 DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
@@ -71,15 +75,21 @@ MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
 
 ifneq ($(findstring apple,$(MACHINE)),)
 SRCS += src/macho_write.c src/link_macho.c src/arm64_enc.c
-else ifneq ($(findstring mingw,$(MACHINE)),)
-SRCS += src/coff_write.c src/link_pe.c src/x86_enc.c
-else
-SRCS += src/elf_write.c src/link_elf.c src/x86_enc.c
-TARGET_DEPS += $(MINGW_O)
-TARGET_EXT += $(MINGW_O)
-endif
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
+else ifneq ($(findstring mingw,$(MACHINE)),)
+SRCS += src/coff_write.c src/link_pe.c src/x86_enc.c
+OBJS = $(SRCS:.c=$(OBJ_EXT))
+TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
+else
+SRCS += src/elf_write.c src/link_elf.c src/x86_enc.c
+OBJS = $(SRCS:.c=$(OBJ_EXT))
+TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
+TARGET_DEPS += $(MINGW_O)
+TARGET_EXT += $(MINGW_O)
+INST_TARGET_EXT += $(MINGW_O)
+endif
+INST_OBJS = $(patsubst src/preprocess$(OBJ_EXT),src/preprocess$(INST_OBJ_EXT),$(patsubst src/main$(OBJ_EXT),src/main$(INST_OBJ_EXT),$(OBJS)))
 LIBDFP_A = lib/libdfp.a
 
 # Build-time include directory: absolute path to the source include/ dir.
@@ -92,7 +102,9 @@ TARGET = rcc.exe
 RUN_TESTS = run_tests.exe
 MINGW_O = lib/rcc_mingw$(OBJ_EXT)
 TARGET_EXT += -lpthread
+INST_TARGET_EXT += -lpthread
 OBJ_EXT = .obj
+INST_OBJ_EXT = .inst.obj
 # LTO+-O3 miscompiles rcc.exe itself for this target: building c23-
 # complit-4.c's `(static thread_local int[]){1,2}` crashed rcc.exe with a
 # SIGSEGV inside/around cg_emit_emutls_data() (confirmed via wine +
@@ -116,7 +128,9 @@ TARGET = rcc.exe
 RUN_TESTS = run_tests.exe
 MINGW_O = lib/rcc_mingw$(OBJ_EXT)
 TARGET_EXT += -lpthread
+INST_TARGET_EXT += -lpthread
 OBJ_EXT = .obj
+INST_OBJ_EXT = .inst.obj
 LIBDFP_A = lib/libdfp.lib
 # See the native-Windows block above for why LTO is excluded here too.
 CFLAGS := $(filter-out -flto=auto -flto=thin,$(CFLAGS))
@@ -134,6 +148,7 @@ TARGET = rcc-arm64
 RUN_TESTS = run_tests_arm64
 SRCS += src/arm64_enc.c
 OBJ_EXT = .arm64.o
+INST_OBJ_EXT = inst.arm64.o
 ARM64_SYSROOT := $(shell $(CC) -print-sysroot 2>/dev/null)
 LIBDFP_A = lib/libdfp-arm64.a
 # Fedora aarch64 gcc may inject a broken -latomic_asneeded spec.
@@ -212,6 +227,7 @@ CFLAGS += -DHAVE_ICONV
 LDFLAGS += -liconv
 endif
 RCC_LIB = rcc_lib$(SHARED_EXT)
+INST_RCC_LIB = rcc_lib-inst$(SHARED_EXT)
 
 all: $(TARGET) $(RUN_TESTS) $(RCC_ALL) $(RCC_LIB) $(LIBDFP_A)
 
@@ -280,6 +296,10 @@ src/unicode$(OBJ_EXT): src/unicode.c src/unicode.h
 	$(CC) $(CFLAGS) -c src/unicode.c -o $@
 src/lib$(OBJ_EXT): src/lib.c src/rcc_lib.h $(HDRS)
 	$(CC) $(CFLAGS) -c src/lib.c -o $@
+src/preprocess$(INST_OBJ_EXT): src/preprocess.c src/sysinc_paths.h src/gcc_predefined.h $(HDRS)
+	$(CC) $(CFLAGS) -c src/preprocess.c -o $@ -DRCC_INCDIR='"$(INCDIR)"'
+src/main$(INST_OBJ_EXT): src/main.c src/sysinc_paths.h src/bitint_rt.h $(HDRS)
+	$(CC) $(CFLAGS) -c src/main.c -o $@ -DGCC=\"$(RCC_GCC)\" -DRCC_INCDIR='"$(INCDIR)"' -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\"
 
 run_tests: run_tests.c
 	$(CC) $(CFLAGS) -o $@ run_tests.c
@@ -401,41 +421,44 @@ man: docs/rcc.1
 docs/rcc.1: docs/rcc.pod
 	if command -v $(POD2MAN); then $(POD2MAN) --section=1 --center="RCC C Compiler" --release="rcc $(VERSION)" --name=RCC docs/rcc.pod $@; else touch $@; fi
 
+
+$(INST_TARGET): $(INST_OBJS) $(LIBDFP_A)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(INST_TARGET_EXT) $(LIBDFP_A) -lm
+$(INST_RCC_LIB): $(INST_OBJS) src/lib$(OBJ_EXT) $(MINGW_O) $(LIBDFP_A)
+	$(CC) $(CFLAGS) $(RCC_LIB_LDFLAGS) $(LDFLAGS) -o $@ src/lib$(OBJ_EXT) $(INST_TARGET_EXT) $(LIBDFP_A) -lm
+
 # Rebuild with the installed include path so rcc finds its headers
 # without needing -I after installation.
 # TODO: seperate INST_TARGET with src/preprocess$(INST_OBJ_EXT) src/main$(INST_OBJ_EXT)
-install:
-	rm -f $(TARGET) src/preprocess$(OBJ_EXT) src/main$(OBJ_EXT)
-	$(MAKE) RCC_INCDIR="$(INCDIR)"
+install: $(INST_TARGET) $(INST_RCC_LIB) $(LIBDFP_A)
 ifeq ($(OS),Windows_NT)
 	install -d "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(BINDIR)),$(BINDIR))" "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(INCDIR)),$(INCDIR))" "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(DOCDIR)),$(DOCDIR))"
-	install -m 755 $(TARGET) "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(BINDIR)),$(BINDIR))/"
+	install -m 755 $(INST_TARGET) "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(BINDIR)),$(BINDIR))/rcc.exe"
 	install -m 644 include/* "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(INCDIR)),$(INCDIR))/"
 	install -m 644 README.md docs/rcc.md test/tcc_test*.md test_report*.md LICENSE bench/bench_report*.md "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(DOCDIR)),$(DOCDIR))/"
 	install -d "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))"
-	install -m 755 $(RCC_LIB) "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))/"
+	install -m 755 $(INST_RCC_LIB) "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))/$(RCC_LIB)"
 	install -m 644 $(LIBDFP_A) "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))/"
 	if test -n "$(MINGW_O)"; then install -d "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))"; install -m 644 $(MINGW_O) "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))/"; fi
 else
-	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(INCDIR)" "$(DESTDIR)$(DOCDIR)"
-	install -m 755 $(TARGET) "$(DESTDIR)$(BINDIR)/" || sudo install -m 755 $(TARGET) "$(DESTDIR)$(BINDIR)/"
+	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(INCDIR)" "$(DESTDIR)$(DOCDIR)" "$(DESTDIR)$(LIBDIR)"
+	install -m 755 $(INST_TARGET) "$(DESTDIR)$(BINDIR)/rcc" || sudo install -m 755 $(INST_TARGET) "$(DESTDIR)$(BINDIR)/rcc"
 	install -m 644 include/* "$(DESTDIR)$(INCDIR)/"
 	install -m 644 README.md docs/*.md test/tcc_test*.md test_report*.md LICENSE bench/bench_report*.md "$(DESTDIR)$(DOCDIR)/"
-	install -d "$(DESTDIR)$(LIBDIR)"
-	install -m 644 $(RCC_LIB) "$(DESTDIR)$(LIBDIR)/"
+	install -m 644 $(INST_RCC_LIB) "$(DESTDIR)$(LIBDIR)/$(RCC_LIB)"
 	install -m 644 $(LIBDFP_A) "$(DESTDIR)$(LIBDIR)/"
 	@if test -n "$(MINGW_O)"; then install -m 644 $(MINGW_O) "$(DESTDIR)$(LIBDIR)/"; fi
 	@if test -n "$(DARWIN_O)"; then install -m 644 $(DARWIN_O) "$(DESTDIR)$(LIBDIR)/"; fi
 	@if command -v $(POD2MAN) > /dev/null 2>&1; then \
 	  $(MAKE) man; \
 	  install -d "$(DESTDIR)$(MANDIR)"; \
-	  install -m 644 docs/rcc.1 "$(DESTDIR)$(MANDIR)/"; \
+	  install -m 644 docs/rcc.1 "$(DESTDIR)$(MANDIR)/" || sudo install -m 644 docs/rcc.1 "$(DESTDIR)$(MANDIR)/"; \
 	else \
 	  echo "pod2man not found: skipping rcc.1 man page install"; \
 	fi
 endif
 
-dist: $(TARGET) docs/rcc.1
+dist: $(INST_TARGET) docs/rcc.1
 	if test "$(shell git diff --raw)" != "" || \
            test "$(shell git diff --cached --raw)" != "" ; then \
           echo 'You are not on a clean branch, aborting.'; \
@@ -490,7 +513,7 @@ leanclean:
 	  cd c-testsuite && git clean -dxf . && cd ..; \
 	fi
 clean:
-	rm -f $(OBJS) $(TARGET) $(RUN_TESTS) $(RCC_LIB) rcc_prof src/sysinc_paths.h src/gcc_predefined.h src/keywords.h.tmp fred.txt *.s qemu*.core test/torture/core.* docs/rcc.1 src/*.obj src/*.darwin.o src/*.arm64.o src/*.musl.o lib/rcc_mingw$(OBJ_EXT) lib/rcc_darwin$(OBJ_EXT) test-tcc-*.summary test-ctest-*.summary test-compliance-*.summary
+	rm -f $(OBJS) $(TARGET) $(RUN_TESTS) $(RCC_LIB) rcc_prof src/sysinc_paths.h src/gcc_predefined.h src/keywords.h.tmp fred.txt *.s qemu*.core test/torture/core.* docs/rcc.1 src/*.obj src/*.darwin.o src/*.arm64.o src/*.musl.o lib/rcc_mingw$(OBJ_EXT) lib/rcc_darwin$(OBJ_EXT) test-tcc-*.summary test-ctest-*.summary test-compliance-*.summary $(INST_TARGET) $(INST_OBJS) $(INST_RCC_LIB)
 	if command -v git > /dev/null 2>&1; then \
 	  cd tinycc && git reset --hard && git clean -dxf tests/tests2 && cd ..; \
 	  cd c-testsuite && git clean -dxf . && cd ..; \
