@@ -3600,9 +3600,15 @@ char *dump_macros_text(void) {
         total += 1;
     }
     char *buf = arena_alloc(total + 1);
-    int n = 0;
+    size_t n = 0;
     for (Macro *m = macros; m; m = m->next) {
-        n += snprintf(buf + n, total - n + 1, "#define %s", m->name);
+        size_t rem = total - n + 1;
+        int wrote = snprintf(buf + n, rem, "#define %s", m->name);
+        if (wrote < 0 || (size_t)wrote >= rem) {
+            buf[total] = '\0';
+            return buf;
+        }
+        n += (size_t)wrote;
         if (m->is_function) {
             buf[n++] = '(';
             for (int i = 0; i < m->param_len; i++) {
