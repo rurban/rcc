@@ -10119,7 +10119,7 @@ VReg gen(Node *node) {
             } else {
 #ifdef ARCH_ARM64
                 // Global variable: load address via ADRP+ADD, then deref
-                int ta = alloc_reg();
+                int ta = alloc_reg_avoid2(r, -1);
                 if (node->var->is_tls)
                     emit_tls_addr(ta, node->var);
                 else if (var_needs_got(node->var))
