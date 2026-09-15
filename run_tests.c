@@ -6620,7 +6620,10 @@ int main(int argc, char **argv) {
             char *tok = strtok_r(copy, " ", &sv);
             while (tok && tok[0] == '-') tok = strtok_r(NULL, " ", &sv);
             if (tok) tok = strtok_r(NULL, " ", &sv); /* skip the duration itself */
-            if (tok) rb = tok;
+            if (tok) {
+                const char *slash = strrchr(tok, '/');
+                rb = slash ? slash + 1 : tok;
+            }
         }
         if (!contains(rb, "rcc")) {
             static char name_buf[256];

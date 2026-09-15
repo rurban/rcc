@@ -5,11 +5,13 @@
 # table in README.md from the resulting test-<suite>-linux_<compiler>.summary
 # files that run_tests writes for each suite.
 #
-# Usage: ./test-all-compilers.sh [compiler...]
+# Usage: ./test-all-compilers.sh [--no-<compiler>...] [compiler...]
 #   With no args: rcc gcc ccc clang bcc tcc kefir antcc slimcc lacc scc xcc
 #                 cproc cake compcert (whichever are found).
-#   With args: only run/report the named compilers, e.g.
+#   With compiler args: only run/report the named compilers, e.g.
 #     ./test-all-compilers.sh gcc clang
+#   --no-<compiler>: skip that compiler even if it would otherwise be
+#     run/found, e.g. --no-antcc --no-compcert. Repeatable.
 
 set -e
 cd "$(dirname "$0")" || exit 1
@@ -117,10 +119,17 @@ suffix_for() {
 	[ "$1" = "rcc" ] && echo "linux" || echo "linux_$1"
 }
 
+NOLIST=""
+ARGS=""
+for a in "$@"; do
+	case "$a" in
+	--no-*) NOLIST="$NOLIST ${a#--no-}" ;;
+	*) ARGS="$ARGS $a" ;;
+	esac
+done
+NOLIST="$NOLIST "
 ONLY=""
-if [ $# -gt 0 ]; then
-	ONLY=" $* "
-fi
+[ -n "$ARGS" ] && ONLY="$ARGS "
 
 for name in $ROW_NAMES; do
 	if [ -n "$ONLY" ]; then
@@ -131,8 +140,14 @@ for name in $ROW_NAMES; do
 		echo "=== $name: SKIP (not found) ==="
 		continue
 	fi
+	case "$NOLIST" in
+	*" $name "*)
+		echo "=== $name: SKIP (--no-$name) ==="
+		continue
+		;;
+	esac
 	echo "=== $name ($bin) ==="
-	./run_tests "$bin" --all --parallel --gcc-bugs >"/tmp/test-all-$name.log" 2>&1 || true
+	./run_tests "$bin" --timeout 120 --all --parallel --gcc-bugs >"/tmp/test-all-$name.log" 2>&1 || true
 	tail -3 "/tmp/test-all-$name.log"
 done
 
