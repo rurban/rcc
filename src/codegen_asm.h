@@ -4212,6 +4212,14 @@ extern VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen
 extern void init_builtin_names(void);
 extern int rcc_label_count;
 extern void cg_def_label(const char *name);
+// Constant-divisor strength reduction (src/cg_opt.c): replaces a runtime
+// idiv/div (or ARM64 sdiv/udiv) by a compile-time-constant divisor with
+// shifts and/or magic-number multiplication. d is the divisor, already
+// reduced to exactly sz bytes and sign/zero-extended per is_unsigned by
+// the caller; d must not be 0. Consumes/overwrites r_lhs (the dividend)
+// and returns the VReg holding the result.
+extern VReg cgopt_div_mod_const(VReg r_lhs, int64_t d, int sz, bool is_unsigned, bool is_mod);
+
 #ifndef ARCH_ARM64
 extern size_t asm_lea_rip_reg(SecBuf *s, int r, const char *label);
 extern size_t asm_mov_fs0_reg(SecBuf *s, VReg r);

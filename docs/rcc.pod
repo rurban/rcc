@@ -261,7 +261,12 @@ build systems that pass GCC/Clang warning flags unconditionally.
 
 =item B<-O0>
 
-Disable the peephole optimizer (default optimization level).
+Explicit only, not the default. Disables the peephole optimizer and is
+the one level that skips codegen's constant-divisor C</>/C<%>
+strength reduction (shifts and/or a magic-number multiply in place of
+a runtime C<idiv>/C<div>): every other codegen shortcut (immediate-form
+arithmetic, multiply-by-power-of-two, ...) still applies at B<-O0>
+exactly as at every other level.
 
 =item B<-O1>
 

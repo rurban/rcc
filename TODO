@@ -2,8 +2,12 @@
 
 - interchange and extended float types (just aliased, no __STDC_IEC_60559_TYPES__)
 
-- add more cheap -O2 passes, but no need for SSA analysis (yet).
-  Like removing the REX prefix, strength reduction, idiv by constant, ...
+- add more cheap -O1 passes, without SSA analysis:
+  Like removing the REX prefix, strength reduction, idiv by constant via magic numbers,
+  mult/mod by power-of-2
+
+- -O1 optimize switch cases for dense small ints (lut), sparse small ints
+  (elsif chains), sparse large ints (perfect hashes).
 
 - SSA conversion for -O2, and the usual optimizations with SSA, as in xcc, antcc or ccc.
 

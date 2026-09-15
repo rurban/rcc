@@ -16262,6 +16262,28 @@ VReg gen(Node *node) {
     if (node->kind == ND_DIV || node->kind == ND_MOD) {
         int sz = op_size(node->ty);
         bool is_unsigned = use_unsigned(node->ty);
+        // Constant-divisor strength reduction (src/cg_opt.c): shifts
+        // and/or a magic-number multiply instead of a runtime idiv/div.
+        // Skipped for d==0 so the existing runtime path still traps on
+        // divide-by-zero exactly as before. Skipped entirely under an
+        // explicit -O0: -O0 is the one level that must emit the plain,
+        // predictable idiv/div every other codegen shortcut in this file
+        // still takes regardless of -O -- matches gcc/clang, whose -O0
+        // also never substitutes magic-number division.
+        // Deliberately NOT try_const_int(): its cast-peeling drops a
+        // truncating cast's effect (e.g. `(unsigned char)~0` -> the
+        // pre-cast `~0` == -1, not the correct 255), fine for its
+        // original inline-asm-immediate use but wrong for an actual
+        // arithmetic operand. eval_const_expr() truncates/sign-extends
+        // to node->ty like real arithmetic, matching runtime codegen.
+        long long const_rhs;
+        if (!opt_O0 && (sz == 4 || sz == 8) && eval_const_expr(node->rhs, &const_rhs)) {
+            int64_t d = is_unsigned
+                ? (sz == 4 ? (int64_t)(uint32_t)(uint64_t)const_rhs : const_rhs)
+                : (sz == 4 ? (int64_t)(int32_t)const_rhs : const_rhs);
+            if (d != 0)
+                return cgopt_div_mod_const(r_lhs, d, sz, is_unsigned, node->kind == ND_MOD);
+        }
         VReg r_rhs = gen(node->rhs);
 #ifdef ARCH_ARM64
         if (node->kind == ND_DIV) {

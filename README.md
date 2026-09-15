@@ -395,6 +395,7 @@ every `__attribute__`/`__builtin_*`/`#pragma` extension — in
 | `src/codegen.c`       | x86-64/ARM64 code generator with register allocator and peephole optimizer  |
 | `src/cg_builtins.c`   | x86-64/ARM64 code generator for the builtins                                |
 | `src/cg_vectors.c`    | x86-64/ARM64 code generator for vector support                              |
+| `src/cg_opt.c`        | Cheap codegen strength reductions (constant-divisor idiv/div removal)       |
 | `src/opt.c`           | AST-level optimizer and CTFE interpreter                                    |
 | `src/alloc.c`         | Arena memory allocator                                                      |
 | `src/unicode.{c,h}`   | libu8ident unicode identifier checks                                        |

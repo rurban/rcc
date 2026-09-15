@@ -234,17 +234,149 @@ See [Warnings and diagnostics](#warnings-and-diagnostics) for the message catalo
 
 ### Optimization
 
-| Option                                                                                     | Meaning                                                                                                             |
-| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| `-O0`                                                                                      | Disable the peephole optimizer (default).                                                                           |
-| `-O1`                                                                                      | Enable the peephole optimizer + CTFE (compile-time evaluation of pure functions called with constant arguments).    |
-| `-O2`                                                                                      | `-O1` plus `-finline` (tiny-function inlining) and `-funroll` (constant-trip-count loop unrolling).                 |
-| `-O3`                                                                                      | `-O2` plus the [contract range prover](#contracts-prepost-contract_assert-contract_assume). Never runs below `-O3`. |
-| `-Os`, `-Ofast`, `-Og`, `-Oz`                                                              | Accepted as aliases for `-O1` (no separate size/fast/debug pipelines).                                              |
-| `-finline[-functions\|-small-functions]` / `-fno-inline[-functions\|-small-functions]`     | Force-enable/disable the tiny-function inliner independent of `-O`.                                                 |
-| `-funroll[-loops]` / `-fno-unroll[-loops]`                                                 | Force-enable/disable the loop unroller independent of `-O`.                                                         |
-| `-fno-builtin[-name]`, `-fno-common`, `-fcommon`, `-fdata-sections`, `-ffunction-sections` | Accepted no-ops, kept for build-system compatibility.                                                               |
-| `-fdefer-ts`                                                                               | Internal `thread_local` destructor-ordering compatibility flag.                                                     |
+rcc has two independent optimization layers:
+
+- **Codegen-level lowering** (`src/codegen.c`, `src/cg_opt.c`): the code
+  generator's own choice of instructions for a given AST node. Most of it
+  is emitted unconditionally — there is no separate "naive" codegen path
+  to turn off — a few pieces are gated as noted below.
+- **The AST-level pass**, called "the peephole optimizer" throughout this
+  option table for historical reasons even though it runs on the AST, not
+  machine code (`optimize()`/`optimize_node()` in `src/opt.c`). Gated by
+  `-O1` and up.
+
+#### Always on, at every `-O` level including `-O0`
+
+- **Register allocation policy**: the 8 (x86-64) / 12 (ARM64) allocatable
+  scratch registers are handed out caller-saved-first (`r10`, `r11`, ...,
+  `rbx`, `r12`-`r15`, `rsi` last on x86-64; `x10`-`x15` before the
+  callee-saved `x19`-`x24` on ARM64) so a function using only a couple of
+  temporaries never pays for a push/pop it doesn't need.
+- **Immediate-form arithmetic**: `add`/`sub`/`and`/`or`/`xor`/`cmp` (and,
+  on x86-64, `imul`) against a small constant operand encode the constant
+  directly in the instruction instead of first materializing it into a
+  register (x86-64 imm8/imm32 forms; ARM64's imm12, optionally
+  left-shifted-by-12, forms), falling back to a loaded register only when
+  the constant doesn't fit.
+- **Multiply by a power of two → shift**: `x * 8` becomes `shl $3` /
+  `lsl #3` on both architectures. A non-power-of-two constant multiply
+  stays a single `imul $imm, r, r` on x86-64 (already one fast
+  instruction, nothing cheaper to reduce it to) or a load-into-scratch +
+  `mul` on ARM64 (which has no multiply-immediate form).
+- **Unreferenced `static inline` function elision**: a `static inline`
+  function nothing in the translation unit calls or takes the address of
+  never gets a body emitted at all (C11 6.7.4p7-permitted; real
+  GCC/Clang do this unconditionally too, not just as an optimization).
+- **`__attribute__((always_inline))` / GNU `extern inline` expansion**:
+  expanded at every call site regardless of `-O`/`-finline` — this is a
+  linkage requirement (such a function's "extern inline" definition never
+  gets a standalone symbol emitted, so a call that fails to inline would
+  link as "undefined reference"), not an optional optimization, matching
+  real GCC's `always_inline` semantics.
+
+#### On by default and at `-O1`/`-O2`/`-O3`, off only under an explicit `-O0`
+
+- **Constant-divisor `/`/`%` strength reduction** (`src/cg_opt.c`):
+  replaces a runtime `idiv`/`div` (x86-64: ~20-40 cycles, data-dependent)
+  or `sdiv`/`udiv` (ARM64) by a compile-time-constant divisor with:
+  - `/1`, `%1`, `/-1`, `%-1` folded to a no-op, negate, or zero;
+  - a power-of-two divisor: a plain shift (unsigned), or an
+    arithmetic-shift-with-bias-correction sequence (signed — rounds
+    toward zero like C requires, instead of the hardware shift's round
+    toward `-infinity`);
+  - any other divisor: the Hacker's Delight / LLVM
+    `DivisionByConstantInfo` magic-number technique (the same one gcc and
+    clang use) — a single widening multiply by a precomputed constant
+    plus a fixed shift (and, for a minority of divisors, one extra
+    add-back step), replacing the divide with a multiply that retires in
+    a handful of cycles. `%` reuses the computed quotient
+    (`r = n - q*d`) rather than an independent remainder computation.
+
+  Skipped under an explicit `-O0` — that's the one level meant to emit
+  the plain, predictable `idiv`/`div` every other codegen shortcut in
+  this file still takes regardless of `-O` (matching gcc/clang, whose
+  `-O0` also never substitutes magic-number division).
+
+#### `-O1` and up: the peephole optimizer (`src/opt.c`)
+
+Runs a fixed-point-free, single top-down/bottom-up walk over every
+function's AST:
+
+- **Integer constant folding** of `+ - * / %` between two literal
+  operands (unsigned `/`/`%` correctly reads the operand's bit pattern as
+  unsigned rather than through a signed 64-bit intermediate, so e.g.
+  `UINT64_MAX / 8` folds to the right huge value instead of 0).
+- **Dead-branch elimination** for `if` with a compile-time-constant
+  condition: the untaken branch is dropped from the AST entirely — not
+  just "unreachable at runtime", never emitted or referenced at all.
+  Needed for kernel-style `BUILD_BUG_ON`/`compiletime_assert` idioms that
+  call a deliberately-undefined function only on the impossible branch
+  (emitting even an unreachable reference to it would fail the link).
+- **Short-circuit `&&`/`||` folding**: when one operand is a
+  compile-time constant that alone determines the result (`0` for `&&`,
+  nonzero for `||`), the other operand's subtree — including any calls
+  inside it — is dropped, matching C's short-circuit evaluation rules
+  (e.g. `ENABLE_FEATURE_X && only_defined_under_that_feature()`).
+- **Pure built-in call folding** for a small table of known-pure
+  functions (`strlen`, `abs`, `isdigit`, `strcmp`, `toupper`, ...) called
+  with constant/string-literal arguments.
+- **CTFE** (compile-time function evaluation): a call to a user-defined
+  function is replaced by its constant result when every argument is a
+  compile-time constant, by literally interpreting the callee's AST (an
+  integer-only mini-interpreter) at compile time — not just pattern
+  matching a known table like the pure-call fold above.
+- **Dead-statement elision** after a statement that always returns,
+  within the same statement list (unless a `goto`/enclosing `switch` can
+  still jump past it into later code).
+
+Note: passing `-finline` or `-funroll` **alone**, with no `-O` flag at
+all, also turns on this _entire_ peephole pass (constant folding,
+dead-branch elimination, CTFE, all of it) as a side effect, since
+`optimize()` runs whenever `-O1`, `-finline`, or `-funroll` is present
+and doesn't distinguish which one asked for it.
+
+#### `-O2` and up: `-finline`, `-funroll`
+
+Each is also independently toggleable via its own `-f`/`-fno-` flag
+regardless of `-O` level (see the table below).
+
+- **`-finline`**: a call to a function whose entire body is a single
+  `return EXPR;` is replaced by `EXPR` with its parameters substituted,
+  when every argument is a simple expression (no calls, no address-of),
+  the callee isn't variadic or directly self-recursive, has at most 16
+  parameters (all scalar/pointer/vector-typed), and `EXPR` neither writes
+  a parameter nor references a non-parameter local. A rough cost estimate
+  of `EXPR` (leaves free, each operator 1, calls 3, `/`/`%` 2) must stay
+  under 20 for an ordinary function or 60 for one declared `inline`.
+  (Independent of `-finline`/`-O`: `__attribute__((always_inline))` and
+  GNU `extern inline` callees always inline, with no cost budget at all
+  — see "Always on" above.)
+- **`-funroll`**: a `for (i = START; i < END; i++) BODY` (or `i <= END`)
+  loop, where `START`/`END` are compile-time integer constants and `BODY`
+  contains no `break`/`continue`, is unrolled into up to 16 copies of
+  `BODY` with `i` substituted by its per-iteration constant value —
+  making each copy eligible for the constant-folding/dead-branch passes
+  above. A trip count over 16, or any other loop shape, is left alone.
+
+#### `-O3` only
+
+Adds the [contract range prover](#contracts-prepost-contract_assert-contract_assume):
+a bounded interval-arithmetic pass over `pre`/`post`/`contract_assert`
+conditions that can prove some contracts always hold (or always fail)
+purely from the ranges of their operands, without emitting a runtime
+check. Never runs below `-O3`.
+
+| Option                                                                                     | Meaning                                                                                                                                                       |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-O0`                                                                                      | Explicit only (not the default). Disables the peephole optimizer and is the one level that skips the constant-divisor codegen strength reduction (see above). |
+| `-O1`                                                                                      | Enable the peephole optimizer + CTFE (compile-time evaluation of pure functions called with constant arguments).                                              |
+| `-O2`                                                                                      | `-O1` plus `-finline` (tiny-function inlining) and `-funroll` (constant-trip-count loop unrolling).                                                           |
+| `-O3`                                                                                      | `-O2` plus the [contract range prover](#contracts-prepost-contract_assert-contract_assume). Never runs below `-O3`.                                           |
+| `-Os`, `-Ofast`, `-Og`, `-Oz`                                                              | Accepted as aliases for `-O1` (no separate size/fast/debug pipelines).                                                                                        |
+| `-finline[-functions\|-small-functions]` / `-fno-inline[-functions\|-small-functions]`     | Force-enable/disable the tiny-function inliner independent of `-O`.                                                                                           |
+| `-funroll[-loops]` / `-fno-unroll[-loops]`                                                 | Force-enable/disable the loop unroller independent of `-O`.                                                                                                   |
+| `-fno-builtin[-name]`, `-fno-common`, `-fcommon`, `-fdata-sections`, `-ffunction-sections` | Accepted no-ops, kept for build-system compatibility.                                                                                                         |
+| `-fdefer-ts`                                                                               | Internal `thread_local` destructor-ordering compatibility flag.                                                                                               |
 
 ### Debugging and diagnostic output
 
