@@ -3289,7 +3289,7 @@ static bool eval_const_fexpr(Node *node, long double *val) {
 // `int` operand's value, -2147483648, sign-extended to 64 bits) - two
 // different 64-bit patterns - unless first re-truncated to the 32-bit
 // width the comparison actually happens at.
-static unsigned long long uval_at_width(long long v, int width_bytes) {
+unsigned long long uval_at_width(long long v, int width_bytes) {
     if (width_bytes <= 0 || width_bytes >= 8)
         return (unsigned long long)v;
     return (unsigned long long)v & ((1ULL << (width_bytes * 8)) - 1);
@@ -3404,8 +3404,17 @@ static bool eval_const_expr_impl(Node *node, long long *val) {
         if (!eval_const_expr(node->lhs, &lhs) || !eval_const_expr(node->rhs, &rhs) || rhs == 0)
             return false;
         if (node->lhs->ty && node->lhs->ty->is_unsigned) {
-            unsigned long long ulhs = (unsigned long long)lhs;
-            unsigned long long urhs = (unsigned long long)rhs;
+            // Truncate both operands to the WIDER type's width before
+            // reinterpreting as unsigned -- see uval_at_width()'s own
+            // comment: a narrower negative rhs's 64-bit sign extension
+            // (e.g. int -2147483647 as 0xFFFFFFFF80000001) doesn't match
+            // its own 32-bit unsigned pattern (0x80000001) until re-
+            // truncated to the width the division actually happens at.
+            int lw = (node->lhs->ty && node->lhs->ty->size > 0) ? (int)node->lhs->ty->size : 8;
+            int rw = (node->rhs->ty && node->rhs->ty->size > 0) ? (int)node->rhs->ty->size : 8;
+            int w = lw > rw ? lw : rw;
+            unsigned long long ulhs = uval_at_width(lhs, w);
+            unsigned long long urhs = uval_at_width(rhs, w);
             *val = (long long)(ulhs / urhs);
         } else {
             *val = rhs == -1 ? -lhs : lhs / rhs;
@@ -3415,8 +3424,11 @@ static bool eval_const_expr_impl(Node *node, long long *val) {
         if (!eval_const_expr(node->lhs, &lhs) || !eval_const_expr(node->rhs, &rhs) || rhs == 0)
             return false;
         if (node->lhs->ty && node->lhs->ty->is_unsigned) {
-            unsigned long long ulhs = (unsigned long long)lhs;
-            unsigned long long urhs = (unsigned long long)rhs;
+            int lw = (node->lhs->ty && node->lhs->ty->size > 0) ? (int)node->lhs->ty->size : 8;
+            int rw = (node->rhs->ty && node->rhs->ty->size > 0) ? (int)node->rhs->ty->size : 8;
+            int w = lw > rw ? lw : rw;
+            unsigned long long ulhs = uval_at_width(lhs, w);
+            unsigned long long urhs = uval_at_width(rhs, w);
             *val = (long long)(ulhs % urhs);
         } else {
             *val = rhs == -1 ? 0 : lhs % rhs;

@@ -1420,8 +1420,17 @@ static Node *optimize_node(Program *prog, Node *node) {
                 // print table contents ... maximum 0" instead of the real
                 // limit). Mirrors parser.c's eval_const_expr_impl.
                 if (node->lhs->ty && node->lhs->ty->is_unsigned) {
-                    unsigned long long ul = (unsigned long long)node->lhs->val;
-                    unsigned long long ur = (unsigned long long)node->rhs->val;
+                    // Truncate both operands to the WIDER type's width
+                    // before reinterpreting as unsigned, or a narrower
+                    // negative rhs's 64-bit sign extension won't match
+                    // its own type's unsigned bit pattern (e.g. int
+                    // -2147483647 as 0xFFFFFFFF80000001 vs the correct
+                    // 32-bit 0x80000001) -- see uval_at_width().
+                    int lw = (node->lhs->ty && node->lhs->ty->size > 0) ? (int)node->lhs->ty->size : 8;
+                    int rw = (node->rhs->ty && node->rhs->ty->size > 0) ? (int)node->rhs->ty->size : 8;
+                    int w = lw > rw ? lw : rw;
+                    unsigned long long ul = uval_at_width(node->lhs->val, w);
+                    unsigned long long ur = uval_at_width(node->rhs->val, w);
                     fold->val = (long long)(ul / ur);
                 } else {
                     fold->val = node->rhs->val == -1 ? -node->lhs->val : node->lhs->val / node->rhs->val;
@@ -1430,14 +1439,73 @@ static Node *optimize_node(Program *prog, Node *node) {
             if (node->kind == ND_MOD) {
                 if (node->rhs->val == 0) return node;
                 if (node->lhs->ty && node->lhs->ty->is_unsigned) {
-                    unsigned long long ul = (unsigned long long)node->lhs->val;
-                    unsigned long long ur = (unsigned long long)node->rhs->val;
+                    int lw = (node->lhs->ty && node->lhs->ty->size > 0) ? (int)node->lhs->ty->size : 8;
+                    int rw = (node->rhs->ty && node->rhs->ty->size > 0) ? (int)node->rhs->ty->size : 8;
+                    int w = lw > rw ? lw : rw;
+                    unsigned long long ul = uval_at_width(node->lhs->val, w);
+                    unsigned long long ur = uval_at_width(node->rhs->val, w);
                     fold->val = (long long)(ul % ur);
                 } else {
                     fold->val = node->rhs->val == -1 ? 0 : node->lhs->val % node->rhs->val;
                 }
             }
             fold->ty = node->ty;
+            return fold;
+        }
+    }
+
+    // Constant folding for everything eval_const_expr() already evaluates
+    // correctly but the narrower two-ND_NUM-literal fold above never
+    // covered at all: bitwise/shift ops, comparisons, unary -/!/~, and a
+    // ternary with a constant condition (`1 << 3`, `~0 == -1`, `x < 0 ?
+    // -x : x` once `x` is itself a compile-time constant, ...). Every one
+    // of these was already reachable -- and already correctly folded --
+    // the moment it appeared as an `if`/`&&`/`||` *condition* rather than
+    // an ordinary sub-expression (codegen.c's own always-on ND_IF
+    // constant-condition fold, and the LOGAND/LOGOR folds above, both
+    // call this exact same evaluator); this just extends that same,
+    // already-trusted evaluation to the expression position too.
+    // eval_const_expr requires the whole subtree side-effect-free (so
+    // recursing into node->cond/then/els for ND_COND never silently
+    // drops a real side effect) and refuses (returns false, leaving
+    // `node` unchanged) for anything it can't evaluate exactly --
+    // decimal operands, a flonum-typed ND_NEG/ND_COND result (it only
+    // ever fills in an integer `long long`, so folding a float-typed
+    // result here would corrupt it into an ND_NUM where an ND_FNUM
+    // belongs; is_integer(node->ty) below excludes that), NaN-involving
+    // float comparisons that aren't a plain true/false, etc. A ternary's
+    // branches are always expressions in standard C (labels only attach
+    // to statements), so unlike the ND_IF fold above there is no
+    // subtree_has_label() hazard here to guard against.
+    //
+    // node->ty->size<=8 (and the explicit TY_BITINT exclusion) matter
+    // because eval_const_expr's `long long *val` is fundamentally
+    // 64-bit: is_integer() also accepts __int128 (16 bytes) and every
+    // _BitInt width, so without this a `(__int128)-1 << 63`-shaped
+    // sub-expression (GCC torture pr63302.c/pr85582-2.c/pr85582-3.c)
+    // would silently truncate to whatever fits in 64 bits instead of
+    // the correct 128-bit value. !is_vector matters because rcc
+    // represents a vector type by reusing its element's scalar `kind`
+    // (e.g. TY_INT) plus an `is_vector` flag rather than a distinct
+    // vector kind, so is_integer() alone doesn't exclude
+    // `int __attribute__((vector_size(8)))`: eval_const_expr operates
+    // on one scalar value, not per-lane (GCC torture pr94412.c: a
+    // vector-typed unary `-18` sub-expression folded to the *scalar*
+    // negation instead of broadcasting across every lane).
+    if ((node->kind == ND_BITAND || node->kind == ND_BITOR || node->kind == ND_BITXOR ||
+         node->kind == ND_SHL || node->kind == ND_SHR ||
+         node->kind == ND_EQ || node->kind == ND_NE || node->kind == ND_LT || node->kind == ND_LE ||
+         node->kind == ND_NEG || node->kind == ND_NOT || node->kind == ND_BITNOT ||
+         node->kind == ND_COND) &&
+        node->ty && is_integer(node->ty) && node->ty->kind != TY_BITINT && !node->ty->is_vector &&
+        node->ty->size > 0 && node->ty->size <= 8) {
+        long long v;
+        if (eval_const_expr(node, &v)) {
+            Node *fold = arena_alloc(sizeof(Node));
+            fold->kind = ND_NUM;
+            fold->val = v;
+            fold->ty = node->ty;
+            fold->tok = node->tok;
             return fold;
         }
     }

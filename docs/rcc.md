@@ -232,7 +232,7 @@ See [Warnings and diagnostics](#warnings-and-diagnostics) for the message catalo
 | `-Wno-contract-assume-false`            | Suppress the warning when a `contract_assume()` is proven never-satisfiable (see [Contracts](#contracts-prepost-contract_assert-contract_assume)). |
 | `-Wno-*`, `-Werror=*` (any other name)  | Silently accepted (no corresponding individually-named warning exists beyond the ones listed here).                                                |
 
-### Optimization
+### Optimizations
 
 rcc has two independent optimization layers:
 
@@ -305,7 +305,15 @@ function's AST:
 - **Integer constant folding** of `+ - * / %` between two literal
   operands (unsigned `/`/`%` correctly reads the operand's bit pattern as
   unsigned rather than through a signed 64-bit intermediate, so e.g.
-  `UINT64_MAX / 8` folds to the right huge value instead of 0).
+  `UINT64_MAX / 8` folds to the right huge value instead of 0), plus
+  bitwise/shift ops (`& | ^ << >>`), comparisons (`== != < <=`), unary
+  `- ! ~`, and a ternary with a constant condition (`1 << 3`, `~0 ==
+-1`, `x < 0 ? -x : x` once `x` is itself constant, ...) — reusing the
+  exact same evaluator (`eval_const_expr()`) the dead-branch and
+  short-circuit folds below already call on `if`/`&&`/`||` conditions,
+  just extended to the expression position too. Skipped for `__int128`,
+  `_BitInt`, and vector-typed operands (the evaluator is a single 64-bit
+  accumulator, not a per-lane or wide-integer one).
 - **Dead-branch elimination** for `if` with a compile-time-constant
   condition: the untaken branch is dropped from the AST entirely — not
   just "unreachable at runtime", never emitted or referenced at all.
@@ -328,6 +336,15 @@ function's AST:
 - **Dead-statement elision** after a statement that always returns,
   within the same statement list (unless a `goto`/enclosing `switch` can
   still jump past it into later code).
+- **`do { BODY } while (0)` flattening**: the condition is always false
+  after the one iteration such a loop ever runs, so the whole wrapper —
+  a label, a compare, and a conditional branch that's never taken — is
+  pure overhead; `BODY` is spliced in directly in its place. This is the
+  ubiquitous "statement-like macro" idiom
+  (`#define X(...) do { ... } while (0)`); a `break` used as an
+  early-exit from the macro body (very common) is retargeted to a
+  `goto` past the end of the spliced-in code rather than block the fold,
+  correctly re-scoping at any nested loop/switch in between.
 
 Note: passing `-finline` or `-funroll` **alone**, with no `-O` flag at
 all, also turns on this _entire_ peephole pass (constant folding,

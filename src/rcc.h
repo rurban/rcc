@@ -997,6 +997,13 @@ void always_inline_pass(Program *prog);
 // optimization.
 void eliminate_unused_static_inline(Program *prog);
 bool eval_const_expr(Node *node, long long *val);
+// Truncate a sign-extended 64-bit constant-expression value to the
+// unsigned bit pattern it actually has at a `width_bytes`-wide type --
+// needed before any unsigned comparison/division/modulo between operands
+// of different widths, or a narrower negative value's 64-bit sign
+// extension won't match its own type's unsigned representation. See
+// uval_at_width()'s definition in parser.c for the concrete failure.
+unsigned long long uval_at_width(long long v, int width_bytes);
 // Set (and restored) around a speculative eval_const_expr() probe whose
 // caller only cares whether/what the value is, not whether folding it
 // hit UB -- e.g. is_null_pointer_constant() in type.c, invoked on both
