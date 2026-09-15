@@ -2124,6 +2124,7 @@ static void store_gp_bytes_exact(SecBuf *sec, VReg addr, X86Reg src, int64_t dis
 }
 #endif
 
+#ifndef ARCH_ARM64
 // Estimate the worst-case number of scratch registers a subexpression's
 // own codegen could hold live at once, to size gen_funcall's argument-
 // staging headroom (see use_staging below). A plain leaf costs nothing
@@ -2196,6 +2197,7 @@ static int expr_reg_pressure(Node *n) {
         return 0;
     }
 }
+#endif
 
 // True if `n`'s subtree could invoke gen_funcall during codegen -- a
 // direct call, or a GNU statement expression (the safe_math.h-style
@@ -17908,6 +17910,20 @@ struct ObjFile *codegen(Program *prog) {
             VReg r = gen(n);
             if (r != -1) free_reg(r);
         }
+#ifndef ARCH_ARM64
+        // va_reg_save_ofs was fixed before this walk; fn_struct_ret_total/
+        // fn_trampoline_total (struct-ret temps, Win64 arg-staging slots)
+        // grow during it and can overlap or overflow it. Re-anchor below
+        // both, 16-aligned (the prologue's movaps register saves require it).
+        if (fn->is_variadic)
+            va_reg_save_ofs = current_fn_stack_size +
+                ((fn_struct_ret_total + fn_trampoline_total + 15) & ~15) +
+#ifdef _WIN32
+                96;
+#else
+                176;
+#endif
+#endif
 #ifdef BENCH
         clock_gettime(CLOCK_MONOTONIC, &dbg_p1_t1);
         dbg_pass1_us += (uint64_t)(dbg_p1_t1.tv_sec - dbg_p1_t0.tv_sec) * 1000000ull +
