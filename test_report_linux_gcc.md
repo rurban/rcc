@@ -4,27 +4,27 @@
 
 **Compiler**: /usr/bin/x86_64-linux-gnu-gcc-15
 
-Generated: September 07 2026 12:18
+Generated: September 15 2026 21:38
 
 ## Overall Summary
 
-- **Total**: 5306
-- **Passed**: 4816
-- **Failed**: 244
+- **Total**: 5320
+- **Passed**: 4831
+- **Failed**: 243
 - **Skipped**: 246
 - **Overall Pass Rate**: 95%
 
 ## TCC Compatibility Tests
 
 - **Total**: 118
-- **Passed**: 93
-- **Failed**: 25
-- **Pass Rate**: 79%
+- **Passed**: 94
+- **Failed**: 24
+- **Pass Rate**: 80%
 
 ## RCC Unit Tests
 
-- **Total**: 385
-- **Passed**: 349
+- **Total**: 399
+- **Passed**: 363
 - **Failed**: 36
 - **Pass Rate**: 91%
 

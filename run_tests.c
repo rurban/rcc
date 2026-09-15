@@ -324,8 +324,21 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
         posix_spawn_file_actions_addclose(&actions, out_pipe[0]);
     }
 
+    // Spawn into a fresh process group (pgid == child pid) so a timeout
+    // can kill the whole subtree, not just the direct child: a compiler
+    // driver forks cc1/as/ld, and a shell wrapper (e.g. `timeout 5s cc`,
+    // or a hanging third-party compiler script) forks its own children.
+    // kill(pid) alone leaves those grandchildren running, holding the
+    // stdout/stderr pipe's write end open forever -- see kill() calls
+    // below.
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+    posix_spawnattr_setpgroup(&attr, 0);
+
     pid_t pid;
-    int spawn_ret = posix_spawnp(&pid, argv[0], &actions, NULL, argv, environ);
+    int spawn_ret = posix_spawnp(&pid, argv[0], &actions, &attr, argv, environ);
+    posix_spawnattr_destroy(&attr);
     posix_spawn_file_actions_destroy(&actions);
 
     // Close write ends (child has its own copies via dup2)
@@ -353,7 +366,8 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
     // spins forever (an endless loop in mis-compiled code) keeps the pipe open,
     // so a plain blocking read() would hang the harness indefinitely.  We loop
     // select()+read() with a shrinking timeout so the total wait is bounded by
-    // timeout_sec; when the deadline passes we SIGKILL the child.
+    // timeout_sec; when the deadline passes we SIGKILL the child's whole
+    // process group.
     size_t cap = 8192;
     r.out = malloc(cap);
     r.out_len = 0;
@@ -374,7 +388,7 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
             if (n > 0) {
                 if (r.out_len + (size_t)n + 1 > cap) {
                     if (cap >= 10 * 1024 * 1024) { // 10MB hard limit
-                        kill(pid, SIGKILL);
+                        kill(-pid, SIGKILL);
                         r.timed_out = true;
                         break;
                     }
@@ -387,14 +401,28 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
             }
             break; // EOF (n == 0) or read error
         } else if (sel_ret == 0) {
-            // Deadline reached: kill the child and drain any pending output.
-            kill(pid, SIGKILL);
+            // Deadline reached: kill the whole process group and drain any
+            // pending output within a short bounded window.  A grandchild
+            // that escaped the group (e.g. a detaching daemonizer) could
+            // still hold the pipe's write end open, so this must never
+            // fall back to a plain blocking read() -- bound it with its
+            // own select() deadline instead.
+            kill(-pid, SIGKILL);
             r.timed_out = true;
-            while ((n = read(read_fd, buf, sizeof(buf))) > 0) {
+            time_t drain_deadline = time(NULL) + 1;
+            for (;;) {
+                long drain_remaining = (long)(drain_deadline - time(NULL));
+                if (drain_remaining < 0) drain_remaining = 0;
+                fd_set dfds;
+                FD_ZERO(&dfds);
+                FD_SET(read_fd, &dfds);
+                struct timeval dtv = {.tv_sec = drain_remaining, .tv_usec = 0};
+                int dsel = select(read_fd + 1, &dfds, NULL, NULL, &dtv);
+                if (dsel <= 0) break;
+                n = read(read_fd, buf, sizeof(buf));
+                if (n <= 0) break;
                 if (r.out_len + (size_t)n + 1 > cap) {
-                    if (cap >= 10 * 1024 * 1024) { // 10MB hard limit
-                        break;
-                    }
+                    if (cap >= 10 * 1024 * 1024) break; // 10MB hard limit
                     cap = r.out_len + (size_t)n + 8192;
                     r.out = xrealloc(r.out, cap);
                 }
@@ -2573,7 +2601,7 @@ static void run_one_test(const char *src_path, const char *base,
             if (is_darwin_cross) {
                 out_buf = strappend(out_buf, &out_len, &out_cap, "[linked]\n");
             } else {
-                ProcResult rr = run_exe_with_cmdline(tmp_exe, "", 10,
+                ProcResult rr = run_exe_with_cmdline(tmp_exe, "", scaled(10),
                                                      vlog_run_cmd ? NULL : &vlog_run_cmd);
                 int rc = rr.exit_code;
                 out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
@@ -2918,7 +2946,7 @@ static void compile_and_exec(const char *src_path, const char *base,
                 }
                 ca[ai] = NULL;
                 if (!r->compile_cmdline) r->compile_cmdline = cmdline_from_argv(ca);
-                ProcResult cr = proc_run_cwd(ca, 30, 0, compile_cwd);
+                ProcResult cr = proc_run_cwd(ca, scaled(30), 0, compile_cwd);
                 out_buf = strappend(out_buf, &out_len, &out_cap, "[%s]\n", *tn);
                 if (cr.exit_code == 0) {
                     if (cr.out_len > 0) {
@@ -2980,7 +3008,7 @@ static void compile_and_exec(const char *src_path, const char *base,
             if (is_darwin_cross) {
                 out_buf = strappend(out_buf, &out_len, &out_cap, "[linked]\n");
             } else {
-                ProcResult rr = run_exe_with_cmdline(r->tmp_exe, "", 10,
+                ProcResult rr = run_exe_with_cmdline(r->tmp_exe, "", scaled(10),
                                                      r->run_cmdline ? NULL : &r->run_cmdline);
                 int rc = rr.exit_code;
                 out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
@@ -3039,7 +3067,7 @@ static void compile_and_exec(const char *src_path, const char *base,
         }
         ca[ai] = NULL;
         r->compile_cmdline = cmdline_from_argv(ca);
-        ProcResult cr = proc_run_cwd(ca, 30, 0, compile_cwd);
+        ProcResult cr = proc_run_cwd(ca, scaled(30), 0, compile_cwd);
         if (cr.exit_code != 0) {
             r->exit_code = cr.exit_code;
             r->compile_out = cr.out;
@@ -3086,7 +3114,7 @@ static void compile_and_exec(const char *src_path, const char *base,
         r->run_cmdline = cmdline_from_argv(ga);
         // Run with cwd=TEST_DIR (per-process, thread-safe) so "46_grep.c"
         // resolves and the output matches the .expect basename.
-        ProcResult rr = proc_run_cwd(ga, 20, 2, TEST_DIR);
+        ProcResult rr = proc_run_cwd(ga, scaled(20), 2, TEST_DIR);
         out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
         r->exec_exit = rr.exit_code;
         r->exec_timed_out = rr.timed_out;
