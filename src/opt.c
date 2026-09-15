@@ -670,8 +670,14 @@ static Node *try_inline(Node *call) {
     subst_params(inl, params, args, nparams);
 
     // Preserve the call's result type, matching the implicit return
-    // conversion, by inserting a cast when the expression's type differs.
-    if (inl->ty && (inl->ty->kind != rt->kind || inl->ty->size != rt->size)) {
+    // conversion, by inserting a cast when the expression's type differs
+    // -- including a same-kind/same-size signedness mismatch (e.g. a
+    // `static int foo(int)` inlined into a call site typed `unsigned
+    // int`, GCC torture pr39240.c's bar1/foo1 chain): kind+size alone
+    // read as "no difference" for signed vs. unsigned int, silently
+    // dropping the (unsigned int) conversion and leaving the result
+    // sign-extended instead of zero-extended at the next widening use.
+    if (inl->ty && (inl->ty->kind != rt->kind || inl->ty->size != rt->size || inl->ty->is_unsigned != rt->is_unsigned)) {
         Node *cast = arena_alloc(sizeof(Node));
         memset(cast, 0, sizeof(Node));
         cast->kind = ND_CAST;
@@ -1007,6 +1013,33 @@ static Node *try_unroll(Node *node) {
 
     // 2) count copies of the body
     for (int k = 0; k < count; k++) {
+        // Prime the induction variable with its real per-iteration value
+        // BEFORE this copy runs: subst_lvar() below only replaces READS
+        // *inside* the copy with a compile-time constant, so if a `goto`
+        // inside this copy jumps to a label OUTSIDE the loop that itself
+        // still reads ivar, ivar's real storage must already hold
+        // start_val+k at that point -- otherwise it lingers at start_val
+        // forever (the loop's own `inc` clause is gone, same root cause
+        // as the post-loop "materialize the final value" comment below,
+        // just for an EARLY exit instead of falling off the last copy).
+        // GCC torture 950714-1.c: a `goto` out of a doubly-nested
+        // constant-trip-count loop, taken on the first true iteration,
+        // left the outer loop's `i` stuck at 0 instead of the iteration
+        // it actually fired on.
+        Node *pre_ref = clone_expr(node->init->lhs);
+        Node *pre_val = arena_alloc(sizeof(Node));
+        pre_val->kind = ND_NUM;
+        pre_val->val = start_val + k;
+        pre_val->ty = pre_ref->ty;
+        Node *pre_assign = arena_alloc(sizeof(Node));
+        pre_assign->kind = ND_ASSIGN;
+        pre_assign->lhs = pre_ref;
+        pre_assign->rhs = pre_val;
+        pre_assign->ty = pre_ref->ty;
+        pre_assign->tok = node->tok;
+        tail->next = pre_assign;
+        tail = pre_assign;
+
         if (node->then->kind == ND_BLOCK) {
             // Clone each statement in the compound body
             for (Node *s = node->then->body; s; s = s->next) {

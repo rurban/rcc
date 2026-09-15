@@ -7101,16 +7101,32 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
             return;
         }
         if (cond->lhs->ty && is_complex(cond->lhs->ty)) {
-            // Complex EQ/NE: compare both parts, branch if not equal
+            // Complex EQ/NE: compare both parts, branch if not equal.
+            // Every sibling case above (int128/bitint/decimal) frees its
+            // boolean result register right after testing it; this one
+            // didn't, permanently leaking one VReg per complex `==`/`!=`
+            // used as an `if`/loop condition. Harmless for a single
+            // static comparison site reused across real loop iterations,
+            // but -funroll turns each unrolled copy into its own
+            // separate leak in the SAME function -- with only 8 (x86-64)
+            // allocatable registers, enough copies (GCC torture
+            // vect-complex-*.c: a 16-iteration, the max -funroll will
+            // unroll, `_Complex float` `!=` loop) run the allocator's
+            // spill bookkeeping past its limits and it starts handing
+            // out an already-live register a second time, corrupting an
+            // unrelated comparison's operand address into a bogus
+            // pointer (SIGSEGV dereferencing raw float bit patterns).
             int r = gen(cond); // use the expression handler which now handles complex
 #ifdef ARCH_ARM64
             asm_cmp_zero(cg_sec, r, 4);
+            free_reg(r);
             {
                 size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq target
                 cg_add_fwd(o, 1, fwd_off, shared_label);
             }
 #else
             asm_cmp_zero(cg_sec, r, 4); // testl r, r
+            free_reg(r);
             {
                 size_t o = asm_jcc_label(cg_sec, X86_E); // je target
                 cg_add_fwd(o, 1, fwd_off, shared_label);

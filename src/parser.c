@@ -3555,8 +3555,39 @@ static bool eval_const_expr_impl(Node *node, long long *val) {
             *val = *val != 0;
             return true;
         }
-        if (!eval_const_expr(node->lhs, val))
+        // Float-to-signed-int(-or-narrower) cast: gen_cast_reg's x86
+        // codegen (codegen.c) saturates to INT32_MIN/INT32_MAX when the
+        // truncated value doesn't fit at 32-bit width, THEN narrows to
+        // the final (possibly <4-byte) target with ordinary truncation
+        // -- matching ARM64's native FCVTZS hardware saturation (x86's
+        // CVTTSD2SI has no native saturation of its own; it returns the
+        // ambiguous "integer indefinite" 0x80000000 for any value that
+        // doesn't fit, so gen_cast_reg disambiguates by re-checking the
+        // source's sign and picks INT32_MAX/INT32_MIN accordingly). Must
+        // match here too, or a compile-time-constant condition this
+        // evaluator folds (e.g. codegen.c's own always-on, every-`-O`-
+        // level ND_IF constant-condition fold) disagrees with the
+        // runtime cast a non-constant use of the exact same expression
+        // would compute. GCC torture 20031003-1.c / PR optimization/9325:
+        // `(int)2147483648.0f` must read as INT_MAX, not the naive
+        // truncate-then-sign-extend -2147483648 a blind bitmask below
+        // produces (2147483648 fits the *unsigned* 32-bit mask, so its
+        // top bit sign-extends to a negative "int" once narrowed).
+        if (node->lhs && node->lhs->ty && is_flonum(node->lhs->ty) && node->ty &&
+            is_integer(node->ty) && node->ty->kind != TY_BITINT &&
+            !node->ty->is_unsigned && node->ty->size > 0 && node->ty->size <= 4) {
+            long double fv;
+            if (!eval_const_fexpr(node->lhs, &fv))
+                return false;
+            if (fv >= 2147483648.0L)
+                *val = 0x7fffffffLL;
+            else if (fv < -2147483648.0L)
+                *val = -0x80000000LL;
+            else
+                *val = (long long)fv; // truncate toward zero, in range
+        } else if (!eval_const_expr(node->lhs, val)) {
             return false;
+        }
         if (!node->ty || !is_integer(node->ty))
             return true;
         int sz = node->ty->size;
