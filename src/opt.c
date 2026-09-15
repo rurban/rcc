@@ -716,6 +716,57 @@ static bool has_break_or_continue(Node *n) {
     return false;
 }
 
+// Unique-name counter for the synthetic end-label the do0 fold below
+// invents when it needs to retarget a break/continue.
+static int do0_end_counter;
+
+// Rewrite every break/continue in `n` that lexically targets `do_node`
+// (the do-while(0) being flattened away, see the fold in optimize_node())
+// into `goto end_label`. An unlabeled break/continue re-scopes to the
+// nearest enclosing loop (break: also switch) the instant traversal
+// crosses one -- `crossed_loop`/`crossed_switch` track that -- but a C2Y
+// *labeled* break/continue (`break outer;`) still targets `do_node`
+// through arbitrarily many such crossings, exactly when the parser
+// already resolved its target_loop to `do_node` (see rcc.h's
+// target_loop comment: set only when the break/continue carries a
+// label). continue passes straight through an enclosing switch (only
+// crossed_loop gates it), matching real break/continue/switch
+// semantics. Returns true if anything was rewritten, so the caller can
+// skip emitting an unused end label when nothing needed one.
+static bool rewrite_do0_jumps(Node *n, Node *do_node, const char *end_label,
+                              bool crossed_loop, bool crossed_switch) {
+    if (!n) return false;
+    if (n->kind == ND_BREAK) {
+        if ((crossed_loop || crossed_switch) && n->target_loop != do_node)
+            return false;
+        n->kind = ND_GOTO;
+        n->label_name = (char *)end_label;
+        return true;
+    }
+    if (n->kind == ND_CONTINUE) {
+        if (crossed_loop && n->target_loop != do_node)
+            return false;
+        n->kind = ND_GOTO;
+        n->label_name = (char *)end_label;
+        return true;
+    }
+    bool next_loop = crossed_loop || n->kind == ND_FOR || n->kind == ND_DO;
+    bool next_switch = crossed_switch || n->kind == ND_SWITCH;
+    bool changed = false;
+    changed |= rewrite_do0_jumps(n->lhs, do_node, end_label, next_loop, next_switch);
+    changed |= rewrite_do0_jumps(n->rhs, do_node, end_label, next_loop, next_switch);
+    changed |= rewrite_do0_jumps(n->cond, do_node, end_label, next_loop, next_switch);
+    changed |= rewrite_do0_jumps(n->then, do_node, end_label, next_loop, next_switch);
+    changed |= rewrite_do0_jumps(n->els, do_node, end_label, next_loop, next_switch);
+    changed |= rewrite_do0_jumps(n->init, do_node, end_label, next_loop, next_switch);
+    changed |= rewrite_do0_jumps(n->inc, do_node, end_label, next_loop, next_switch);
+    for (Node *c = n->body; c; c = c->next)
+        changed |= rewrite_do0_jumps(c, do_node, end_label, next_loop, next_switch);
+    for (Node *c = n->args; c; c = c->next)
+        changed |= rewrite_do0_jumps(c, do_node, end_label, next_loop, next_switch);
+    return changed;
+}
+
 // True if `n` writes to `var` anywhere — a plain assignment, an
 // increment/decrement, or taking its address (which could mutate it
 // indirectly through the resulting pointer). Guards try_unroll(): its
@@ -1163,6 +1214,77 @@ static Node *optimize_node(Program *prog, Node *node) {
                 noop->tok = node->tok;
                 return noop;
             }
+        }
+    }
+
+    // do { BODY } while (0): the condition is always false after the one
+    // iteration this loop ever runs, so the whole wrapper -- a label, a
+    // compare, and a conditional branch that's never taken -- is pure
+    // overhead; splice BODY in directly. This is the extremely common
+    // "statement-like macro" idiom (`#define X(...) do { ... } while
+    // (0)`), used specifically so a macro invocation can be followed by
+    // a semicolon in any statement position -- real-world uses very
+    // often contain a `break` as an early-exit from the macro body,
+    // which is why this retargets break/continue (via
+    // rewrite_do0_jumps(), see above) into a `goto` to a fresh trailing
+    // label instead of refusing to fold whenever any break/continue is
+    // present, unlike -funroll's much more conservative
+    // has_break_or_continue() bailout. No subtree_has_label() guard
+    // needed here (unlike the ND_IF fold above): every label in BODY is
+    // kept, unmoved and unduplicated -- only the loop's own
+    // check-and-branch-back is dropped -- so an outer switch/goto
+    // jumping straight into BODY still lands exactly where it always
+    // did.
+    if (node->kind == ND_DO && !expr_has_float(node->cond)) {
+        long long cv;
+        if (eval_const_expr(node->cond, &cv) && cv == 0) {
+            Node *body = node->then;
+            char *end_label = format("__do0_end%d", do0_end_counter++);
+            if (rewrite_do0_jumps(body, node, end_label, false, false)) {
+                Node *label = arena_alloc(sizeof(Node));
+                label->kind = ND_LABEL;
+                label->tok = node->tok;
+                label->label_name = end_label;
+                label->lhs = arena_alloc(sizeof(Node));
+                label->lhs->kind = ND_NULL;
+                label->lhs->tok = node->tok;
+                if (body && body->kind == ND_BLOCK) {
+                    // Append inside the block's OWN statement list
+                    // (->body), not via ->next: ->next only threads
+                    // `body` into ITS PARENT's list, which the caller
+                    // above (optimize()'s loop) rebuilds by walking the
+                    // ORIGINAL do-while node's ->next, not this
+                    // replacement's -- anything chained onto `body->next`
+                    // here gets silently overwritten and dropped the
+                    // moment the next sibling statement is threaded in.
+                    if (!body->body) {
+                        body->body = label;
+                    } else {
+                        Node *last = body->body;
+                        while (last->next) last = last->next;
+                        last->next = label;
+                    }
+                } else {
+                    // A brace-less `do stmt; while(0);` body (or an
+                    // empty one): wrap stmt + label into a fresh block
+                    // so both replace the single do-while list slot.
+                    Node *blk = arena_alloc(sizeof(Node));
+                    blk->kind = ND_BLOCK;
+                    blk->tok = node->tok;
+                    if (body) {
+                        body->next = label;
+                        blk->body = body;
+                    } else {
+                        blk->body = label;
+                    }
+                    body = blk;
+                }
+            }
+            if (body) return body;
+            Node *noop = arena_alloc(sizeof(Node));
+            noop->kind = ND_NULL;
+            noop->tok = node->tok;
+            return noop;
         }
     }
 
