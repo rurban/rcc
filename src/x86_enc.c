@@ -1575,11 +1575,13 @@ void x86_pcmpeqb_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0x74, d,
 void x86_pcmpeqw_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0x75, d, m); }
 void x86_pcmpgtb_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0x64, d, m); }
 void x86_pcmpgtw_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0x65, d, m); }
-// movmskpd r32, xmm: 66 0F 50 /r (GP dst in the reg field; the index
-// trick matches movmskps — X86Reg and X86XmmReg share numbering)
-void x86_movmskpd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x50, d, sr); }
+// movmskpd r32, xmm: 66 0F 50 /r (GP dst in the reg field; declared
+// X86Reg like movmskps -- modrxmm()'s reg-field encoding is a raw
+// index either way, so the cast below is exact, not the "shared
+// numbering" coincidence the old X86XmmReg-typed signature relied on)
+void x86_movmskpd(SecBuf *s, X86Reg d, X86XmmReg sr) { sse_rr_66(s, 0x50, (X86XmmReg)d, sr); }
 // pmovmskb r32, mm/xmm: 66 0F D7 /r (GP dst)
-void x86_pmovmskb(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xd7, d, sr); }
+void x86_pmovmskb(SecBuf *s, X86Reg d, X86XmmReg sr) { sse_rr_66(s, 0xd7, (X86XmmReg)d, sr); }
 // PSHUFB xmm, xmm (SSSE3, 66 0F 38 00 /r): byte-lane shuffle/permute —
 // dst[i] = (src[i] & 0x80) ? 0 : dst[src[i] & 0x0f], per byte lane.
 void x86_pshufb(SecBuf *s, X86XmmReg d, X86XmmReg sr) {

@@ -515,8 +515,8 @@ void x86_shufpd(SecBuf *s, X86XmmReg dst, X86XmmReg src, uint8_t imm);
 void x86_movsldup(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_movshdup(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_movmskps(SecBuf *s, X86Reg dst, X86XmmReg src);
-void x86_movmskpd(SecBuf *s, X86XmmReg d, X86XmmReg sr);
-void x86_pmovmskb(SecBuf *s, X86XmmReg d, X86XmmReg sr);
+void x86_movmskpd(SecBuf *s, X86Reg d, X86XmmReg sr); // dst is GP, like movmskps
+void x86_pmovmskb(SecBuf *s, X86Reg d, X86XmmReg sr); // dst is GP (66 0F D7 /r)
 void x86_movntdqa_rm(SecBuf *s, X86Mem m, X86XmmReg d);
 
 // Low-level byte emission helpers (shared with codegen.c's intrinsic dispatch).
