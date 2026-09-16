@@ -88,6 +88,17 @@ TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
 TARGET_DEPS += $(MINGW_O)
 TARGET_EXT += $(MINGW_O)
 INST_TARGET_EXT += $(MINGW_O)
+# $(OBJS) is shared between $(TARGET) (an executable, PIC/PIE either
+# way) and $(RCC_LIB) (a real .so, which REQUIRES it): Ubuntu's gcc
+# defaults to -fPIE implicitly (--enable-default-pie), which happens
+# to be PIC-compatible, so rcc_lib.so linked fine there by accident;
+# plain upstream clang has no such distro-injected default and left
+# data-relative relocations (e.g. against keywords.c's kw_canon
+# table) that ld rejects outright in a -shared link ("recompile with
+# -fPIC"). Make it explicit and compiler-independent instead of
+# relying on a distro default that isn't guaranteed to be clang's
+# default too (or the BSDs' cc, or a future distro).
+CFLAGS += -fPIC
 endif
 INST_OBJS = $(patsubst src/preprocess$(OBJ_EXT),src/preprocess$(INST_OBJ_EXT),$(patsubst src/main$(OBJ_EXT),src/main$(INST_OBJ_EXT),$(OBJS)))
 LIBDFP_A = lib/libdfp.a
