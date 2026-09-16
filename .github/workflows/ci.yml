@@ -17,6 +17,8 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+          - os: ubuntu-latest
+            cc: clang
           - os: macos-latest
           - os: windows-latest
 
@@ -31,7 +33,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc build-essential libc6-dev cppcheck
+          sudo apt-get install -y gcc clang build-essential libc6-dev cppcheck
           cd tinycc && ./configure && make && sudo make install
           pip install prek
 
@@ -75,7 +77,7 @@ jobs:
           make install
 
       - name: Build
-        run: make
+        run: make CC=${{ matrix.cc || 'gcc' }}
 
       - name: Smoke test (macOS) - diagnose
         if: matrix.os == 'macos-latest'
@@ -198,7 +200,7 @@ jobs:
         if: ${{ matrix.os == 'ubuntu-latest' && steps.changed.outputs.sources == 'true' && (success() || failure()) }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: linux-reports
+          name: linux-reports-${{ matrix.cc || 'gcc' }}
           path: |
             bench/bench_report_linux.md
             test/tcc_test_linux.md
