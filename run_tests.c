@@ -3447,20 +3447,6 @@ static bool is_todo_test(const char *base) {
         NULL};
     for (const char **p = todo_tests; *p; p++)
         if (streq(base, *p)) return true;
-    /* test_alternative / test_cross_section_fixup: both push real
-     * machine code into a SHF_MERGE-flagged section (kernel
-     * ALTERNATIVE()-style .altinstructions/entsize=12), whose own
-     * emitted bytes total 14 -- not a multiple of 12. GNU ld (the
-     * fallback linker rcc's native ELF backend always defers to on
-     * these platforms, and Linux's own default) accepts a misaligned
-     * SHF_MERGE size leniently; LLVM's ld.lld (the BSDs' system
-     * linker) correctly rejects it per the ELF spec ("SHF_MERGE
-     * section size (14) must be a multiple of sh_entsize (12)"). Not
-     * an rcc bug -- every BSD's own native compiler+ld hits the
-     * identical rejection for the same bytes. */
-    if ((streq(base, "test_alternative") || streq(base, "test_cross_section_fixup")) &&
-        (streq(platform, "FreeBSD") || streq(platform, "NetBSD") || streq(platform, "OpenBSD")))
-        return true;
     /* test_fortify / test_fortify_chk_arity / test_open_fortify exercise
      * glibc's specific _FORTIFY_SOURCE __*_chk() ABI by design (see each
      * file's own header comment: they reference glibc's
