@@ -3091,6 +3091,14 @@ static void compile_and_exec(const char *src_path, const char *base,
             if (!r->compile_cmdline) r->compile_cmdline = cmdline_from_argv(ca);
             ProcResult cr = proc_run(ca, scaled(30), 0);
             out_buf = strappend(out_buf, &out_len, &out_cap, "[%s]\n", tests[t]);
+            if (cr.exit_code != 0) {
+                out_buf = strappend(out_buf, &out_len, &out_cap, "%s",
+                                    cr.out ? cr.out : "(compile failed, no output)\n");
+                out_buf = strappend(out_buf, &out_len, &out_cap,
+                                    "[compile exit %d]\n", cr.exit_code);
+                proc_free(&cr);
+                continue;
+            }
             if (is_darwin_cross) {
                 out_buf = strappend(out_buf, &out_len, &out_cap, "[linked]\n");
             } else {
