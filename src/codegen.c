@@ -10462,8 +10462,16 @@ VReg gen(Node *node) {
 #else
                     {
                         int st_sz = node->lhs->ty->size;
-                        if (st_sz < 4) st_sz = st_sz;
-                        asm_mov_reg_mem(cg_sec, src, dst, st_sz); // movl/movq src, (%dst)
+                        // asm_mov_reg_mem only encodes 1/2/4/8-byte movs;
+                        // round odd struct/union sizes (3, 5, 6, 7 -- e.g.
+                        // an all-char struct with alignment 1) up to the
+                        // next one so every byte of the scalar RHS's
+                        // leading sub-object actually gets stored, not
+                        // just a truncated prefix.
+                        if (st_sz == 3) st_sz = 4;
+                        else if (st_sz > 4 && st_sz < 8)
+                            st_sz = 8;
+                        asm_mov_reg_mem(cg_sec, src, dst, st_sz); // movb/movw/movl/movq src, (%dst)
                     }
 #endif
                 }
