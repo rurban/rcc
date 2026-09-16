@@ -596,7 +596,8 @@ static int elf_load_object(LinkState *s, const char *path) {
                 // relocation left unresolved (e.g. R_AARCH64_LDST128 on
                 // the bundled libdfp.a's exception-flag globals produced
                 // a binary that read garbage data and segfaulted).
-                fprintf(stderr, "rcc: link: %s: unhandled reloc type %u\n", path, r_type);
+                if (getenv("RCC_LINK_DEBUG"))
+                    fprintf(stderr, "rcc: link: %s: unhandled reloc type %u\n", path, r_type);
                 free(sec_map);
                 free(sym_map);
                 elf_close(&ef);
