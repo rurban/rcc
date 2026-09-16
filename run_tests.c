@@ -157,9 +157,12 @@ static const char *get_tmpdir(void) {
     return buf;
 }
 
-/* versionsort() is a glibc/dirent.h extension; mingw and BSD-derived
- * libcs (macOS) don't provide it. */
-#if defined(_WIN32) || (!defined(__GLIBC__) && !defined(__MUSL__))
+/* versionsort() is a glibc/dirent.h extension; mingw, macOS and most
+ * BSD-derived libcs don't provide it -- but FreeBSD's dirent.h does
+ * (as of FreeBSD 9), so defining our own there collides with the
+ * libc prototype ("static declaration ... follows non-static
+ * declaration"). */
+#if defined(_WIN32) || (!defined(__GLIBC__) && !defined(__MUSL__) && !defined(__FreeBSD__))
 /* natural-order compare: like GNU strverscmp(), splits runs of digits
  * and compares them numerically so "f9" sorts before "f10" */
 static int versionsort(const struct dirent **a, const struct dirent **b) {
@@ -1398,7 +1401,19 @@ static int run_test_inprocess(const char *src_path, const char *name,
     dup2(pipe_w2, STDOUT_FILENO);
     close(pipe_w2);
 #ifndef __MUSL__
+#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    /* BSD libc defines `stdout` as `(&__sF[1])` -- the address of a
+     * static FILE, not an assignable pointer variable -- so `stdout =
+     * fdopen(...)` (below) fails to compile here. freopen() instead
+     * reinitializes that same static FILE in place; its contract is
+     * "fclose, then fopen, reusing this stream" regardless of whether
+     * the stream is already closed, so it works even though rcc_lib
+     * just fclose()d it above. /dev/fd/1 names whatever fd 1 currently
+     * is (the pipe from the dup2 above) without needing a real path. */
+    freopen("/dev/fd/1", "w", stdout); /* STDOUT_FILENO is always 1 per POSIX */
+#else
     stdout = fdopen(STDOUT_FILENO, "w");
+#endif
 #endif
 
     main_fn_t fn = cres == 0 ? (main_fn_t)p_rcc_lib_get_symbol(lib, "main") : NULL;
