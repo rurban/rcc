@@ -281,6 +281,7 @@ typedef struct {
     char *out;
     size_t out_len;
     int exit_code;
+    int spawn_errno;
     bool timed_out, spawn_failed;
 } ProcResult;
 
@@ -391,6 +392,7 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
         close(out_pipe[0]);
         if (capture != 0) close(err_pipe[0]);
         r.spawn_failed = true;
+        r.spawn_errno = spawn_ret;
         return r;
     }
 
@@ -3101,11 +3103,17 @@ static void compile_and_exec(const char *src_path, const char *base,
             }
             if (is_darwin_cross) {
                 out_buf = strappend(out_buf, &out_len, &out_cap, "[linked]\n");
+            } else if (access(r->tmp_exe, X_OK) != 0) {
+                out_buf = strappend(out_buf, &out_len, &out_cap,
+                                    "[executable missing/not runnable: %s]\n", strerror(errno));
             } else {
                 ProcResult rr = run_exe_with_cmdline(r->tmp_exe, "", scaled(10),
                                                      r->run_cmdline ? NULL : &r->run_cmdline);
                 int rc = rr.exit_code;
                 out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
+                if (rr.spawn_failed)
+                    out_buf = strappend(out_buf, &out_len, &out_cap,
+                                        "[spawn failed: %s]\n", strerror(rr.spawn_errno));
                 out_buf = strappend(out_buf, &out_len, &out_cap, "[returns %d]\n", rc);
                 if (rc != exp_rc[t])
                     emit_backtrace(r->tmp_exe, "", src_path, rcc, rccflags, NULL, &out_buf,
