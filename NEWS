@@ -2,7 +2,7 @@ This is the NEWS file for RCC, the Regoshi C Compiler. It summarizes
 user-visible changes for each release, most recent first. For the
 complete list of changes see the git log.
 
-* Changes in 1.2.1 (2026-09-13) (Reini Urban) [planned]
+* Changes in v1.2.1 (2026-09-16) (Reini Urban)
 
   - Compile-time performance: faster lexer (ASCII fast path), faster
     linker (indexed/DT_HASH symbol lookups instead of rescanning
@@ -16,6 +16,37 @@ complete list of changes see the git log.
   - Implemented sqrt() on a vector-of-2-doubles, 3 missing GCC
     diagnostics, duplicate-function-definition detection, and the GCC
     extension accepting a missing ';' at the end of a struct/union.
+  - New optimizations: generalized AST constant folding covers
+    bitwise/shift/compare/unary/?: on compile-time constants (not
+    just `+ - * / %`); do-while(0) macro-body flattening at -O1+;
+    and a new src/cg_opt.c does x86-64/ARM64 constant-divisor
+    idiv/div strength reduction (shifts and Hacker's Delight/LLVM
+    magic-number multiplies) for signed and unsigned 32/64-bit
+    division and modulo.
+  - Added csmith differential fuzzing diffing -O0/-O1/-O2/-O3 codegen
+    against each other and reference compilers. Found and fixed 9 register-
+    allocator/spiller aliasing miscompilations (struct-copy and
+    struct-assign, ternary and pre/post-increment addressing,
+    bitfield read-modify-write, cmp-lhs and %rsi clobbers across
+    gen_funcall argument staging, Win64 variadic frame overflow,
+    ARM64 global-load aliasing, register-pressure undercounting),
+    each with a regression test under test/test_csmith_*.c.
+  - Fixed 3 -O2-only regressions found by bisecting the full -O2
+    suite (try_inline() signedness mismatch, try_unroll() early-exit
+    induction-variable value, float-to-int cast saturation
+    mismatch), plus a _Complex comparison register leak in
+    gen_cond_branch_inv.
+  - Fixed ND_ASSIGN narrow-type truncation and array-not-assignable
+    diagnostics, a pack(1) bitfield global-initializer truncation
+    past 4 bytes, and an overflowing snprintf() call.
+  - Fixed libdir lookup with installed rcc. Fixed arm64-elf GOT
+    load for extern function address-of.
+  - Faster `make install` (only reinstalls changed files). Test
+    harness: run_tests --timeout now also bounds the compiler
+    process, per-compiler timeouts and --no-<compiler> skip flags
+    for test-all-compilers.sh, rv-match kcc and blitzy/ccc-fork
+    support, and a gnulib-style news-check + mk-release release
+    tool.
 
 * Changes in v1.2.0 (2026-09-04) (Reini Urban)
 
