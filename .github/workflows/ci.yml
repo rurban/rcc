@@ -235,6 +235,145 @@ jobs:
               rcc-*.tar.xz
               rcc-*.zip
 
+  # Native BSD jobs via vmactions (real QEMU VMs -- GitHub Actions has no
+  # BSD-hosted runners). rcc's own native ELF linker only special-cases
+  # Linux paths (crt1.o search dirs, PT_INTERP); on the BSDs it can't find
+  # those and falls back to the host cc/ld (see src/main.c's
+  # native_link_capable / GCC-fallback path), so linking still produces a
+  # real, runnable executable. Best-effort and non-blocking until parity
+  # with the Linux/macOS/Windows jobs above is established.
+  freebsd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Build and test (FreeBSD)
+        uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
+        with:
+          cache-after-prepare: true
+          prepare: |
+            pkg install -y gmake
+          run: |
+            cd "$GITHUB_WORKSPACE"
+            gmake CC=cc
+            ./rcc --version
+            printf '#include <stdio.h>\nint main(){printf("ok\\n");return 0;}\n' > /tmp/smoke.c
+            ./rcc -o /tmp/smoke /tmp/smoke.c
+            /tmp/smoke
+            printf '#include <stdlib.h>\nint main(){void *p=malloc(8);free(p);return p?0:1;}\n' > /tmp/smoke2.c
+            ./rcc -o /tmp/smoke2 /tmp/smoke2.c
+            /tmp/smoke2
+            rm -f /tmp/smoke /tmp/smoke.c /tmp/smoke2 /tmp/smoke2.c
+            FAIL=
+            gmake check || FAIL=1
+            gmake test-torture || FAIL=1
+            test -z "$FAIL"
+
+      - name: Upload FreeBSD reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: freebsd-reports
+          path: |
+            test/tcc_test_FreeBSD.md
+            test/torture_report_FreeBSD.log
+            test_report_FreeBSD.md
+          if-no-files-found: ignore
+
+  netbsd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Build and test (NetBSD)
+        uses: vmactions/netbsd-vm@20ee93a005c9fc78743e6e05269f4cb023b87413 # v1.5.0
+        with:
+          cache-after-prepare: true
+          prepare: |
+            /usr/sbin/pkg_add gmake
+          run: |
+            cd "$GITHUB_WORKSPACE"
+            gmake CC=cc
+            ./rcc --version
+            printf '#include <stdio.h>\nint main(){printf("ok\\n");return 0;}\n' > /tmp/smoke.c
+            ./rcc -o /tmp/smoke /tmp/smoke.c
+            /tmp/smoke
+            printf '#include <stdlib.h>\nint main(){void *p=malloc(8);free(p);return p?0:1;}\n' > /tmp/smoke2.c
+            ./rcc -o /tmp/smoke2 /tmp/smoke2.c
+            /tmp/smoke2
+            rm -f /tmp/smoke /tmp/smoke.c /tmp/smoke2 /tmp/smoke2.c
+            FAIL=
+            gmake check || FAIL=1
+            gmake test-torture || FAIL=1
+            test -z "$FAIL"
+
+      - name: Upload NetBSD reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: netbsd-reports
+          path: |
+            test/tcc_test_NetBSD.md
+            test/torture_report_NetBSD.log
+            test_report_NetBSD.md
+          if-no-files-found: ignore
+
+  openbsd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Build and test (OpenBSD)
+        uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1.4.7
+        with:
+          cache-after-prepare: true
+          prepare: |
+            pkg_add gmake
+          run: |
+            cd "$GITHUB_WORKSPACE"
+            gmake CC=cc
+            ./rcc --version
+            printf '#include <stdio.h>\nint main(){printf("ok\\n");return 0;}\n' > /tmp/smoke.c
+            ./rcc -o /tmp/smoke /tmp/smoke.c
+            /tmp/smoke
+            printf '#include <stdlib.h>\nint main(){void *p=malloc(8);free(p);return p?0:1;}\n' > /tmp/smoke2.c
+            ./rcc -o /tmp/smoke2 /tmp/smoke2.c
+            /tmp/smoke2
+            rm -f /tmp/smoke /tmp/smoke.c /tmp/smoke2 /tmp/smoke2.c
+            FAIL=
+            gmake check || FAIL=1
+            gmake test-torture || FAIL=1
+            test -z "$FAIL"
+
+      - name: Upload OpenBSD reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openbsd-reports
+          path: |
+            test/tcc_test_OpenBSD.md
+            test/torture_report_OpenBSD.log
+            test_report_OpenBSD.md
+          if-no-files-found: ignore
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 20
