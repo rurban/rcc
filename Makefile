@@ -304,13 +304,13 @@ src/main$(INST_OBJ_EXT): src/main.c src/sysinc_paths.h src/bitint_rt.h $(HDRS)
 	$(CC) $(CFLAGS) -c src/main.c -o $@ -DGCC=\"$(RCC_GCC)\" -DRCC_INCDIR='"$(INCDIR)"' -DRCC_LIBDIR='"$(LIBDIR)"' -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\"
 
 run_tests: run_tests.c
-	$(CC) $(CFLAGS) -o $@ run_tests.c
+	$(CC) $(CFLAGS) -pthread -o $@ run_tests.c
 run_tests.exe: run_tests.c
 	$(CC) $(CFLAGS) -o $@ run_tests.c
 run_tests_musl: run_tests.c
-	$(CC) $(CFLAGS) -o $@ run_tests.c
+	$(CC) $(CFLAGS) -pthread -o $@ run_tests.c
 run_tests_arm64: run_tests.c
-	$(CC) $(CFLAGS) -o $@ run_tests.c
+	$(CC) $(CFLAGS) -pthread -o $@ run_tests.c
 
 # Every object depends on the shared headers: a stale object compiled
 # against an older rcc.h gets a different struct layout than its peers

@@ -307,7 +307,15 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
     // Build file actions for posix_spawn: redirect stdout/stderr to pipes
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
+#if defined(__OpenBSD__)
+    /* OpenBSD has neither posix_spawn_file_actions_addchdir_np nor the
+     * POSIX.1-2024 addchdir() -- cwd is handled via the fork() fallback
+     * below instead. */
+#elif defined(__NetBSD__)
+    if (cwd) posix_spawn_file_actions_addchdir(&actions, cwd); /* POSIX.1-2024 name; no _np on NetBSD */
+#else
     if (cwd) posix_spawn_file_actions_addchdir_np(&actions, cwd);
+#endif
     if (capture == 1) {
         // capture stderr only, stdout -> /dev/null
         posix_spawn_file_actions_adddup2(&actions, err_pipe[1], STDERR_FILENO);
@@ -340,9 +348,45 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
     posix_spawnattr_setpgroup(&attr, 0);
 
     pid_t pid;
-    int spawn_ret = posix_spawnp(&pid, argv[0], &actions, &attr, argv, environ);
-    posix_spawnattr_destroy(&attr);
+    int spawn_ret;
+#if defined(__OpenBSD__)
+    if (cwd) {
+        // No posix_spawn chdir action on OpenBSD: fork and replicate the
+        // file actions built above by hand, then chdir() before exec.
+        pid = fork();
+        if (pid == 0) {
+            setpgid(0, 0);
+            if (capture == 1) {
+                dup2(err_pipe[1], STDERR_FILENO);
+                close(err_pipe[0]);
+                close(out_pipe[0]);
+                close(out_pipe[1]);
+            } else if (capture == 2) {
+                dup2(out_pipe[1], STDOUT_FILENO);
+                close(out_pipe[0]);
+                close(err_pipe[0]);
+                close(err_pipe[1]);
+            } else {
+                dup2(out_pipe[1], STDOUT_FILENO);
+                dup2(out_pipe[1], STDERR_FILENO);
+                close(out_pipe[0]);
+            }
+            if (chdir(cwd) != 0) _exit(127);
+            execvp(argv[0], argv);
+            _exit(127);
+        }
+        if (pid > 0) setpgid(pid, pid); // race with the child's own setpgid(0,0); either winner is fine
+        spawn_ret = pid < 0 ? -1 : 0;
+        posix_spawn_file_actions_destroy(&actions);
+    } else {
+        spawn_ret = posix_spawnp(&pid, argv[0], &actions, &attr, argv, environ);
+        posix_spawn_file_actions_destroy(&actions);
+    }
+#else
+    spawn_ret = posix_spawnp(&pid, argv[0], &actions, &attr, argv, environ);
     posix_spawn_file_actions_destroy(&actions);
+#endif
+    posix_spawnattr_destroy(&attr);
 
     // Close write ends (child has its own copies via dup2)
     close(out_pipe[1]);
