@@ -605,6 +605,9 @@ static char *full_path(char *path);
 #ifndef RCC_INCDIR
 #define RCC_INCDIR "include"
 #endif
+#ifndef RCC_LIBDIR
+#define RCC_LIBDIR "lib"
+#endif
 
 // Build the ordered list of directories searched for an include, matching
 // real GCC's actual precedence: (quote form only) -iquote dirs, then
@@ -3646,6 +3649,7 @@ void print_search_dirs(const char *gcc) {
     for (int i = 0; i < nb_quote_include_paths; i++) printf("include: =%s\n", quote_include_paths[i]);
     for (int i = 0; i < nb_user_include_paths; i++) printf("include: =%s\n", user_include_paths[i]);
     for (int i = 0; sys_include_paths[i]; i++) printf("include: =%s\n", sys_include_paths[i]);
+    printf("libraries: =%s\n", RCC_LIBDIR);
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "%s -print-search-dirs 2>/dev/null", gcc ? gcc : "gcc");
     FILE *fp = popen(cmd, "r");

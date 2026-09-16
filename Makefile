@@ -69,6 +69,7 @@ INST_TARGET_EXT = $(INST_OBJS)
 RUN_TESTS = run_tests
 
 DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
+DEF_LIBDIR = -DRCC_LIBDIR='"$(RCC_LIBDIR)"'
 VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
 MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
 
@@ -94,6 +95,7 @@ LIBDFP_A = lib/libdfp.a
 # Build-time include directory: absolute path to the source include/ dir.
 # Override this when installing to a different prefix.
 RCC_INCDIR ?= $(CURDIR)/include
+RCC_LIBDIR ?= $(CURDIR)/lib
 
 # On native Windows builds, default to the standard install location.
 ifeq ($(OS),Windows_NT)
@@ -189,6 +191,7 @@ CFLAGS += -march=native
 endif
 endif
 DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
+DEF_LIBDIR = -DRCC_LIBDIR='"$(RCC_LIBDIR)"'
 VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
 
 ifneq ($(findstring apple,$(MACHINE)),)
@@ -288,17 +291,17 @@ $(MINGW_O): lib/rcc_mingw.c
 src/codegen$(OBJ_EXT): src/codegen.c src/bitint_rt.h $(HDRS)
 	$(CC) $(CFLAGS) -c src/codegen.c -o $@
 src/main$(OBJ_EXT): src/main.c src/sysinc_paths.h src/bitint_rt.h $(HDRS)
-	$(CC) $(CFLAGS) -c src/main.c -o $@ -DGCC=\"$(RCC_GCC)\" $(DEF_INCDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\"
+	$(CC) $(CFLAGS) -c src/main.c -o $@ -DGCC=\"$(RCC_GCC)\" $(DEF_INCDIR) $(DEF_LIBDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\"
 src/preprocess$(OBJ_EXT): src/preprocess.c src/sysinc_paths.h src/gcc_predefined.h $(HDRS)
-	$(CC) $(CFLAGS) -c src/preprocess.c -o $@ $(DEF_INCDIR)
+	$(CC) $(CFLAGS) -c src/preprocess.c -o $@ $(DEF_INCDIR) $(DEF_LIBDIR)
 src/unicode$(OBJ_EXT): src/unicode.c src/unicode.h
 	$(CC) $(CFLAGS) -c src/unicode.c -o $@
 src/lib$(OBJ_EXT): src/lib.c src/rcc_lib.h $(HDRS)
 	$(CC) $(CFLAGS) -c src/lib.c -o $@
 src/preprocess$(INST_OBJ_EXT): src/preprocess.c src/sysinc_paths.h src/gcc_predefined.h $(HDRS)
-	$(CC) $(CFLAGS) -c src/preprocess.c -o $@ -DRCC_INCDIR='"$(INCDIR)"'
+	$(CC) $(CFLAGS) -c src/preprocess.c -o $@ -DRCC_INCDIR='"$(INCDIR)"' -DRCC_LIBDIR='"$(LIBDIR)"'
 src/main$(INST_OBJ_EXT): src/main.c src/sysinc_paths.h src/bitint_rt.h $(HDRS)
-	$(CC) $(CFLAGS) -c src/main.c -o $@ -DGCC=\"$(RCC_GCC)\" -DRCC_INCDIR='"$(INCDIR)"' -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\"
+	$(CC) $(CFLAGS) -c src/main.c -o $@ -DGCC=\"$(RCC_GCC)\" -DRCC_INCDIR='"$(INCDIR)"' -DRCC_LIBDIR='"$(LIBDIR)"' -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\"
 
 run_tests: run_tests.c
 	$(CC) $(CFLAGS) -o $@ run_tests.c
@@ -321,7 +324,7 @@ compile_commands.json: $(SRCS)
 
 # Profile build: rcc compiled with -pg for gprof analysis
 rcc_prof: $(SRCS) src/rcc.h src/sysinc_paths.h src/gcc_predefined.h
-	$(CC) $(CFLAGS) -pg $(LDFLAGS) -o $@ $(SRCS) -DGCC=\"$(RCC_GCC)\" $(DEF_INCDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\" -lm
+	$(CC) $(CFLAGS) -pg $(LDFLAGS) -o $@ $(SRCS) -DGCC=\"$(RCC_GCC)\" $(DEF_INCDIR) $(DEF_LIBDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\" -lm
 
 # Run profile: compile a decent-sized file to generate gmon.out
 prof: rcc_prof

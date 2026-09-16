@@ -19,6 +19,16 @@ uint8_t rcc_default_visibility = STV_DEFAULT; // -fvisibility=... default
 #include <assert.h>
 #include <ctype.h>
 
+// Default library-search directory for the bundled runtime (libdfp.a,
+// rcc_mingw.obj, rcc_darwin.dylib): baked in by the Makefile alongside
+// RCC_INCDIR (see DEF_LIBDIR) -- $(CURDIR)/lib in the build tree, or
+// $(LIBDIR) (PREFIX/lib/rcc on POSIX, PREFIX/lib on Windows) once
+// installed. This fallback only applies to ad hoc builds bypassing the
+// Makefile.
+#ifndef RCC_LIBDIR
+#define RCC_LIBDIR "lib"
+#endif
+
 // Low-jitter phase timer for -time: clock_gettime() goes through a vDSO
 // with no serialization against surrounding code, so out-of-order
 // execution can leak retirement of the *previous* phase's work across the
@@ -561,6 +571,14 @@ int main(int argc, char **argv) {
 #ifdef _WIN32
     xappendf(&libs, &libs_len, &libs_cap, " -lm");
 #endif
+    // Make the bundled runtime dir (RCC_LIBDIR) a first-class -L search
+    // path, the same way a real gcc driver always adds its own built-in
+    // library dirs: -print-search-dirs and any future -l<bundled-name>
+    // resolution (native resolve_archives() or a GCC fallback link) both
+    // observe it, not just the one hardcoded libdfp.a positional path
+    // below. A missing directory here is harmless -- both linkers just
+    // skip a -L entry that doesn't exist.
+    xappendf(&libs, &libs_len, &libs_cap, " -L%s", RCC_LIBDIR);
 
     // codeql[cpp/loop-variable-changed]: deliberate ++i/i++ to consume each flag's separate-token argument (e.g. -o, -z, -D, -include); 10 sites below
     for (int i = 1; i < argc; i++) {
@@ -1593,14 +1611,17 @@ int main(int argc, char **argv) {
         // runtime calls; those live in the bundled libdfp.a (lib/libdfp.a,
         // built from the vendored libbid core + rcc's wrapper layer). Link
         // it automatically, the same way -lm is added unconditionally:
-        // locate it next to rcc's own include dir (RCC_INCDIR/../lib).
+        // RCC_LIBDIR is baked in by the Makefile alongside RCC_INCDIR --
+        // $(CURDIR)/lib in the build tree, but $(LIBDIR) (PREFIX/lib/rcc
+        // on POSIX, PREFIX/lib on Windows) once installed. It is NOT
+        // simply "RCC_INCDIR/../lib": the POSIX install tree nests both
+        // include/ and lib/ one level deeper (under an rcc/ subdir), so a
+        // fixed relative offset from RCC_INCDIR resolves to the wrong path
+        // (e.g. PREFIX/include/lib instead of PREFIX/lib/rcc) once installed.
         // Only when this TU actually used a decimal type or literal, and
         // only when linking (-c/-S emit no calls and the archive is not
         // needed there).
         if (parser_used_decimal) {
-#ifndef RCC_INCDIR
-#define RCC_INCDIR "include"
-#endif
             // Link the BUNDLED decimal runtime archive directly (positional
             // .a, which resolve_archives() always loads) rather than -ldfp:
             // a system libdfp.so found via the -l search uses GCC's
@@ -1608,9 +1629,9 @@ int main(int argc, char **argv) {
             // with rcc's plain bit-pattern ABI (GP registers) emitted for
             // the same symbol names. Our lib/libdfp.a is built for that ABI.
 #ifdef _WIN32
-            xappendf(&libs, &libs_len, &libs_cap, " %s/../lib/libdfp.lib", RCC_INCDIR);
+            xappendf(&libs, &libs_len, &libs_cap, " %s/libdfp.lib", RCC_LIBDIR);
 #else
-            xappendf(&libs, &libs_len, &libs_cap, " %s/../lib/libdfp.a", RCC_INCDIR);
+            xappendf(&libs, &libs_len, &libs_cap, " %s/libdfp.a", RCC_LIBDIR);
 #endif
         }
         if (native_link_capable) {
@@ -1726,8 +1747,8 @@ int main(int argc, char **argv) {
 #if defined(_WIN32) || defined(__MINGW32__)
         if (!opt_relocatable) {
             struct stat libst;
-#ifdef RCC_INCDIR
-            const char *rcc_lib = RCC_INCDIR "/../lib/rcc_mingw.obj";
+#ifdef RCC_LIBDIR
+            const char *rcc_lib = RCC_LIBDIR "/rcc_mingw.obj";
             if (stat("lib/rcc_mingw.obj", &libst) != 0 && stat(rcc_lib, &libst) == 0) {
                 if (!path_is_shell_safe(rcc_lib)) {
                     fprintf(stderr, "rcc: error: runtime object path contains unsafe characters for linking: %s\n",
@@ -1745,9 +1766,9 @@ int main(int argc, char **argv) {
 #ifdef __APPLE__
         {
             struct stat libst;
-            // Try absolute path first (RCC_INCDIR/../lib/darwin.o)
-#ifdef RCC_INCDIR
-            const char *rcc_darwin = RCC_INCDIR "/../lib/rcc_darwin.dylib";
+            // Try absolute path first (RCC_LIBDIR/rcc_darwin.dylib)
+#ifdef RCC_LIBDIR
+            const char *rcc_darwin = RCC_LIBDIR "/rcc_darwin.dylib";
             if (stat(rcc_darwin, &libst) == 0) {
                 if (!path_is_shell_safe(rcc_darwin)) {
                     fprintf(stderr, "rcc: error: runtime object path contains unsafe characters for linking: %s\n",
