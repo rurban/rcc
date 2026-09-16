@@ -753,7 +753,12 @@ static char *resolve_include(char *curr_file, char *curr_display, char *spec, bo
     for (int i = 0; i < nd; i++) {
         char *path = path_join(dirs[i], spec);
         if (!file_exists(path)) continue;
-        if (i >= bundled_lo && i < bundled_hi) {
+        // Self-active skip is only for the ".." relative-escape idiom
+        // (ast/ksh93). Gate on ".." so an ordinary reciprocal include
+        // (e.g. xmmintrin.h <-> emmintrin.h) resolves to itself, a safe
+        // guard-macro no-op, instead of falling through to a real
+        // system header.
+        if (i >= bundled_lo && i < bundled_hi && strstr(spec, "..")) {
             char *resolved = canonical_path(full_path(path));
             bool self_active = false;
             for (PPLvl *l = lvl; l; l = l->next)
@@ -2351,6 +2356,7 @@ static int64_t has_builtin_val(const char *name) {
         "__builtin___ttyname_r_chk",
         "__builtin___ttyname_r_chk_warn",
         "__builtin___vfprintf_chk",
+        "__builtin___vprintf_chk",
         "__builtin___vsnprintf_chk",
         "__builtin___vsprintf_chk",
         "__builtin_abort",
@@ -2381,6 +2387,7 @@ static int64_t has_builtin_val(const char *name) {
         "__builtin_conjf",
         "__builtin_conjl",
         "__builtin_constant_p",
+        "__builtin_convertvector",
         "__builtin_copysign",
         "__builtin_copysignf",
         "__builtin_copysignl",
@@ -3825,6 +3832,8 @@ Token *preprocess(char *filename, char *p) {
                             "__fprintf_chk(__stream,__flag,__fmt,__VA_ARGS__)");
             define_macro("__builtin___vfprintf_chk", true, (char *[]){"__stream", "__flag", "__fmt", "__ap"}, 4,
                          "__vfprintf_chk(__stream,__flag,__fmt,__ap)");
+            define_macro("__builtin___vprintf_chk", true, (char *[]){"__flag", "__fmt", "__ap"}, 3,
+                         "__vprintf_chk(__flag,__fmt,__ap)");
             define_macro_va("__builtin___sprintf_chk", (char *[]){"__dest", "__flag", "__bos", "__fmt"}, 4,
                             "__sprintf_chk(__dest,__flag,__bos,__fmt,__VA_ARGS__)");
             define_macro("__builtin___vsprintf_chk", true, (char *[]){"__dest", "__flag", "__bos", "__fmt", "__ap"}, 5,
