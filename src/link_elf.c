@@ -1771,15 +1771,25 @@ static int load_crt_files(LinkState *s) {
         }
     }
     if (!crt_dir) {
-        fprintf(stderr, "rcc: link: cannot find crt1.o\n");
+        // Not found: rcc's native linker doesn't know this platform's crt
+        // file layout (e.g. any *BSD). This is expected, routine behavior
+        // -- the caller (rcc_link() in main.c) silently falls back to
+        // invoking the system cc/gcc as the linker driver, which always
+        // finds the right crt1.o for its own platform. Printing this
+        // unconditionally would misrepresent a successful fallback as an
+        // error and pollute any captured stderr (e.g. run_tests.c
+        // comparing a test's stdout against its .expect file); keep it
+        // behind RCC_LINK_DEBUG like the sibling fallback trace in
+        // main.c's rcc_link().
+        if (getenv("RCC_LINK_DEBUG")) fprintf(stderr, "rcc: link: cannot find crt1.o\n");
         return -1;
     }
     if (try_load_crt(s, crt_dir, "crti.o") != 0) {
-        fprintf(stderr, "rcc: link: cannot find crti.o\n");
+        if (getenv("RCC_LINK_DEBUG")) fprintf(stderr, "rcc: link: cannot find crti.o\n");
         return -1;
     }
     if (try_load_crt(s, crt_dir, "crtn.o") != 0) {
-        fprintf(stderr, "rcc: link: cannot find crtn.o\n");
+        if (getenv("RCC_LINK_DEBUG")) fprintf(stderr, "rcc: link: cannot find crtn.o\n");
         return -1;
     }
     return 0;

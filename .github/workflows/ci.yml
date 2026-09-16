@@ -273,8 +273,8 @@ jobs:
             /tmp/smoke2
             rm -f /tmp/smoke /tmp/smoke.c /tmp/smoke2 /tmp/smoke2.c
             FAIL=
-            gmake CC=cc check || FAIL=1
-            gmake CC=cc test-torture || FAIL=1
+            ./run_tests ./rcc || FAIL=1
+            ./test/test-link.sh ./rcc || FAIL=1
             test -z "$FAIL"
 
       - name: Upload FreeBSD reports
@@ -317,8 +317,8 @@ jobs:
             /tmp/smoke2
             rm -f /tmp/smoke /tmp/smoke.c /tmp/smoke2 /tmp/smoke2.c
             FAIL=
-            gmake CC=cc check || FAIL=1
-            gmake CC=cc test-torture || FAIL=1
+            ./run_tests ./rcc || FAIL=1
+            ./test/test-link.sh ./rcc || FAIL=1
             test -z "$FAIL"
 
       - name: Upload NetBSD reports
@@ -361,8 +361,8 @@ jobs:
             /tmp/smoke2
             rm -f /tmp/smoke /tmp/smoke.c /tmp/smoke2 /tmp/smoke2.c
             FAIL=
-            gmake CC=cc check || FAIL=1
-            gmake CC=cc test-torture || FAIL=1
+            ./run_tests ./rcc || FAIL=1
+            ./test/test-link.sh ./rcc || FAIL=1
             test -z "$FAIL"
 
       - name: Upload OpenBSD reports

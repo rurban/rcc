@@ -309,7 +309,7 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
     posix_spawn_file_actions_init(&actions);
 #if defined(__OpenBSD__)
     /* OpenBSD has neither posix_spawn_file_actions_addchdir_np nor the
-     * POSIX.1-2024 addchdir() -- cwd is handled via the fork() fallback
+     * POSIX.1-2024 addchdir() -- cwd is handled via the /bin/sh wrapper
      * below instead. */
 #elif defined(__NetBSD__)
     if (cwd) posix_spawn_file_actions_addchdir(&actions, cwd); /* POSIX.1-2024 name; no _np on NetBSD */
@@ -350,38 +350,33 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
     pid_t pid;
     int spawn_ret;
 #if defined(__OpenBSD__)
+    // No posix_spawn chdir action on OpenBSD; route cwd through a /bin/sh
+    // wrapper instead, exec'd after the child is already a distinct
+    // process image. (OpenBSD's posix_spawn() is itself fork()-based --
+    // see vfork(2), "OpenBSD uses regular fork for posix_spawn" -- so
+    // this harness also forces g_num_workers to 1 on this platform in
+    // parallel_dispatch(): a sibling thread's posix_spawn() forking while
+    // another thread holds malloc's/ld.so's lock deadlocks the child
+    // forever, and there is no userspace fix short of never having more
+    // than one thread able to reach fork() at all.)
+    char **shell_argv = NULL;
     if (cwd) {
-        // No posix_spawn chdir action on OpenBSD: fork and replicate the
-        // file actions built above by hand, then chdir() before exec.
-        pid = fork();
-        if (pid == 0) {
-            setpgid(0, 0);
-            if (capture == 1) {
-                dup2(err_pipe[1], STDERR_FILENO);
-                close(err_pipe[0]);
-                close(out_pipe[0]);
-                close(out_pipe[1]);
-            } else if (capture == 2) {
-                dup2(out_pipe[1], STDOUT_FILENO);
-                close(out_pipe[0]);
-                close(err_pipe[0]);
-                close(err_pipe[1]);
-            } else {
-                dup2(out_pipe[1], STDOUT_FILENO);
-                dup2(out_pipe[1], STDERR_FILENO);
-                close(out_pipe[0]);
-            }
-            if (chdir(cwd) != 0) _exit(127);
-            execvp(argv[0], argv);
-            _exit(127);
-        }
-        if (pid > 0) setpgid(pid, pid); // race with the child's own setpgid(0,0); either winner is fine
-        spawn_ret = pid < 0 ? -1 : 0;
-        posix_spawn_file_actions_destroy(&actions);
+        int argc = 0;
+        while (argv[argc]) argc++;
+        shell_argv = xrealloc(NULL, (size_t)(argc + 5) * sizeof(char *));
+        shell_argv[0] = (char *)"/bin/sh";
+        shell_argv[1] = (char *)"-c";
+        shell_argv[2] = (char *)"cd \"$1\" || exit 127; shift; exec \"$@\"";
+        shell_argv[3] = (char *)"sh";
+        shell_argv[4] = (char *)cwd;
+        for (int i = 0; i < argc; i++) shell_argv[5 + i] = argv[i];
+        shell_argv[5 + argc] = NULL;
+        spawn_ret = posix_spawnp(&pid, "/bin/sh", &actions, &attr, shell_argv, environ);
     } else {
         spawn_ret = posix_spawnp(&pid, argv[0], &actions, &attr, argv, environ);
-        posix_spawn_file_actions_destroy(&actions);
     }
+    posix_spawn_file_actions_destroy(&actions);
+    free(shell_argv);
 #else
     spawn_ret = posix_spawnp(&pid, argv[0], &actions, &attr, argv, environ);
     posix_spawn_file_actions_destroy(&actions);
@@ -2234,6 +2229,13 @@ static void *pool_worker(void *arg) {
 // Dispatch jobs to thread pool (bounded by g_num_workers), wait for completion
 static void parallel_dispatch(ParallelJob *jobs, int count) {
     if (g_num_workers < 1) g_num_workers = 1;
+#if defined(__OpenBSD__)
+    // OpenBSD's posix_spawn() is fork()-based (see proc_run_once()); more
+    // than one thread able to reach it concurrently risks a sibling
+    // thread's held malloc/ld.so lock deadlocking the forked child
+    // forever.  Run the whole suite on a single worker here instead.
+    g_num_workers = 1;
+#endif
     g_pool_jobs = jobs;
     g_pool_count = count;
     g_pool_next = 0;
