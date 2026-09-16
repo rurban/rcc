@@ -2632,13 +2632,17 @@ static void run_one_test(const char *src_path, const char *base,
         return;
     }
 
-    /* 128_run_atexit special handling — musl lacks on_exit() (GNU ext);
-     * TODO: add a runtime lib (like darwin's rcc_darwin.c) that provides
-     * on_exit for musl builds. */
+    /* 128_run_atexit special handling — musl and OpenBSD's libc both
+     * lack on_exit() (a GNU/BSD-historical extension, never part of
+     * POSIX): musl deliberately never implemented it; OpenBSD's libc
+     * never has either (confirmed: no on_exit symbol in libc, no man
+     * page). TODO: add a runtime lib (like darwin's rcc_darwin.c) that
+     * provides on_exit on these platforms. */
     if (streq(base, "128_run_atexit")) {
-        if (streq(platform, "musl") || streq(platform, "musl_cross")) {
+        if (streq(platform, "musl") || streq(platform, "musl_cross") ||
+            streq(platform, "OpenBSD")) {
             print_result(base, COL_CYAN, "TODO");
-            add_row(base, "TODO", "TODO (musl: no on_exit yet)");
+            add_row(base, "TODO", "TODO (no on_exit yet)");
             free(out_buf);
             return;
         }
@@ -2739,6 +2743,27 @@ static void run_one_test(const char *src_path, const char *base,
         vlog_compile_cmd = cmdline_from_argv(ca);
         ProcResult cr = proc_run(ca, scaled(30), 0);
         if (cr.exit_code != 0) {
+            /* 106_versym calls pthread_condattr_setpshared(), a POSIX
+             * process-shared-condvar API OpenBSD's pthread has never
+             * provided (confirmed: no declaration in pthread.h, no
+             * symbol in libpthread, no man page) -- a genuine platform
+             * gap, not an rcc bug. */
+            if (streq(base, "106_versym") && streq(platform, "OpenBSD")) {
+                print_result(base, COL_YELLOW, "TODO (compile)");
+                todo++;
+                add_row(base, "TODO", "no pthread_condattr_setpshared on this platform");
+                print_change(base, "TODO");
+                if (cr.out && cr.out[0]) fprintf(stderr, "%s", cr.out);
+                vlog_test_details(base, vlog_compile_cmd, cr.out, NULL, NULL);
+                free(vlog_compile_cmd);
+                if (in_cd_dir) {
+                    if (chdir(SCRIPT_DIR) != 0) perror("chdir");
+                    src_path = orig_src;
+                    rcc = orig_rcc;
+                }
+                proc_free(&cr);
+                return;
+            }
             print_result(base, COL_RED, "COMPILE FAIL");
             failed++;
             add_row(base, "COMPILE_FAIL", "rcc returned non-zero");
@@ -3387,6 +3412,30 @@ static bool is_todo_test(const char *base) {
         NULL};
     for (const char **p = todo_tests; *p; p++)
         if (streq(base, *p)) return true;
+    /* test_alternative / test_cross_section_fixup: both push real
+     * machine code into a SHF_MERGE-flagged section (kernel
+     * ALTERNATIVE()-style .altinstructions/entsize=12), whose own
+     * emitted bytes total 14 -- not a multiple of 12. GNU ld (the
+     * fallback linker rcc's native ELF backend always defers to on
+     * these platforms, and Linux's own default) accepts a misaligned
+     * SHF_MERGE size leniently; LLVM's ld.lld (the BSDs' system
+     * linker) correctly rejects it per the ELF spec ("SHF_MERGE
+     * section size (14) must be a multiple of sh_entsize (12)"). Not
+     * an rcc bug -- every BSD's own native compiler+ld hits the
+     * identical rejection for the same bytes. */
+    if ((streq(base, "test_alternative") || streq(base, "test_cross_section_fixup")) &&
+        (streq(platform, "FreeBSD") || streq(platform, "NetBSD") || streq(platform, "OpenBSD")))
+        return true;
+    /* test_x86_isa_gap_batch1 issues a raw `syscall` instruction from
+     * ordinary .text (not libc's own syscall stub) to exercise
+     * getpid(2) directly. OpenBSD's kernel enforces "system call
+     * origin verification" (msyscall(2), on since 6.4): any syscall
+     * attempted from outside libc's registered trampoline region is
+     * killed with SIGABRT on the spot, regardless of compiler --
+     * real gcc/clang hand-assembling the identical instruction hits
+     * the same kernel-level rejection. */
+    if (streq(base, "test_x86_isa_gap_batch1") && streq(platform, "OpenBSD"))
+        return true;
     return false;
 }
 
@@ -6535,6 +6584,57 @@ static void generate_report(void) {
  * MAIN
  * ═══════════════════════════════════════════════════════════════════ */
 
+#if defined(__clang__) && !defined(_WIN32)
+/* Several test/test_asm_*.c and test/test_*.c files popen("objdump ...")
+ * directly to verify encoded bytes/section layout -- can't touch those
+ * (test files). Some clang-targeted platforms' *system* objdump is too
+ * old to decode VEX-prefixed (AVX/BMI2) instructions, or pads mnemonic
+ * columns with trailing whitespace the tests' exact-match parsing
+ * doesn't expect (verified: OpenBSD 7.9 ships GNU objdump 2.17, a
+ * 2007-era binutils release predating AVX entirely). Linux's system
+ * objdump is always modern enough (skip there -- also avoids any risk
+ * to the format-sensitive `-h`/`-t` tests, where llvm-objdump's output
+ * shape differs slightly from GNU's); every clang-targeted non-Linux
+ * platform ships a matching llvm-objdump alongside clang itself, and
+ * (verified empirically against all current objdump-driven tests) its
+ * output is a safe drop-in replacement for every -d/-s/-t/-h/-dr
+ * invocation these tests already use. Every such popen() is a freshly
+ * spawned child process, so prepending a shim directory to this
+ * process's own PATH before any test is dispatched covers all of them
+ * transparently, without touching a single test file. */
+static void setup_objdump_shim(void) {
+    if (streq(platform, "linux") || streq(platform, "arm64") ||
+        streq(platform, "musl") || streq(platform, "mingw"))
+        return;
+    FILE *p = popen("command -v llvm-objdump 2>/dev/null", "r");
+    if (!p) return;
+    char real[PATH_MAX] = {0};
+    if (!fgets(real, sizeof(real), p)) {
+        pclose(p);
+        return;
+    }
+    pclose(p);
+    size_t len = strlen(real);
+    while (len > 0 && (real[len - 1] == '\n' || real[len - 1] == '\r')) real[--len] = '\0';
+    if (!len) return;
+
+    char dir[PATH_MAX];
+    snprintf(dir, sizeof(dir), "%s/rcc_objdump_shim_%d", get_tmpdir(), (int)getpid());
+    if (mkdir(dir, 0700) != 0 && errno != EEXIST) return;
+    char link[PATH_MAX];
+    snprintf(link, sizeof(link), "%s/objdump", dir);
+    unlink(link);
+    if (symlink(real, link) != 0) return;
+
+    const char *old_path = getenv("PATH");
+    char new_path[PATH_MAX * 2];
+    snprintf(new_path, sizeof(new_path), "%s:%s", dir, old_path ? old_path : "/usr/bin:/bin");
+    setenv("PATH", new_path, 1);
+    if (g_verbose)
+        printf("objdump shim: %s -> %s\n", link, real);
+}
+#endif
+
 int main(int argc, char **argv) {
 #ifdef _WIN32
     /* enable ANSI escape sequence processing (COL_GREEN etc.) on the
@@ -6753,6 +6853,9 @@ int main(int argc, char **argv) {
     }
 
     detect_platform(rcc);
+#if defined(__clang__) && !defined(_WIN32)
+    setup_objdump_shim();
+#endif
     if (g_verbose)
         printf("rcc=%s, platform=%s\n", rcc, platform);
 

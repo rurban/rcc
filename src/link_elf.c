@@ -1817,6 +1817,19 @@ int link_elf(LinkState *s) {
     // Static + shared is nonsensical (there's no "statically linked
     // shared object" concept); refuse rather than guess which one wins.
     if (s->opt_static && s->opt_shared) return -1;
+#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    // The dynamic-linking section below hardcodes glibc/Linux SONAME
+    // conventions (libc.so.6, libgcc_s.so.1, libm.so.6,
+    // /lib64/ld-linux-x86-64.so.2) that don't exist under these BSDs'
+    // own libc/ld.so naming schemes -- a shared object built here would
+    // record DT_NEEDED entries ld.so can never resolve at load time
+    // ("can't load library 'libm.so.6'") even though the real system
+    // library exists under a different name. Fall back to the external
+    // cc/ld for shared objects here too, matching the crt1.o-driven
+    // executable fallback just below -- the system's own linker knows
+    // its platform's real SONAMEs.
+    if (s->opt_shared) return -1;
+#endif
     if (resolve_archives(s) != 0) return -1;
 
     // Ensure required sections exist.

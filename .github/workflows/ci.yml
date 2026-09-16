@@ -242,12 +242,13 @@ jobs:
   # Linux paths (crt1.o search dirs, PT_INTERP); on the BSDs it can't find
   # those and falls back to the host cc/ld (see src/main.c's
   # native_link_capable / GCC-fallback path), so linking still produces a
-  # real, runnable executable. Best-effort and non-blocking until parity
-  # with the Linux/macOS/Windows jobs above is established.
+  # real, runnable executable. Mandatory: verified fully green (0 failed,
+  # a handful of platform-gated TODOs for genuine, unfixable-without-
+  # touching-tests OS gaps -- see is_todo_test()/run_one_test() in
+  # run_tests.c).
   freebsd:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -291,7 +292,6 @@ jobs:
   netbsd:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -335,7 +335,6 @@ jobs:
   openbsd:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

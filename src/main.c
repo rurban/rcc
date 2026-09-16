@@ -1763,7 +1763,18 @@ int main(int argc, char **argv) {
         // link -- harmless, but it pollutes any caller capturing this
         // process's stderr (run_tests.c folds compile stderr into a
         // test's compared output). Suppress that specific warning class.
-        xappendf(&cmd, &cmd_len, &cmd_cap, " -Wno-unused-command-line-argument");
+        //
+        // Separately, the BSDs' own ld.lld carries local patches that
+        // print a "warning: strcpy() is almost always misused, please
+        // use strlcpy()"-style notice for any object referencing a
+        // handful of libc functions it considers risky (strcpy/sprintf/
+        // etc, regardless of whether the call is actually unsafe) --
+        // the exact same output-pollution problem. -Wl,-w
+        // (--no-warnings) silences every ld *warning* without touching
+        // *errors*: a genuine link failure still exits non-zero and
+        // still prints, this only drops opinions about code this
+        // fallback link was never asked to lint.
+        xappendf(&cmd, &cmd_len, &cmd_cap, " -Wno-unused-command-line-argument -Wl,-w");
 #endif
 #endif
 
