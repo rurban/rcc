@@ -4742,6 +4742,32 @@ static void emit_adrp_add(VReg r, const char *label) {
     objfile_add_reloc(cg_obj, SEC_TEXT, add_off, sidx, R_AARCH64_ADD_ABS_LO12_NC, 0);
 }
 
+// True GOT-indirected address load (adrp :got:label; ldr [x, :got_lo12:label]):
+// the register ends up holding whatever the GOT slot for `label` resolves to
+// at load time -- NULL for an undefined weak symbol, the real runtime
+// address for anything satisfied by a shared library. Shared by weak
+// symbol access and (see gen()'s function-address-of case) any function
+// merely declared `extern` in this TU, whose real address is only known at
+// dynamic-link time and must match whatever GOT-relative address the
+// *defining* module computes for itself -- a direct pc-relative lea to this
+// module's own PLT-style stub would give a different, wrong value.
+static void emit_got_load(VReg r, const char *label) {
+    if (cg_dry_run) return;
+    Arm64Reg rd = REG(r);
+    int sidx = objfile_find_sym(cg_obj, label);
+    if (sidx < 0) {
+        int sec = (label[0] == '.') ? SEC_RODATA : SEC_UNDEF;
+        int bind = (label[0] == '.') ? SB_LOCAL : SB_GLOBAL;
+        sidx = objfile_add_sym(cg_obj, label, sec, 0, 0, bind, ST_NOTYPE);
+    }
+    size_t adrp_off = cg_sec->len;
+    asm_adrp(cg_sec, rd); // adrp x{rd}, :got:label
+    objfile_add_reloc(cg_obj, SEC_TEXT, adrp_off, sidx, R_AARCH64_ADR_GOT_PAGE, 0);
+    size_t ldr_off = cg_sec->len;
+    asm_ldr_rd_rd(cg_sec, rd); // ldr x{rd}, [x{rd}, #:got_lo12:label]
+    objfile_add_reloc(cg_obj, SEC_TEXT, ldr_off, sidx, R_AARCH64_LD64_GOT_LO12_NC, 0);
+}
+
 // GOT-based address load: undefined weak → NULL, defined → address.
 // On Darwin, emit_adrp_add already uses GOT for undefined external symbols.
 static void emit_adrp_got(VReg r, const char *label) {
@@ -4755,12 +4781,7 @@ static void emit_adrp_got(VReg r, const char *label) {
     }
     if (sidx >= 0 && cg_obj->syms[sidx].bind == SB_WEAK) {
         // Weak symbols: use GOT indirection so undefined weak resolves to NULL
-        size_t adrp_off = cg_sec->len;
-        asm_adrp(cg_sec, rd); // adrp x{rd}, :got:label
-        objfile_add_reloc(cg_obj, SEC_TEXT, adrp_off, sidx, R_AARCH64_ADR_GOT_PAGE, 0);
-        size_t ldr_off = cg_sec->len;
-        asm_ldr_rd_rd(cg_sec, rd); // ldr x{rd}, [x{rd}, #:got_lo12:label]
-        objfile_add_reloc(cg_obj, SEC_TEXT, ldr_off, sidx, R_AARCH64_LD64_GOT_LO12_NC, 0);
+        emit_got_load(r, label);
     } else {
         // Non-weak (global data): compute absolute address then load from it
         emit_adrp_add(r, label);
@@ -9998,25 +10019,25 @@ VReg gen(Node *node) {
             }
             if (node->var->is_weak)
                 cg_weak_declare(asm_sym_name(var_sym_label(node->var)));
-#ifdef ARCH_ARM64
-            if (node->var->is_weak)
-                emit_adrp_got(r, asm_sym_name(var_sym_label(node->var)));
-            else
-                emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
-#else
             // A function with no local definition in this TU (is_extern)
             // may end up resolved from a shared library at load time.
             // Its address-of must then match whatever GOT-relative
             // address the *defining* module's own -fPIC code computes
             // for the same function (var_needs_got() there is always
-            // true for a non-static global) -- a direct lea to this
-            // module's own PLT-style stub, used regardless of opt_pic
-            // whenever this TU merely declares (never defines) the
-            // function, gave two different values for "the same
+            // true for a non-static global) -- a direct lea/adrp+add to
+            // this module's own PLT-style stub, used regardless of
+            // opt_pic whenever this TU merely declares (never defines)
+            // the function, gave two different values for "the same
             // function's address" depending on which module took it
             // (found via jq: main.c registers &jq_util_input_next_input_cb
             // as a callback, libjq.so's own util.c later asserts the
             // stored pointer == its own &jq_util_input_next_input_cb).
+#ifdef ARCH_ARM64
+            if (node->var->is_weak || node->var->is_extern || var_needs_got(node->var))
+                emit_got_load(r, asm_sym_name(var_sym_label(node->var)));
+            else
+                emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
+#else
             if (node->var->is_weak || node->var->is_extern || var_needs_got(node->var))
                 asm_mov_got_rip_reg(cg_sec, r, var_sym_label(node->var)); // mov sym@GOTPCREL(%rip), r
             else
