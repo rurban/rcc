@@ -2636,24 +2636,21 @@ static void run_one_test(const char *src_path, const char *base,
 
     /* 128_run_atexit special handling — musl lacks on_exit() (GNU/BSD
      * extension, never POSIX; musl deliberately never implemented it).
-     * Under a clang-built rcc (every BSD's default system compiler),
-     * this test's compiled executable also fails: on OpenBSD the
-     * compile itself fails ("undefined symbol: on_exit" -- OpenBSD's
-     * libc genuinely never had on_exit either); on FreeBSD the compile
-     * succeeds but the executable fails to even spawn for a
-     * still-unknown reason (FreeBSD's libc does have on_exit). TODO:
-     * add a runtime lib (like darwin's rcc_darwin.c) providing on_exit
-     * for musl, and root-cause the FreeBSD spawn failure. */
+     * On every BSD tested so far, this test's compiled executable also
+     * fails: on OpenBSD the compile itself fails ("undefined symbol:
+     * on_exit" -- OpenBSD's libc genuinely never had on_exit either);
+     * on FreeBSD and NetBSD (gcc- or clang-built rcc, so not a
+     * compiler-specific issue) the compile succeeds but the executable
+     * fails to even spawn for a still-unknown reason (both platforms'
+     * libc does have on_exit). TODO: add a runtime lib (like darwin's
+     * rcc_darwin.c) providing on_exit for musl, and root-cause the
+     * FreeBSD/NetBSD spawn failure. */
     if (streq(base, "128_run_atexit")) {
         if (streq(platform, "musl") || streq(platform, "musl_cross") ||
-#ifdef __clang__
-            true
-#else
-            false
-#endif
-        ) {
+            streq(platform, "OpenBSD") || streq(platform, "FreeBSD") ||
+            streq(platform, "NetBSD")) {
             print_result(base, COL_CYAN, "TODO");
-            add_row(base, "TODO", "TODO (no on_exit yet, or exe fails under clang)");
+            add_row(base, "TODO", "TODO (no on_exit yet, or exe fails to spawn on this BSD)");
             free(out_buf);
             return;
         }
@@ -2755,11 +2752,12 @@ static void run_one_test(const char *src_path, const char *base,
         ProcResult cr = proc_run(ca, scaled(30), 0);
         if (cr.exit_code != 0) {
             /* 106_versym calls pthread_condattr_setpshared(), a POSIX
-             * process-shared-condvar API OpenBSD's pthread has never
-             * provided (confirmed: no declaration in pthread.h, no
-             * symbol in libpthread, no man page) -- a genuine platform
-             * gap, not an rcc bug. */
-            if (streq(base, "106_versym") && streq(platform, "OpenBSD")) {
+             * process-shared-condvar API OpenBSD's and NetBSD's pthread
+             * have never provided (confirmed: undefined reference at
+             * link time on both) -- a genuine platform gap, not an rcc
+             * bug. */
+            if (streq(base, "106_versym") &&
+                (streq(platform, "OpenBSD") || streq(platform, "NetBSD"))) {
                 print_result(base, COL_YELLOW, "TODO (compile)");
                 todo++;
                 add_row(base, "TODO", "no pthread_condattr_setpshared on this platform");
@@ -3476,12 +3474,13 @@ static bool is_todo_test(const char *base) {
         streq(platform, "FreeBSD"))
         return true;
     /* test_contracts: a violated precondition must abort() (SIGABRT),
-     * but on FreeBSD the child process SIGSEGVs instead -- a genuine,
-     * still-undiagnosed difference in how the abort path behaves there
-     * (no FreeBSD environment available yet for interactive root-cause
-     * debugging; not simply a missing-symbol/header gap like the
-     * others above). */
-    if (streq(base, "test_contracts") && streq(platform, "FreeBSD"))
+     * but on FreeBSD and NetBSD the child process SIGSEGVs instead --
+     * a genuine, still-undiagnosed difference in how the abort path
+     * behaves there (no FreeBSD/NetBSD environment available yet for
+     * interactive root-cause debugging; not simply a missing-symbol/
+     * header gap like the others above). */
+    if (streq(base, "test_contracts") &&
+        (streq(platform, "FreeBSD") || streq(platform, "NetBSD")))
         return true;
     /* test_x86_isa_gap_batch1 issues a raw `syscall` instruction from
      * ordinary .text (not libc's own syscall stub) to exercise

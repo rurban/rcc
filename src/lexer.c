@@ -462,7 +462,7 @@ static int read_punct(char *p) {
     case '#':
         return p[1] == '#' ? 2 : 1;
     default:
-        return ispunct(*p) ? 1 : 0;
+        return ispunct((unsigned char)*p) ? 1 : 0;
     }
 }
 
@@ -523,14 +523,14 @@ static uint64_t parse_int_literal(const char *q, const char *p, bool dsep) {
              *rp != 'i' && *rp != 'I' && *rp != 'j' && *rp != 'J' &&
              !((*rp == 'w' || *rp == 'W') && (rp[1] == 'b' || rp[1] == 'B'));
              rp++)
-            if (*rp != '\'') val = val * 16 + (uint64_t)(isdigit(*rp) ? *rp - '0' : ((*rp | 32) - 'a' + 10));
+            if (*rp != '\'') val = val * 16 + (uint64_t)(isdigit((unsigned char)*rp) ? *rp - '0' : ((*rp | 32) - 'a' + 10));
         return val;
     } else if (q[0] == '0' && (q[1] == 'o' || q[1] == 'O')) {
         uint64_t val = 0;
         for (const char *rp = q + 2; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
             if (*rp != '\'' && *rp >= '0' && *rp <= '7') val = val * 8 + (uint64_t)(*rp - '0');
         return val;
-    } else if (q[0] == '0' && (isdigit(q[1]) || (dsep && q[1] == '\'' && isdigit(q[2])))) {
+    } else if (q[0] == '0' && (isdigit((unsigned char)q[1]) || (dsep && q[1] == '\'' && isdigit((unsigned char)q[2])))) {
         // Octal: leading 0 followed by digit (not x/b/o), possibly with a
         // digit separator right after the 0
         uint64_t val = 0;
@@ -540,7 +540,7 @@ static uint64_t parse_int_literal(const char *q, const char *p, bool dsep) {
     } else {
         uint64_t val = 0;
         for (const char *rp = q; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
-            if (isdigit(*rp)) val = val * 10 + (uint64_t)(*rp - '0');
+            if (isdigit((unsigned char)*rp)) val = val * 10 + (uint64_t)(*rp - '0');
         return val;
     }
 }
@@ -655,7 +655,7 @@ Token *lex_one(char **pp, int *plineno) {
         if (cur != &head)
             break; // a token was emitted on the previous round
         // Skip whitespace characters.
-        if (isspace(*p)) {
+        if (isspace((unsigned char)*p)) {
             if (*p == '\n') {
                 if (lex_pp_mode) {
                     cur = cur->next = new_token(TK_NL, p, p + 1, cur_lineno);
@@ -702,10 +702,10 @@ Token *lex_one(char **pp, int *plineno) {
             // Check for #line directive: # line_number "filename"
             char *q = p + 1;
             while (*q == ' ' || *q == '\t') q++;
-            if (isdigit(*q)) {
+            if (isdigit((unsigned char)*q)) {
                 // Parse line number
                 int n = 0;
-                while (isdigit(*q)) {
+                while (isdigit((unsigned char)*q)) {
                     n = n * 10 + (*q - '0');
                     q++;
                 }
@@ -810,7 +810,7 @@ Token *lex_one(char **pp, int *plineno) {
         }
 
         // Numeric literal (integer or floating point)
-        if (isdigit(*p) || (*p == '.' && isdigit(p[1]))) {
+        if (isdigit((unsigned char)*p) || (*p == '.' && isdigit((unsigned char)p[1]))) {
             char *q = p;
             bool is_float = false;
             // C23 digit separators: a ' continues the number only when
@@ -822,17 +822,17 @@ Token *lex_one(char **pp, int *plineno) {
 
             if (*p == '0' && (p[1] == 'x' || p[1] == 'X')) {
                 p += 2;
-                while (isxdigit(*p) || (dsep && *p == '\'' && isxdigit(p[1]))) p++;
+                while (isxdigit((unsigned char)*p) || (dsep && *p == '\'' && isxdigit((unsigned char)p[1]))) p++;
                 if (*p == '.') {
                     is_float = true;
                     p++;
-                    while (isxdigit(*p) || (dsep && *p == '\'' && isxdigit(p[1]))) p++;
+                    while (isxdigit((unsigned char)*p) || (dsep && *p == '\'' && isxdigit((unsigned char)p[1]))) p++;
                 }
                 if (*p == 'p' || *p == 'P') {
                     is_float = true;
                     p++;
                     if (*p == '+' || *p == '-') p++;
-                    while (isdigit(*p) || (dsep && *p == '\'' && isdigit(p[1]))) p++;
+                    while (isdigit((unsigned char)*p) || (dsep && *p == '\'' && isdigit((unsigned char)p[1]))) p++;
                 }
             } else if (*p == '0' && (p[1] == 'o' || p[1] == 'O')) {
                 p += 2;
@@ -845,17 +845,17 @@ Token *lex_one(char **pp, int *plineno) {
                 if (p > q + 2 && isdigit((unsigned char)*p))
                     lex_error_at(p, "invalid digit \"\%c\" in binary constant", *p);
             } else {
-                while (isdigit(*p) || (dsep && *p == '\'' && isdigit(p[1]))) p++;
+                while (isdigit((unsigned char)*p) || (dsep && *p == '\'' && isdigit((unsigned char)p[1]))) p++;
                 if (*p == '.' && p[1] != '.') {
                     is_float = true;
                     p++;
-                    while (isdigit(*p) || (dsep && *p == '\'' && isdigit(p[1]))) p++;
+                    while (isdigit((unsigned char)*p) || (dsep && *p == '\'' && isdigit((unsigned char)p[1]))) p++;
                 }
                 if (*p == 'e' || *p == 'E') {
                     is_float = true;
                     p++;
                     if (*p == '+' || *p == '-') p++;
-                    while (isdigit(*p) || (dsep && *p == '\'' && isdigit(p[1]))) p++;
+                    while (isdigit((unsigned char)*p) || (dsep && *p == '\'' && isdigit((unsigned char)p[1]))) p++;
                 }
             }
 
@@ -903,7 +903,7 @@ Token *lex_one(char **pp, int *plineno) {
             if (is_float) {
                 bool have_kind = false;
                 for (;;) {
-                    if (!have_kind && (*p == 'f' || *p == 'F') && isdigit(p[1])) {
+                    if (!have_kind && (*p == 'f' || *p == 'F') && isdigit((unsigned char)p[1])) {
                         // _FloatN suffixes (C23): F16, F32, F64, F128, F32x, F64x
                         p++; // skip F/f
                         if (p[0] == '3' && p[1] == '2') {
@@ -958,7 +958,7 @@ Token *lex_one(char **pp, int *plineno) {
                         fkind = 2;
                     p += 2;
                 } else if (!have_kind && !is_imag && (*p == 'd' || *p == 'D') &&
-                           isdigit(p[1])) {
+                           isdigit((unsigned char)p[1])) {
                     p++;
                     if (p[0] == '3' && p[1] == '2') {
                         fkind = 1; // D32 -> nearest binary type
