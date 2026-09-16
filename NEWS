@@ -2,6 +2,10 @@ This is the NEWS file for RCC, the Regoshi C Compiler. It summarizes
 user-visible changes for each release, most recent first. For the
 complete list of changes see the git log.
 
+* Changes in v1.2.2 (????-??-??) (Reini Urban) [planned]
+
+  - Added BSD and clang support.
+
 * Changes in v1.2.1 (2026-09-16) (Reini Urban)
 
   - Compile-time performance: faster lexer (ASCII fast path), faster
