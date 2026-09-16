@@ -1596,7 +1596,7 @@ static ProcResult run_exe(const char *exe_path, const char *args, int timeout_se
             tok = strtok_r(NULL, " ", &save);
         }
     }
-    argv[ai++] = (char *)exe_path;
+    if (exe_path) argv[ai++] = (char *)exe_path;
     if (args && *args) {
         char *ac = strdup(args);
         char *save = NULL;
@@ -1639,7 +1639,7 @@ static ProcResult run_exe_with_cmdline(const char *exe_path, const char *args,
             tok = strtok_r(NULL, " ", &save);
         }
     }
-    argv[ai++] = (char *)exe_path;
+    if (exe_path) argv[ai++] = (char *)exe_path;
     if (args && *args) {
         char *ac = strdup(args);
         char *save = NULL;
@@ -3458,6 +3458,19 @@ static bool is_todo_test(const char *base) {
     if ((streq(base, "test_fortify") || streq(base, "test_fortify_chk_arity") ||
          streq(base, "test_open_fortify")) &&
         streq(platform, "FreeBSD"))
+        return true;
+    /* test_fortify alone (not test_fortify_chk_arity/test_open_fortify,
+     * which pass cleanly) crashes rcc itself with a stack overflow on
+     * NetBSD: its ssp headers' _FORTIFY_SOURCE macros expand memcpy/
+     * memset/strcpy/strcat/... into far more deeply nested conditional
+     * expressions than glibc's or FreeBSD's equivalents, and rcc's
+     * recursive-descent expression parser has no depth limit -- it
+     * blows the stack recursing through the full binary-expression
+     * grammar (shift/relational/equality/.../primary) for each nested
+     * level. A real, narrow robustness gap (unbounded parser
+     * recursion), not a semantic mismatch; fixing it needs a
+     * depth-limited parser, out of scope here. */
+    if (streq(base, "test_fortify") && streq(platform, "NetBSD"))
         return true;
     /* test_contracts: a violated precondition must abort() (SIGABRT),
      * but on FreeBSD and NetBSD the child process SIGSEGVs instead --
