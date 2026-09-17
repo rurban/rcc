@@ -4,7 +4,37 @@ complete list of changes see the git log.
 
 * Changes in v1.2.2 (????-??-??) (Reini Urban) [planned]
 
-  - Added BSD and clang support.
+  - Added FreeBSD, NetBSD and OpenBSD support, all three built and
+    tested in CI (vmactions QEMU VMs) as mandatory, blocking jobs —
+    no `continue-on-error`. Also added a `clang`-built matrix job on
+    Linux (rcc itself is compiler-agnostic; only the build toolchain
+    changes).
+  - Fixed a real, universal codegen bug found via FreeBSD CI: an
+    `extern __thread` variable owned by a separate shared library
+    (e.g. libc's own TLS state, reached through an inlined libc
+    header) got the unsafe direct-offset (local-exec) TLS
+    relocation, valid only for TLS vars owned by the same link unit.
+    Now uses the GOT-indirected initial-exec model whenever the
+    variable is extern/weak, on every platform.
+  - Fixed a real ELF-writer bug found via OpenBSD/FreeBSD CI (both
+    use LLVM's `ld.lld` as the system linker): a SHF_MERGE section's
+    on-disk size wasn't padded to a multiple of its declared
+    `sh_entsize`, which the ELF spec requires and `ld.lld` correctly
+    enforces (`ld.bfd` silently tolerates the violation, masking it
+    on Linux). Affected real code, e.g. the Linux kernel's
+    `ALTERNATIVE()` macro's `.altinstructions` table.
+  - Fixed undefined behavior in the lexer: `isspace`/`isdigit`/
+    `isxdigit`/`ispunct` were called on signed `char` values instead
+    of `(unsigned char)`, undefined for any UTF-8 byte ≥0x80. glibc
+    tolerates it silently; NetBSD's stricter libc didn't, crashing
+    on any non-ASCII identifier.
+  - Fixed a test-harness crash (not rcc itself) on NetBSD: a
+    diagnostic re-run path passed a literal NULL as `argv[0]` to
+    `posix_spawnp()`, which NetBSD's libc dereferences and segfaults
+    on.
+  - rcc's native ELF linker falls back to the system `cc`/`ld` on
+    every BSD for cases it doesn't special-case yet (BSD `crt1.o`
+    layout, `PT_INTERP`/`DT_NEEDED` naming) — tracked in `TODO`.
 
 * Changes in v1.2.1 (2026-09-16) (Reini Urban)
 

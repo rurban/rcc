@@ -1,7 +1,8 @@
 # RCC — Regoshi C Compiler
 
 A fast, self-contained C23 (and draft C29/C2y) C compiler targeting
-x86-64 on Windows and Unix, and AArch64 (ARM64) on elf and darwin.
+x86-64 on Windows, Linux and the BSDs (FreeBSD/NetBSD/OpenBSD), and
+AArch64 (ARM64) on elf and darwin. Builds with either gcc or clang.
 Written from scratch in C11 by Hosokawa-t, a 16 year old student. And
 then ported to linux, arm64 and fixed the rest by Reini Urban.
 
@@ -282,8 +283,14 @@ file-scope `asm` blocks to the top of the output at `-O2`/`-O3` unless
 `-fno-toplevel-reorder` is used), rcc always preserves their original
 position relative to functions.
 
-The test suites has all tests passed on linux, darwin, windows, mingw-cross,
-arm64-cross, darwin-cross, musl.
+The test suites pass on linux, darwin, windows, mingw-cross,
+arm64-cross, darwin-cross, musl, and FreeBSD/NetBSD/OpenBSD (built
+with each platform's default system `cc` — clang on FreeBSD/OpenBSD,
+gcc on NetBSD — and run in CI as mandatory jobs via
+[vmactions](https://github.com/vmactions), a handful of genuine,
+narrow platform gaps aside — e.g. `pthread_condattr_setpshared`/
+`on_exit` missing from some of these libcs — each documented at its
+`is_todo_test()` gate in `run_tests.c`).
 With musl the gcc torture tests fail 2 tests: c23-no-dfp-1 pr80692.
 
 ## Build
