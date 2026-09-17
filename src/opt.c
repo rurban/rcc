@@ -1172,6 +1172,290 @@ static bool is_all_ones_at_width(long long val, int width_bytes) {
     return ((uint64_t)val & mask) == mask;
 }
 
+typedef struct LocalOptAddr LocalOptAddr;
+struct LocalOptAddr {
+    LocalOptAddr *next;
+    LVar *var;
+};
+
+static LocalOptAddr *local_opt_addrs;
+static bool local_opt_has_asm;
+
+static bool local_opt_addr_taken(LVar *var) {
+    for (LocalOptAddr *p = local_opt_addrs; p; p = p->next)
+        if (p->var == var) return true;
+    return false;
+}
+
+static void local_opt_collect_addrs(Node *node) {
+    if (!node) return;
+    if (node->kind == ND_ASM) local_opt_has_asm = true;
+    if (node->kind == ND_ADDR && node->lhs && node->lhs->kind == ND_LVAR) {
+        for (LocalOptAddr *p = local_opt_addrs; p; p = p->next)
+            if (p->var == node->lhs->var) goto descend;
+        LocalOptAddr *addr = calloc(1, sizeof(*addr));
+        addr->var = node->lhs->var;
+        addr->next = local_opt_addrs;
+        local_opt_addrs = addr;
+    }
+descend:
+    local_opt_collect_addrs(node->lhs);
+    local_opt_collect_addrs(node->rhs);
+    local_opt_collect_addrs(node->cond);
+    local_opt_collect_addrs(node->then);
+    local_opt_collect_addrs(node->els);
+    local_opt_collect_addrs(node->init);
+    local_opt_collect_addrs(node->inc);
+    local_opt_collect_addrs(node->body);
+    local_opt_collect_addrs(node->args);
+    local_opt_collect_addrs(node->next);
+}
+
+static void local_opt_clear_addrs(void) {
+    while (local_opt_addrs) {
+        LocalOptAddr *next = local_opt_addrs->next;
+        free(local_opt_addrs);
+        local_opt_addrs = next;
+    }
+    local_opt_has_asm = false;
+}
+
+typedef struct {
+    LVar *var;
+    Node *value;
+    Node *last_store;
+} LocalOptState;
+
+static bool local_opt_eligible(LVar *var) {
+    Type *ty = var ? var->ty : NULL;
+    return !local_opt_has_asm && var && var->is_local && !var->is_static && !var->is_tls &&
+        !var->is_global_reg && !var->addr_taken && !local_opt_addr_taken(var) &&
+        ty && !ty_volatile(ty) && is_integer(ty) && ty->kind != TY_BITINT &&
+        !ty->is_vector && ty->size > 0 && ty->size <= 8;
+}
+
+
+static int local_opt_find(LocalOptState **states, int *len, int *cap, LVar *var, bool add) {
+    for (int i = 0; i < *len; i++)
+        if ((*states)[i].var == var) return i;
+    if (!add) return -1;
+    if (*len == *cap) {
+        *cap = *cap ? *cap * 2 : 8;
+        *states = realloc(*states, (size_t)*cap * sizeof(**states));
+    }
+    (*states)[*len] = (LocalOptState){.var = var};
+    return (*len)++;
+}
+
+static void local_opt_clear(LocalOptState *states, int len) {
+    for (int i = 0; i < len; i++) {
+        states[i].value = NULL;
+        states[i].last_store = NULL;
+    }
+}
+
+static void local_opt_drop(Node *stmt) {
+    if (!stmt || stmt->kind == ND_NULL) return;
+    stmt->kind = ND_NULL;
+    stmt->lhs = NULL;
+    stmt->rhs = NULL;
+}
+
+static void local_opt_drop_all(LocalOptState *states, int len) {
+    for (int i = 0; i < len; i++) {
+        local_opt_drop(states[i].last_store);
+        states[i].last_store = NULL;
+        states[i].value = NULL;
+    }
+}
+
+static void local_opt_note_read(Node *node, LocalOptState **states, int *len, int *cap);
+
+static void local_opt_note_lvalue(Node *node, LocalOptState **states, int *len, int *cap) {
+    if (!node || node->kind == ND_LVAR) return;
+    local_opt_note_read(node, states, len, cap);
+}
+
+static void local_opt_note_read(Node *node, LocalOptState **states, int *len, int *cap) {
+    if (!node) return;
+    if (node->kind == ND_LVAR && local_opt_eligible(node->var)) {
+        int i = local_opt_find(states, len, cap, node->var, false);
+        if (i >= 0) (*states)[i].last_store = NULL;
+        return;
+    }
+    if (node->kind == ND_ASSIGN) {
+        local_opt_note_lvalue(node->lhs, states, len, cap);
+        local_opt_note_read(node->rhs, states, len, cap);
+        return;
+    }
+    if (node->kind == ND_PRE_INC || node->kind == ND_PRE_DEC ||
+        node->kind == ND_POST_INC || node->kind == ND_POST_DEC) {
+        local_opt_note_read(node->lhs, states, len, cap);
+        return;
+    }
+    if (node->kind == ND_ADDR) {
+        local_opt_note_lvalue(node->lhs, states, len, cap);
+        return;
+    }
+    local_opt_note_read(node->lhs, states, len, cap);
+    local_opt_note_read(node->rhs, states, len, cap);
+    local_opt_note_read(node->cond, states, len, cap);
+    for (Node *arg = node->args; arg; arg = arg->next)
+        local_opt_note_read(arg, states, len, cap);
+}
+
+static Node *local_opt_subst_read(Node *node, LocalOptState *states, int len);
+
+static Node *local_opt_subst_lvalue(Node *node, LocalOptState *states, int len) {
+    if (!node || node->kind == ND_LVAR) return node;
+    return local_opt_subst_read(node, states, len);
+}
+
+static Node *local_opt_subst_read(Node *node, LocalOptState *states, int len) {
+    if (!node) return NULL;
+    if (node->kind == ND_LVAR && local_opt_eligible(node->var)) {
+        for (int i = 0; i < len; i++)
+            if (states[i].var == node->var && states[i].value)
+                return clone_expr(states[i].value);
+        return node;
+    }
+    if (node->kind == ND_ASSIGN) {
+        node->lhs = local_opt_subst_lvalue(node->lhs, states, len);
+        node->rhs = local_opt_subst_read(node->rhs, states, len);
+        return node;
+    }
+    if (node->kind == ND_PRE_INC || node->kind == ND_PRE_DEC ||
+        node->kind == ND_POST_INC || node->kind == ND_POST_DEC ||
+        node->kind == ND_ADDR) {
+        node->lhs = local_opt_subst_lvalue(node->lhs, states, len);
+        return node;
+    }
+    node->lhs = local_opt_subst_read(node->lhs, states, len);
+    node->rhs = local_opt_subst_read(node->rhs, states, len);
+    node->cond = local_opt_subst_read(node->cond, states, len);
+    for (Node *arg = node->args; arg; arg = arg->next)
+        local_opt_subst_read(arg, states, len);
+    return node;
+}
+
+static bool local_opt_has_write(Node *node) {
+    if (!node) return false;
+    if (node->kind == ND_ASSIGN || node->kind == ND_PRE_INC ||
+        node->kind == ND_PRE_DEC || node->kind == ND_POST_INC ||
+        node->kind == ND_POST_DEC || node->kind == ND_ASM ||
+        node->kind == ND_ATOMIC_STORE || node->kind == ND_ATOMIC_EXCHANGE ||
+        node->kind == ND_ATOMIC_CAS || node->kind == ND_ATOMIC_FETCH_OP ||
+        node->kind == ND_STMT_EXPR)
+        return true;
+    if (local_opt_has_write(node->lhs) || local_opt_has_write(node->rhs) ||
+        local_opt_has_write(node->cond))
+        return true;
+    for (Node *arg = node->args; arg; arg = arg->next)
+        if (local_opt_has_write(arg)) return true;
+    return false;
+}
+
+static bool local_opt_has_call(Node *node) {
+    if (!node) return false;
+    if (node->kind == ND_FUNCALL || node->kind == ND_ASM) return true;
+    if (local_opt_has_call(node->lhs) || local_opt_has_call(node->rhs) ||
+        local_opt_has_call(node->cond))
+        return true;
+    for (Node *arg = node->args; arg; arg = arg->next)
+        if (local_opt_has_call(arg)) return true;
+    return false;
+}
+
+static Node *local_opt_known_value(Node *rhs, Type *ty) {
+    if (!rhs || !ident_same_ty(rhs->ty, ty)) return NULL;
+    if (rhs->kind == ND_NUM) return rhs;
+    if (rhs->kind == ND_LVAR && local_opt_eligible(rhs->var)) return rhs;
+    if (!is_integer(ty) || ty->kind == TY_BITINT || ty->is_vector ||
+        ty->size <= 0 || ty->size > 8 || expr_has_float(rhs))
+        return NULL;
+    long long val;
+    if (!eval_const_expr(rhs, &val)) return NULL;
+    Node *num = arena_alloc(sizeof(Node));
+    num->kind = ND_NUM;
+    num->val = val;
+    num->ty = ty;
+    num->tok = rhs->tok;
+    return num;
+}
+
+static bool local_opt_droppable(Node *stmt) {
+    Node *assign = stmt && stmt->kind == ND_EXPR_STMT ? stmt->lhs : NULL;
+    return assign && assign->kind == ND_ASSIGN &&
+        assign->lhs && assign->lhs->kind == ND_LVAR &&
+        local_opt_eligible(assign->lhs->var) &&
+        arg_is_simple(assign->rhs) && !expr_reads_volatile(assign->rhs);
+}
+
+static Node *local_opt_stmt_value(Node *stmt) {
+    if (!stmt) return NULL;
+    if (stmt->kind == ND_EXPR_STMT || stmt->kind == ND_RETURN) return stmt->lhs;
+    if (stmt->kind == ND_IF || stmt->kind == ND_FOR || stmt->kind == ND_DO ||
+        stmt->kind == ND_SWITCH)
+        return stmt->cond;
+    return NULL;
+}
+
+// Propagate constants/copies and kill overwritten pure stores in one
+// straight-line list. Calls, labels and control flow only invalidate state.
+static void local_opt_stmt_list(Node *head, bool function_root) {
+    LocalOptState *states = NULL;
+    int len = 0, cap = 0;
+    for (Node *stmt = head; stmt; stmt = stmt->next) {
+        Node *assign = stmt->kind == ND_EXPR_STMT ? stmt->lhs : NULL;
+        bool direct = assign && assign->kind == ND_ASSIGN &&
+            assign->lhs && assign->lhs->kind == ND_LVAR &&
+            local_opt_eligible(assign->lhs->var);
+        Node *value = direct ? assign->rhs : local_opt_stmt_value(stmt);
+        bool writes = value && local_opt_has_write(value);
+        if (value && !writes) {
+            if (direct) {
+                assign->rhs = local_opt_subst_read(assign->rhs, states, len);
+            } else if (stmt->kind != ND_EXPR_STMT || assign->kind != ND_ASSIGN) {
+                Node *repl = local_opt_subst_read(value, states, len);
+                if (stmt->kind == ND_RETURN || stmt->kind == ND_EXPR_STMT)
+                    stmt->lhs = repl;
+                else
+                    stmt->cond = repl;
+            }
+            value = direct ? assign->rhs : local_opt_stmt_value(stmt);
+        }
+        if (value) local_opt_note_read(value, &states, &len, &cap);
+
+        if (!direct) {
+            if (stmt->kind == ND_RETURN)
+                local_opt_drop_all(states, len);
+            else
+                local_opt_clear(states, len);
+            continue;
+        }
+
+        LVar *var = assign->lhs->var;
+        int old = local_opt_find(&states, &len, &cap, var, false);
+        if (old >= 0) local_opt_drop(states[old].last_store);
+        for (int i = 0; i < len; i++)
+            if (states[i].value && states[i].value->kind == ND_LVAR &&
+                states[i].value->var == var)
+                states[i].value = NULL;
+
+        int i = local_opt_find(&states, &len, &cap, var, true);
+        Node *known = local_opt_known_value(assign->rhs, var->ty);
+        states[i].value = known ? clone_expr(known) : NULL;
+        if (known && known->kind == ND_NUM)
+            assign->rhs = clone_expr(known);
+        states[i].last_store = local_opt_droppable(stmt) ? stmt : NULL;
+        if (writes || local_opt_has_call(assign->rhs))
+            local_opt_clear(states, len);
+    }
+    if (function_root)
+        local_opt_drop_all(states, len);
+    free(states);
+}
+
 static Node *optimize_node(Program *prog, Node *node) {
     if (!node) return NULL;
     node->lhs = optimize_node(prog, node->lhs);
@@ -1752,6 +2036,9 @@ static Node *optimize_node(Program *prog, Node *node) {
         Node *unrolled = try_unroll(node);
         if (unrolled) return unrolled;
     }
+    if (opt_O1 && node->kind == ND_BLOCK)
+        local_opt_stmt_list(node->body, false);
+
     return node;
 }
 
@@ -1761,6 +2048,8 @@ void optimize(Program *prog) {
         if (item->kind != TL_FUNC)
             continue;
         Function *fn = item->fn;
+        if (opt_O1)
+            local_opt_collect_addrs(fn->body);
         Node *prev = NULL;
         for (Node *n = fn->body; n; n = n->next) {
             Node *o = optimize_node(prog, n);
@@ -1773,6 +2062,10 @@ void optimize(Program *prog) {
                 break;
             }
         }
+        if (opt_O1)
+            local_opt_stmt_list(fn->body, true);
+        if (opt_O1)
+            local_opt_clear_addrs();
     }
 }
 

@@ -1780,6 +1780,7 @@ static void emit_direct_call(char *name, bool is_asm_label) {
 #endif
 }
 
+
 // Call a rcc_bitint_* helper, preserving every live VReg across the call.
 // The helpers are ordinary functions: they clobber the caller-saved
 // registers (r10-r15 on x86-64 SysV/Win64, x10-x15 on AAPCS64) that rcc's
@@ -13231,38 +13232,84 @@ VReg gen(Node *node) {
         VReg cond = gen(node->cond);
         int sz = op_size(node->cond->ty);
         bool is_uns = node->cond->ty && node->cond->ty->is_unsigned;
-        for (Node *cs = node->case_next; cs; cs = cs->case_next) {
+        for (Node *cs = node->case_next; cs; cs = cs->case_next)
             if (!cs->label_id)
                 cs->label_id = ++rcc_label_count;
-            if (cs->is_case_range) {
-                int skip_lbl = ++rcc_label_count;
+        if (node->default_case && !node->default_case->label_id)
+            node->default_case->label_id = ++rcc_label_count;
+#ifndef ARCH_ARM64
+        bool use_jt = false;
+        int64_t jt_min = 0, jt_max = 0;
+        const char *jt_table = NULL, *jt_fallback = NULL;
+        if (opt_O1 && node->cond->ty && is_integer(node->cond->ty) &&
+            node->cond->ty->size > 0 && node->cond->ty->size <= 4) {
+            int count = 0;
+            for (Node *cs = node->case_next; cs; cs = cs->case_next) {
+                if (cs->is_case_range || cs->case_val < 0 || cs->case_val > INT32_MAX) {
+                    count = 0;
+                    break;
+                }
+                if (cs->case_val < jt_min) jt_min = cs->case_val;
+                if (cs->case_val > jt_max) jt_max = cs->case_val;
+                count++;
+            }
+            uint64_t span = (uint64_t)(jt_max - jt_min + 1);
+            if (count >= 4 && span <= 256 && span <= (uint64_t)count * 3) {
+                use_jt = true;
+                jt_table = format(".L.switch.table.%d", c);
+                jt_fallback = node->default_case
+                    ? format(".L.case.%d", node->default_case->label_id)
+                    : format(".L.end.%d", c);
+                asm_cmp_imm(cg_sec, cond, sz, jt_max);
+                size_t out = asm_jcc_label(cg_sec, X86_A);
+                asm_fixup_add(cg_sec, out, jt_fallback, 1);
+                if (jt_min)
+                    x86_sub_ri(cg_sec, sz, REG(cond), jt_min);
+                VReg table = alloc_reg();
+                asm_lea_rip_reg(cg_sec, table, jt_table);
+                x86_lea(cg_sec, 8, REG(cond),
+                        x86_mem_idx(REG(cond), REG(cond), 4, 0));
+                x86_add_rr(cg_sec, 8, REG(table), REG(cond));
+                asm_jmp_reg(cg_sec, table);
+                free_reg(table);
+            }
+        }
+#endif
+#ifndef ARCH_ARM64
+        if (!use_jt)
+#endif
+            for (Node *cs = node->case_next; cs; cs = cs->case_next) {
+                if (!cs->label_id)
+                    cs->label_id = ++rcc_label_count;
+                if (cs->is_case_range) {
+                    int skip_lbl = ++rcc_label_count;
 #ifdef ARCH_ARM64
-                if ((cs->case_val >= 0 && cs->case_val <= 4095) ||
-                    (cs->case_val > 0 && cs->case_val <= 0xffffff && (cs->case_val % 4096) == 0))
-                    asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_val); // cmp $(long long)cs->case_val, rcond
-                else {
-                    VReg tmp = alloc_reg();
-                    asm_mov_imm(cg_sec, tmp, 8, (int64_t)cs->case_val); // mov tmp, #case_val
-                    asm_cmp_reg_reg(cg_sec, cond, tmp, sz); // cmp rtmp, rcond
-                    free_reg(tmp);
-                }
-                {
-                    size_t o = asm_jcc_label(cg_sec, is_uns ? ARM64_LO : ARM64_LT); // jcc label
-                    asm_fixup_add(cg_sec, o, format(".L.skip.%d", skip_lbl), 1);
-                } /* cmp %s, #%lld\n */
-                if ((cs->case_end >= 0 && cs->case_end <= 4095) ||
-                    (cs->case_end > 0 && cs->case_end <= 0xffffff && (cs->case_end % 4096) == 0))
-                    asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_end); // cmp $(long long)cs->case_end, rcond
-                else {
-                    VReg tmp = alloc_reg();
-                    asm_mov_imm(cg_sec, tmp, 8, (int64_t)cs->case_end); // mov tmp, #case_end
-                    asm_cmp_reg_reg(cg_sec, cond, tmp, sz); // cmp rtmp, rcond
-                    free_reg(tmp);
-                }
-                {
-                    size_t o = asm_jcc_label(cg_sec, is_uns ? ARM64_LS : ARM64_LE); // jcc label
-                    asm_fixup_add(cg_sec, o, format(".L.case.%d", (int)cs->label_id), 1);
-                } /* movabs $%lld, %s\n */
+                    if ((cs->case_val >= 0 && cs->case_val <= 4095) ||
+                        (cs->case_val > 0 && cs->case_val <= 0xffffff && (cs->case_val % 4096) == 0))
+                        asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_val); // cmp $(long long)cs->case_val, rcond
+                    else {
+                        VReg tmp = alloc_reg();
+                        asm_mov_imm(cg_sec, tmp, 8, (int64_t)cs->case_val); // mov tmp, #case_val
+                        asm_cmp_reg_reg(cg_sec, cond, tmp, sz); // cmp rtmp, rcond
+                        free_reg(tmp);
+                    }
+                    {
+                        size_t o = asm_jcc_label(cg_sec, is_uns ? ARM64_LO : ARM64_LT); // jcc label
+                        asm_fixup_add(cg_sec, o, format(".L.skip.%d", skip_lbl), 1);
+                    } /* cmp %s, #%lld\n */
+                    if ((cs->case_end >= 0 && cs->case_end <= 4095) ||
+                        (cs->case_end > 0 && cs->case_end <= 0xffffff && (cs->case_end % 4096) == 0))
+                        asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_end); // cmp $(long long)cs->case_end, rcond
+                    else {
+                        VReg tmp = alloc_reg();
+                        asm_mov_imm(cg_sec, tmp, 8, (int64_t)cs->case_end); // mov tmp, #case_end
+                        asm_cmp_reg_reg(cg_sec, cond, tmp, sz); // cmp rtmp, rcond
+                        free_reg(tmp);
+                    }
+                    {
+                        size_t o = asm_jcc_label(cg_sec, is_uns ? ARM64_LS : ARM64_LE); // jcc label
+                        asm_fixup_add(cg_sec, o, format(".L.case.%d", (int)cs->label_id), 1);
+                    } /* movabs $%lld, %s\n */
 #else
                 if (cs->case_val == (int32_t)cs->case_val)
                     asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_val); // cmp $(long long)cs->case_val, rcond
@@ -13289,22 +13336,22 @@ VReg gen(Node *node) {
                     asm_fixup_add(cg_sec, o, format(".L.case.%d", (int)cs->label_id), 1);
                 } /* b.eq .L.case.%d\n */
 #endif
-                cg_def_label(format(".L.skip.%d", skip_lbl)); // cmp $%lld, %s
-            } else {
-#ifdef ARCH_ARM64
-                if ((cs->case_val >= 0 && cs->case_val <= 4095) ||
-                    (cs->case_val > 0 && cs->case_val <= 0xffffff && (cs->case_val % 4096) == 0)) {
-                    asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_val); // cmp $(long long)cs->case_val, rcond
+                    cg_def_label(format(".L.skip.%d", skip_lbl)); // cmp $%lld, %s
                 } else {
-                    VReg tmp = alloc_reg();
-                    asm_mov_imm(cg_sec, tmp, 8, (int64_t)cs->case_val); // mov tmp, #case_val
-                    asm_cmp_reg_reg(cg_sec, cond, tmp, sz); // cmp rtmp, rcond
-                    free_reg(tmp);
-                }
-                {
-                    size_t case_jmp = asm_jcc_label(cg_sec, ARM64_EQ); // jcc label
-                    asm_fixup_add(cg_sec, case_jmp, format(".L.case.%d", (int)cs->label_id), 1);
-                }
+#ifdef ARCH_ARM64
+                    if ((cs->case_val >= 0 && cs->case_val <= 4095) ||
+                        (cs->case_val > 0 && cs->case_val <= 0xffffff && (cs->case_val % 4096) == 0)) {
+                        asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_val); // cmp $(long long)cs->case_val, rcond
+                    } else {
+                        VReg tmp = alloc_reg();
+                        asm_mov_imm(cg_sec, tmp, 8, (int64_t)cs->case_val); // mov tmp, #case_val
+                        asm_cmp_reg_reg(cg_sec, cond, tmp, sz); // cmp rtmp, rcond
+                        free_reg(tmp);
+                    }
+                    {
+                        size_t case_jmp = asm_jcc_label(cg_sec, ARM64_EQ); // jcc label
+                        asm_fixup_add(cg_sec, case_jmp, format(".L.case.%d", (int)cs->label_id), 1);
+                    }
 #else
                 if (cs->case_val == (int32_t)cs->case_val) {
                     asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_val); // cmp $(long long)cs->case_val, rcond
@@ -13317,17 +13364,22 @@ VReg gen(Node *node) {
                 size_t case_jmp = asm_jcc_label(cg_sec, X86_E); // jcc label
                 asm_fixup_add(cg_sec, case_jmp, format(".L.case.%d", cs->label_id), 1); // fixup label
 #endif
+                }
             }
+#ifndef ARCH_ARM64
+        if (!use_jt) {
+#endif
+            if (node->default_case) {
+                size_t sw_jmp = asm_jmp_label(cg_sec); // jmp default
+                asm_fixup_add(cg_sec, sw_jmp,
+                              format(".L.case.%d", node->default_case->label_id), 0);
+            } else {
+                size_t sw_jmp = asm_jmp_label(cg_sec); // jmp switch end
+                asm_fixup_add(cg_sec, sw_jmp, format(".L.end.%d", c), 0);
+            }
+#ifndef ARCH_ARM64
         }
-        if (node->default_case) {
-            if (!node->default_case->label_id)
-                node->default_case->label_id = ++rcc_label_count;
-            size_t sw_jmp = asm_jmp_label(cg_sec); // cmp %s, %s
-            asm_fixup_add(cg_sec, sw_jmp, format(".L.case.%d", node->default_case->label_id), 0); // fixup label
-        } else {
-            size_t sw_jmp = asm_jmp_label(cg_sec); // cmp %s, #%lld
-            asm_fixup_add(cg_sec, sw_jmp, format(".L.end.%d", c), 0); // fixup label
-        }
+#endif
         free_reg(cond);
         break_stack[ctrl_depth] = c;
         continue_stack[ctrl_depth] = ctrl_depth > 0 ? continue_stack[ctrl_depth - 1] : c;
@@ -13336,6 +13388,23 @@ VReg gen(Node *node) {
         VReg r_body = gen(node->then);
         if (r_body != -1) free_reg(r_body);
         ctrl_depth--;
+#ifndef ARCH_ARM64
+        if (use_jt) {
+            size_t end_jmp = asm_jmp_label(cg_sec);
+            asm_fixup_add(cg_sec, end_jmp, format(".L.end.%d", c), 0);
+            cg_def_label(jt_table);
+            for (int64_t value = jt_min; value <= jt_max; value++) {
+                Node *target = NULL;
+                for (Node *cs = node->case_next; cs; cs = cs->case_next)
+                    if (cs->case_val == value) {
+                        target = cs;
+                        break;
+                    }
+                size_t entry = asm_jmp_label(cg_sec);
+                asm_fixup_add(cg_sec, entry, target ? format(".L.case.%d", target->label_id) : jt_fallback, 0);
+            }
+        }
+#endif
         cg_def_label(format(".L.end.%d", c)); // .L.end.%d:
         return -1;
     }
