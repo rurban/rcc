@@ -227,7 +227,7 @@ jobs:
           path: |
             rcc-*.zip
 
-      - if: startsWith(github.ref, 'refs/tags/') && github.ref == 'refs/heads/main' && matric.cc != 'clang'
+      - if: startsWith(github.ref, 'refs/tags/') && github.ref == 'refs/heads/main' && matrix.cc != 'clang'
         name: Release
         continue-on-error: true
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
@@ -400,6 +400,24 @@ jobs:
           sudo mv "$asset" /usr/local/bin/checkmake
           rm -f checksums.txt
           checkmake --version
+
+      - name: Install actionlint
+        env:
+          # Keep in sync with the rhysd/actionlint rev in
+          # .pre-commit-config.yaml. The actionlint-system hook runs the
+          # local binary; install the goreleaser-built release tarball,
+          # verified against its published checksums.
+          ACTIONLINT_VERSION: 1.7.7
+        run: |
+          asset="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          base="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          curl -sSLO "$base/$asset"
+          curl -sSLO "$base/actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          grep " $asset\$" "actionlint_${ACTIONLINT_VERSION}_checksums.txt" | sha256sum -c -
+          tar xzf "$asset"
+          sudo mv actionlint /usr/local/bin/
+          rm -f "$asset" "actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          actionlint --version
 
       - name: Build
         run: make

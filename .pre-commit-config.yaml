@@ -62,6 +62,17 @@ repos:
     hooks:
       - id: check-agent-trailer
 
+  # Lints GitHub Actions workflows: expression syntax, undefined context
+  # variables (e.g. a `matric.cc` typo passes check-yaml but breaks CI),
+  # shellcheck of run: blocks, deprecated actions/versions.
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.7
+    hooks:
+      # actionlint-system (language: system) runs the locally installed
+      # `actionlint` binary rather than pre-commit building it with Go;
+      # same rationale as checkmake-system above.
+      - id: actionlint-system
+
   - repo: local
     hooks:
       - id: podchecker
