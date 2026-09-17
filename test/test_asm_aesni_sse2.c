@@ -144,15 +144,20 @@ int main(void)
     ok &= compile_and_check_bytes(rcc, td, pid, "pcmpgtd",
         ".code64\n.text\n.globl f\nf:\npcmpgtd %xmm1,%xmm2\nret\n", "660f66d1c3");
 
-    /* PINSRW (memory-operand form, base register %rbx < 4 to keep the
-     * encoding REX-free and exactly GNU-as-comparable -- a base/index
-     * register in the 4-7 range triggers a pre-existing, purely
-     * cosmetic quirk in maybe_rex() that emits a harmless,
-     * semantically-inert extra REX 0x40 byte, correct but not
-     * byte-identical to GNU as; unrelated to this fix). */
+    /* PINSRW memory-operand form. Base register %rbx < 4 keeps this
+     * first case REX-free either way; the second case below uses %rsi
+     * (index 6, RSP..RDI range) specifically to prove a base/index
+     * register in that range no longer triggers a spurious, non-
+     * minimal REX 0x40 byte (a since-fixed maybe_rex()/x86_enc.c bug:
+     * its "should I emit a REX at all" gate used to fire on any
+     * register >= RSP instead of only R8-R15, and several *_rm
+     * encoders bypassed the gate's own guard entirely). */
     ok &= compile_and_check_bytes(rcc, td, pid, "pinsrw",
         ".code64\n.text\n.globl f\nf:\npinsrw $3,(%rbx,%rax,4),%xmm2\nret\n",
         "660fc4148303c3");
+    ok &= compile_and_check_bytes(rcc, td, pid, "pinsrw_rsi_base",
+        ".code64\n.text\n.globl f\nf:\npinsrw $3,(%rsi,%rax,4),%xmm2\nret\n",
+        "660fc4148603c3");
 
     if (!ok) return 1;
     printf("OK AES-NI, packed-SSE2-integer, PSHUFD/group-14-shift, and "

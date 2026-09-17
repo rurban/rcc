@@ -3108,6 +3108,17 @@ static int suffix_size(const char *mnem) {
         NULL};
     for (int i = 0; no_sfx[i]; i++)
         if (!strcmp(mnem, no_sfx[i])) return 0;
+    // CMOVcc: the AT&T mnemonic carries no separate size suffix at all --
+    // "cmove"/"cmovne"/"cmovl"/"cmovb"/... is entirely a condition code
+    // (parse_x86_cc's table), and several real conditions ("l"=less,
+    // "b"=below) happen to end in a letter the naive last-char heuristic
+    // below mistakes for an explicit l/b size suffix, while every other
+    // condition ending in some other letter (e/g/a/s/o/p/...) fell
+    // through to this function's "no suffix seen" default of 8 (64-bit)
+    // instead of 0 (infer from the register operands) -- forcing a
+    // spurious REX.W and silently reinterpreting a 32-bit "cmove %esi,
+    // %edi" as a 64-bit cmove on %rsi/%rdi.
+    if (!strncmp(mnem, "cmov", 4)) return 0;
     int n = (int)strlen(mnem);
     if (n < 2) return 8;
     char last = mnem[n - 1];
@@ -3821,7 +3832,8 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     // MOV variants (but not the SSE scalar moves movsd/movss, or the xmm
     // forms of movdqa/movdqu/movd/movq above, which are handled by their
     // own dedicated encoders).
-    if (!strncmp(mnem, "mov", 3) && strcmp(mnem, "movsd") && strcmp(mnem, "movss") &&
+    if (!strncmp(mnem, "mov", 3) && strncmp(mnem, "movnt", 5) &&
+        strcmp(mnem, "movsd") && strcmp(mnem, "movss") &&
         strcmp(mnem, "movdqa") && strcmp(mnem, "movdqu") && strcmp(mnem, "movd") &&
         strcmp(mnem, "movaps") && strcmp(mnem, "movups") &&
         !(!strcmp(mnem, "movq") && (is_xmm(0) || is_xmm(1)))) {
@@ -4157,9 +4169,12 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-    // CMP / TEST (but not CMPXCHG[8B/16B], handled separately below since
-    // it shares the "cmp" prefix but is a completely different opcode)
-    if (!strncmp(mnem, "cmp", 3) && strncmp(mnem, "cmpxchg", 7)) {
+    // CMP / TEST (but not CMPXCHG[8B/16B] or the SSE predicate-compare
+    // family CMPPS/CMPSS/CMPSD/CMPPD, handled separately below since
+    // they share the "cmp" prefix but are completely different opcodes)
+    if (!strncmp(mnem, "cmp", 3) && strncmp(mnem, "cmpxchg", 7) &&
+        strcmp(mnem, "cmpps") && strcmp(mnem, "cmpss") &&
+        strcmp(mnem, "cmpsd") && strcmp(mnem, "cmppd")) {
         if (is_imm(0) && is_reg(1))
             x86_cmp_ri(buf, sz, R(1), (int32_t)IMM(0));
         else if (is_reg(0) && is_reg(1))
@@ -4902,6 +4917,270 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     }
     if (!strcmp(mnem, "pshufb")) {
         x86_pshufb(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    // SSSE3/SSE4.1/SSE4.2 families: encoders already existed in
+    // x86_enc.c (used internally by codegen.c for vector_size types and
+    // __builtin_ia32 intrinsics) but, like the AES-NI/PSHUFD family
+    // above, were never wired into the raw-assembly-text mnemonic
+    // dispatch, so any hand-written .S file using them failed outright
+    // with "unknown x86 instruction".
+    if (!strcmp(mnem, "phaddw")) {
+        x86_phaddw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "phaddd")) {
+        x86_phaddd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "phaddsw")) {
+        x86_phaddsw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmaddubsw")) {
+        x86_pmaddubsw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "phsubw")) {
+        x86_phsubw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "phsubd")) {
+        x86_phsubd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "phsubsw")) {
+        x86_phsubsw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "psignb")) {
+        x86_psignb(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "psignw")) {
+        x86_psignw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "psignd")) {
+        x86_psignd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmulhrsw")) {
+        x86_pmulhrsw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pabsb")) {
+        x86_pabsb(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pabsw")) {
+        x86_pabsw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pabsd")) {
+        x86_pabsd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    // PBLENDVB/BLENDVPS/BLENDVPD: implicit <XMM0> mask operand, may be
+    // OMITTED ("pblendvb src, dst") or spelled out explicitly as a
+    // leading operand (sha256rnds2's same real-GAS convention above).
+    if (!strcmp(mnem, "pblendvb")) {
+        int src_i = nops >= 3 ? 1 : 0, dst_i = nops >= 3 ? 2 : 1;
+        x86_pblendvb(buf, parse_x86_xmm(ops[dst_i]), parse_x86_xmm(ops[src_i]));
+        return true;
+    }
+    if (!strcmp(mnem, "blendvps")) {
+        int src_i = nops >= 3 ? 1 : 0, dst_i = nops >= 3 ? 2 : 1;
+        x86_blendvps(buf, parse_x86_xmm(ops[dst_i]), parse_x86_xmm(ops[src_i]));
+        return true;
+    }
+    if (!strcmp(mnem, "blendvpd")) {
+        int src_i = nops >= 3 ? 1 : 0, dst_i = nops >= 3 ? 2 : 1;
+        x86_blendvpd(buf, parse_x86_xmm(ops[dst_i]), parse_x86_xmm(ops[src_i]));
+        return true;
+    }
+    if (!strcmp(mnem, "ptest")) {
+        x86_ptest(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmovsxbw")) {
+        x86_pmovsxbw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmovsxbd")) {
+        x86_pmovsxbd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmovsxbq")) {
+        x86_pmovsxbq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmovsxwd")) {
+        x86_pmovsxwd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmovsxwq")) {
+        x86_pmovsxwq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmovsxdq")) {
+        x86_pmovsxdq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmuldq")) {
+        x86_pmuldq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pcmpeqq")) {
+        x86_pcmpeqq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "movntdqa")) {
+        x86_movntdqa_rm(buf, M(0), parse_x86_xmm(ops[1]));
+        return true;
+    }
+    if (!strcmp(mnem, "movntps")) {
+        // movntps %xmm, mem (AT&T: src, dst)
+        x86_movntps_m(buf, M(1), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "movntpd")) {
+        x86_movntpd_m(buf, M(1), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "movntdq")) {
+        x86_movntdq_m(buf, M(1), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "movnti")) {
+        // movnti %reg, mem -- 32- or 64-bit GP source per the register's
+        // own width (like plain MOV, no separate mnemonic per width).
+        x86_movnti_m(buf, M(1), R(0), reg_size_x86(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "lddqu")) {
+        x86_lddqu_rm(buf, M(0), parse_x86_xmm(ops[1]));
+        return true;
+    }
+    if (!strcmp(mnem, "packusdw")) {
+        x86_packusdw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmovzxbw")) {
+        x86_pmovzxbw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmovzxbd")) {
+        x86_pmovzxbd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmovzxbq")) {
+        x86_pmovzxbq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmovzxwd")) {
+        x86_pmovzxwd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmovzxwq")) {
+        x86_pmovzxwq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmovzxdq")) {
+        x86_pmovzxdq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pcmpgtq")) {
+        x86_pcmpgtq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pminsb")) {
+        x86_pminsb(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pminsd")) {
+        x86_pminsd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pminuw")) {
+        x86_pminuw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pminud")) {
+        x86_pminud(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmaxsb")) {
+        x86_pmaxsb(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmaxsd")) {
+        x86_pmaxsd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmaxuw")) {
+        x86_pmaxuw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmaxud")) {
+        x86_pmaxud(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmulld")) {
+        x86_pmulld(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "phminposuw")) {
+        x86_phminposuw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "roundps")) {
+        // roundps $imm, src, dst
+        x86_roundps(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "roundpd")) {
+        x86_roundpd(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "roundss")) {
+        x86_roundss(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "roundsd")) {
+        x86_roundsd(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "blendps")) {
+        x86_blendps(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "blendpd")) {
+        x86_blendpd(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "pblendw")) {
+        x86_pblendw(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    // CMPPS/CMPSS/CMPSD/CMPPD $imm, src, dst -- "cmpsd" here is the SSE2
+    // scalar-double compare (3 operands); the 32-bit string-compare
+    // mnemonic is spelled "cmpsl" in AT&T (see the nops==0 block above),
+    // so there is no ambiguity.
+    if (!strcmp(mnem, "cmpps")) {
+        x86_cmpps(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "cmpss")) {
+        x86_cmpss(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "cmpsd") && nops == 3) {
+        x86_cmpsd(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "cmppd")) {
+        x86_cmppd(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
         return true;
     }
     // AES-NI: OpenSSL/LibreSSL's aesni-x86_64.pl-generated assembly

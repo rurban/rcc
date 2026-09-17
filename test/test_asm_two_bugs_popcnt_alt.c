@@ -188,15 +188,17 @@ static int check_popcnt_encoding(const char *rcc, const char *td, int pid)
     pclose(p);
     remove(objf);
 
-    /* popcnt %edi,%eax = F3 40 0F B8 C7 (the harmless REX.40 rcc emits is
-     * fine); the bug produced "5f" (pop %rdi) instead. */
-    if (!strstr(out, "f3400fb8c7") && !strstr(out, "f3 40 0f b8 c7")) {
+    /* popcnt %edi,%eax = F3 0F B8 C7 (no REX: %edi/%eax are both < R8,
+     * so no REX byte is needed at all -- an earlier fix emitted a
+     * spurious harmless REX 0x40 here, since corrected); the original
+     * bug this test guards against produced "5f" (pop %rdi) instead. */
+    if (!strstr(out, "f30fb8c7") && !strstr(out, "f3 0f b8 c7")) {
         char collapsed[4096];
         size_t cn = 0;
         for (const char *s = out; *s && cn + 1 < sizeof(collapsed); s++)
             if (!isspace((unsigned char)*s)) collapsed[cn++] = *s;
         collapsed[cn] = '\0';
-        if (!strstr(collapsed, "f3400fb8c7")) {
+        if (!strstr(collapsed, "f30fb8c7")) {
             printf("FAIL: [popcnt_encoding] expected popcnt encoding, got:\n%s\n", out);
             return 0;
         }

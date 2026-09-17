@@ -2,8 +2,7 @@
 
 - interchange and extended float types (just aliased, no __STDC_IEC_60559_TYPES__)
 
-- add more cheap -O1 passes, without SSA analysis:
-  Like removing the REX prefix when not needed.
+- add more cheap -O1 passes, without SSA analysis.
 
 - -O1 optimize switch cases for dense small ints (lut), sparse small ints
   (elsif chains), sparse large ints (perfect hashes).

@@ -710,6 +710,7 @@ void x86_psignd(SecBuf *s, X86XmmReg d, X86XmmReg sr);
 void x86_pmulhrsw(SecBuf *s, X86XmmReg d, X86XmmReg sr);
 void x86_pabsb(SecBuf *s, X86XmmReg d, X86XmmReg sr);
 void x86_pabsw(SecBuf *s, X86XmmReg d, X86XmmReg sr);
+void x86_pabsd(SecBuf *s, X86XmmReg d, X86XmmReg sr);
 void x86_pand(SecBuf *s, X86XmmReg d, X86XmmReg sr);
 void x86_pandn(SecBuf *s, X86XmmReg d, X86XmmReg sr);
 void x86_pmuludq(SecBuf *s, X86XmmReg d, X86XmmReg sr);
