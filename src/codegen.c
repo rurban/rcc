@@ -769,6 +769,11 @@ static char *reg8[] = {"%r10b", "%r11b", "%bl", "%r12b", "%r13b", "%r14b", "%r15
 
 static int used_regs = 0;
 static int ever_used_regs = 0;
+#ifndef ARCH_ARM64
+static int tail_frame_need;
+static int tail_callee_mask;
+static int tail_callee_count;
+#endif
 #ifdef BENCH
 // Cumulative Pass-1 (dry-run) wall time across every function in this
 // compilation, printed under -time when built with -DBENCH -- see the
@@ -1066,6 +1071,9 @@ static void emit_dec128_ret(VReg dst) {
 }
 
 static void emit_direct_call(char *name, bool is_asm_label);
+#ifndef ARCH_ARM64
+static void emit_direct_jmp(char *name, bool is_asm_label);
+#endif
 
 // Call a __bid_* helper preserving live VRegs (same scheme as
 // emit_bitint_call: push/pop r10/r11 on x86, per-reg spill on arm64).
@@ -1779,6 +1787,34 @@ static void emit_direct_call(char *name, bool is_asm_label) {
     objfile_add_reloc(cg_obj, SEC_TEXT, off + 1, sidx, R_X86_64_PLT32, -4);
 #endif
 }
+
+#ifndef ARCH_ARM64
+static void emit_direct_jmp(char *name, bool is_asm_label) {
+    if (cg_dry_run) return;
+    if (is_asm_reserved(name))
+        name = format(".L_rcc_%s", name);
+    Function *target_fn = NULL;
+    const char *label = is_asm_label ? asm_sym_name(name) : func_label2(name, &target_fn);
+    size_t off = asm_jmp_label(cg_sec);
+    int sidx = target_fn && target_fn->cg_sym_idx ? target_fn->cg_sym_idx - 1 : objfile_find_sym(cg_obj, label);
+    if (target_fn && sidx >= 0) target_fn->cg_sym_idx = sidx + 1;
+#ifdef _WIN32
+    if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT) {
+#else
+    if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT &&
+        cg_obj->syms[sidx].bind == SB_LOCAL) {
+#endif
+        int32_t disp = (int32_t)((int64_t)cg_obj->syms[sidx].offset - (int64_t)(off + 5));
+        secbuf_patch32le(cg_sec, off + 1, (uint32_t)disp);
+        return;
+    }
+    if (sidx < 0) {
+        sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
+        if (target_fn) target_fn->cg_sym_idx = sidx + 1;
+    }
+    objfile_add_reloc(cg_obj, SEC_TEXT, off + 1, sidx, R_X86_64_PLT32, -4);
+}
+#endif
 
 
 // Call a rcc_bitint_* helper, preserving every live VReg across the call.
@@ -12046,6 +12082,53 @@ VReg gen(Node *node) {
         return r;
     }
     case ND_RETURN: {
+#ifndef ARCH_ARM64
+        // Tail-jump a direct, one-scalar-argument call only after Pass 1
+        // fixed this function's save area. Anything with cleanup, dynamic
+        // stack adjustment, ABI register pairs, floats or stack arguments
+        // keeps the ordinary call-and-return path.
+        if (!cg_dry_run && opt_finline && opt_funroll && node->lhs && node->lhs->kind == ND_FUNCALL &&
+            !node->defer_retspill && current_fn_def && !current_fn_def->is_variadic &&
+            !current_fn_def->is_nested && !fn_uses_alloca) {
+            Node *call = node->lhs;
+            LVar *callee = call->lhs && call->lhs->kind == ND_LVAR ? call->lhs->var : NULL;
+            if (!callee && call->funcname)
+                callee = find_global_name(call->funcname);
+            Type *ret_ty = current_fn_def->ty ? current_fn_def->ty->return_ty : NULL;
+            Node *arg = call->args;
+            bool scalar_ret = ret_ty && (is_integer(ret_ty) || ret_ty->kind == TY_PTR) &&
+                !ret_ty->is_vector && ret_ty->size > 0 && ret_ty->size <= 8;
+            bool scalar_arg = arg && arg->ty && (is_integer(arg->ty) || arg->ty->kind == TY_PTR) &&
+                !arg->ty->is_vector && arg->ty->size > 0 && arg->ty->size <= 8;
+            bool same_ret = call->ty && scalar_ret && call->ty->kind == ret_ty->kind &&
+                call->ty->size == ret_ty->size && call->ty->is_unsigned == ret_ty->is_unsigned;
+            bool has_cleanup = false;
+            for (LVar *var = current_fn_def->locals; var; var = var->next)
+                if (var_has_cleanup(var) || var->defer_stmt) {
+                    has_cleanup = true;
+                    break;
+                }
+            if (callee && callee->is_function && !callee->is_nested_fn && !callee->asm_name &&
+                arg && !arg->next && scalar_arg && same_ret && !has_cleanup) {
+                VReg r = gen(arg);
+#ifdef _WIN32
+                x86_mov_rr(cg_sec, arg->ty->size <= 4 ? 4 : 8, X86_RCX, REG(r));
+#else
+                x86_mov_rr(cg_sec, arg->ty->size <= 4 ? 4 : 8, X86_RDI, REG(r));
+#endif
+                free_reg(r);
+                for (int j = 0, slot = tail_frame_need; j < tail_callee_count; j++)
+                    if (tail_callee_mask & (1 << j)) {
+                        slot += 8;
+                        asm_mov_rbp(cg_sec, REG(j + 2), 8, slot);
+                    }
+                asm_mov_rbp_rsp(cg_sec);
+                asm_pop(cg_sec, X86_RBP);
+                emit_direct_jmp(callee->name, false);
+                return -1;
+            }
+        }
+#endif
         if (node->lhs) {
             // Returning a _Complex value from a function whose declared
             // return type is a plain scalar (GNU extension: discards the
@@ -18862,6 +18945,9 @@ struct ObjFile *codegen(Program *prog) {
         }
         next_spill_slot = need;
         need += spill_bytes;
+        tail_frame_need = need;
+        tail_callee_mask = callee_mask;
+        tail_callee_count = callee_count;
         // Callee-saved registers are stored in a dedicated save area BELOW
         // the locals/spill region, at [rbp - need - 8 .. rbp - need -
         // push_bytes]. They must NOT be pushed at [rbp-8..]: locals and

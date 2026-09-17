@@ -282,7 +282,7 @@
   991202-3                            PASS
   991216-1                            PASS
   991216-2                            PASS
-  991216-4                            PASS
+  991216-4                            FAIL (runtime)
   991221-1                            PASS
   991227-1                            PASS
   991228-1                            SKIP (nested-func)
@@ -292,8 +292,8 @@
   20000205-1                          PASS
   20000217-1                          PASS
   20000223-1                          PASS
-  20000224-1                          PASS
-  20000225-1                          PASS
+  20000224-1                          FAIL (runtime)
+  20000225-1                          FAIL (runtime)
   20000227-1                          PASS
   20000313-1                          PASS
   20000314-1                          PASS
@@ -337,7 +337,7 @@
   20000722-1                          PASS
   20000726-1                          PASS
   20000731-1                          PASS
-  20000731-2                          PASS
+  20000731-2                          FAIL (runtime)
   20000801-1                          PASS
   20000801-2                          PASS
   20000801-3                          PASS
@@ -346,7 +346,7 @@
   20000815-1                          PASS
   20000818-1                          PASS
   20000819-1                          PASS
-  20000822-1                          PASS
+  20000822-1                          FAIL (runtime)
   20000910-1                          PASS
   20000910-2                          PASS
   20000914-1                          PASS
@@ -512,7 +512,7 @@
   20030330-1                          PASS
   20030401-1                          PASS
   20030403-1                          PASS
-  20030404-1                          PASS
+  20030404-1                          FAIL (runtime)
   20030408-1                          PASS
   20030501-1                          SKIP (nested-func)
   20030606-1                          PASS
@@ -645,9 +645,9 @@
   20060930-1                          PASS
   20060930-2                          PASS
   20061031-1                          PASS
-  20061101-1                          PASS
-  20061101-2                          PASS
-  20061220-1                          PASS
+  20061101-1                          FAIL (runtime)
+  20061101-2                          FAIL (runtime)
+  20061220-1                          FAIL (runtime)
   20070201-1                          PASS
   20070212-1                          PASS
   20070212-2                          PASS
@@ -1277,7 +1277,7 @@
   loop-7                              PASS
   loop-8                              PASS
   loop-9                              PASS
-  loop-10                             PASS
+  loop-10                             FAIL (runtime)
   loop-11                             PASS
   loop-12                             PASS
   loop-13                             PASS
@@ -1311,7 +1311,7 @@
   mul-sext                            PASS
   multdi-1                            PASS
   multi-ix                            PASS
-  nest-align-1                        PASS
+  nest-align-1                        FAIL (runtime)
   nest-stdar-1                        SKIP (nested-func)
   nestfunc-1                          PASS
   nestfunc-2                          PASS
@@ -2320,7 +2320,7 @@
   vect/no-scevccp-slp-30              PASS
   vect/no-scevccp-slp-31              PASS
   vect/no-scevccp-vect-iv-1           PASS
-  vect/no-scevccp-vect-iv-2           PASS
+  vect/no-scevccp-vect-iv-2           FAIL (runtime)
   vect/no-scevccp-vect-iv-3           SKIP (missing include)
   vect/no-section-anchors-vect-31     SKIP (missing include)
   vect/no-section-anchors-vect-34     PASS
@@ -3488,13 +3488,13 @@
   vect/vect-intfloat-conversion-3     PASS
   vect/vect-intfloat-conversion-4a    PASS
   vect/vect-intfloat-conversion-4b    PASS
-  vect/vect-iv-1                      PASS
-  vect/vect-iv-2                      PASS
-  vect/vect-iv-3                      PASS
-  vect/vect-iv-4                      PASS
+  vect/vect-iv-1                      FAIL (runtime)
+  vect/vect-iv-2                      FAIL (runtime)
+  vect/vect-iv-3                      FAIL (runtime)
+  vect/vect-iv-4                      FAIL (runtime)
   vect/vect-iv-5                      PASS
-  vect/vect-iv-6                      PASS
-  vect/vect-iv-7                      PASS
+  vect/vect-iv-6                      FAIL (runtime)
+  vect/vect-iv-7                      FAIL (runtime)
   vect/vect-iv-8-big-array            PASS
   vect/vect-iv-8                      PASS
   vect/vect-iv-8a-big-array           PASS
@@ -3964,6 +3964,8 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3605/3609 passed (100%), 0 failed, 354 skipped, 4 todo.
+Torture: 3587/3609 passed (99%), 18 failed (0 compile/0 error/18 runtime), 354 skipped, 4 todo.
+
+Runtime failures: 991216-4 20000224-1 20000225-1 20000731-2 20000822-1 20030404-1 20061101-1 20061101-2 20061220-1 loop-10 nest-align-1 vect/no-scevccp-vect-iv-2 vect/vect-iv-1 vect/vect-iv-2 vect/vect-iv-3 vect/vect-iv-4 vect/vect-iv-6 vect/vect-iv-7
 
 Dg-error tests: 36/36 passed (caught expected error), 0 failed.
