@@ -331,7 +331,7 @@ run_tests_arm64: run_tests.c
 
 compile_commands.json: $(SRCS)
 	$(MAKE) clean
-	bear -- make
+	bear -- $(MAKE)
 
 # Profile build: rcc compiled with -pg for gprof analysis
 rcc_prof: $(SRCS) src/rcc.h src/sysinc_paths.h src/gcc_predefined.h
@@ -398,9 +398,9 @@ test-thirdparty check-thirdparty: $(TARGET)
 	./test/third_party/run_batch.sh $(THIRDPARTY_TARGETS)
 
 check-bootstrap:
-	make install
-	make clean
-	make CC=rcc rcc run_tests
+	$(MAKE) install
+	$(MAKE) clean
+	$(MAKE) CC=rcc rcc run_tests
 	./run_tests ./rcc --all --parallel
 
 lint:

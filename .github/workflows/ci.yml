@@ -214,7 +214,7 @@ jobs:
           exit 1
 
       - name: Make dist
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dist'
+        if: matric.cc != 'clang' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dist')
         run: |
           git reset --hard
           make dist
@@ -227,7 +227,7 @@ jobs:
           path: |
             rcc-*.zip
 
-      - if: startsWith(github.ref, 'refs/tags/') && github.ref == 'refs/heads/main'
+      - if: startsWith(github.ref, 'refs/tags/') && github.ref == 'refs/heads/main' && matric.cc != 'clang'
         name: Release
         continue-on-error: true
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
