@@ -214,7 +214,7 @@ jobs:
           exit 1
 
       - name: Make dist
-        if: matric.cc != 'clang' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dist')
+        if: matrix.cc != 'clang' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dist')
         run: |
           git reset --hard
           make dist
