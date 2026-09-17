@@ -9,10 +9,12 @@
 #define CF_RETURN 1
 
 // Known pure/const library functions that can be folded at compile time.
-// "const" = result depends only on args, no side effects, no global state.
-// "pure"  = no side effects (may read global state, e.g. errno).
-typedef enum { PF_CONST,
-               PF_PURE } PureKind;
+// "const" = result depends only on args, no side effects, no global state, no IO.
+// "pure"  = no side effects, no IO, but may read global state, e.g. errno.
+typedef enum { PF_NONE = -1,
+               PF_CONST = 1,
+               PF_PURE = 2,
+} PureKind;
 
 typedef struct PureFn PureFn;
 struct PureFn {
@@ -73,10 +75,11 @@ static PureKind fn_purity(const char *name) {
         if (g->is_unsequenced) return PF_CONST;
         if (g->is_reproducible) return PF_PURE;
     }
-    for (const PureFn *p = pure_fns; p->name; p++)
+    for (const PureFn *p = pure_fns; p->name; p++) {
         if (strcmp(p->name, name) == 0)
             return p->kind;
-    return -1; // not pure
+    }
+    return PF_NONE; // not pure
 }
 
 // Try to fold a call to a known pure function with constant args.
@@ -105,7 +108,7 @@ static bool try_fold_pure(const char *name, Node *args, long *result) {
     if (!all_const) return false;
 
     // Check known-pure table and C23 purity attributes
-    if (fn_purity(name) >= 0) {
+    if (fn_purity(name) != PF_NONE) {
         for (const PureFn *p = pure_fns; p->name; p++) {
             if (strcmp(p->name, name) == 0) {
                 long v = p->eval(iargs, strs, nargs);
@@ -1131,6 +1134,44 @@ static bool expr_has_float(Node *node) {
     return expr_has_float(node->lhs) || expr_has_float(node->rhs) || expr_has_float(node->cond);
 }
 
+// Scalar-type shape equality for the algebraic identities below: they
+// replace `node` with one of its operands, which is only sound when the
+// operand's type IS the operation's result type (usual arithmetic
+// conversions promote e.g. `char + int` to int, so folding `0 + c` to
+// the char-typed `c` would hand codegen a narrower value than the
+// expression's own type promises). parser.c's type_equal() is the full
+// relation but is file-local there; these folds only touch scalars, so
+// the shape fields suffice.
+static bool ident_same_ty(Type *a, Type *b) {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    return a->kind == b->kind && a->size == b->size &&
+        a->is_unsigned == b->is_unsigned && a->is_vector == b->is_vector;
+}
+
+// True if the expression may read a volatile object (its own type or an
+// lvar/member's carried type is volatile-qualified). The x-dropping
+// algebraic identities (x*0, x&0, x%1 -> 0) must not delete an
+// observable volatile access: `volatile int v; int x = v * 0;` still
+// requires the load of v.
+static bool expr_reads_volatile(Node *n) {
+    if (!n) return false;
+    if (n->ty && ty_volatile(n->ty)) return true;
+    if (n->kind == ND_LVAR && n->var && n->var->ty && ty_volatile(n->var->ty)) return true;
+    if (n->kind == ND_MEMBER && n->member && n->member->ty && ty_volatile(n->member->ty)) return true;
+    return expr_reads_volatile(n->lhs) || expr_reads_volatile(n->rhs) ||
+        expr_reads_volatile(n->cond);
+}
+
+// True if `val` is all-1s at the type's own width (the stored value is
+// always 64-bit sign-extended, so a plain `val == -1` check would also
+// match e.g. 0xFFFFFFFF00000000, which is NOT -1 for a 32-bit type).
+static bool is_all_ones_at_width(long long val, int width_bytes) {
+    if (width_bytes >= 8) return val == -1;
+    uint64_t mask = (1ULL << (width_bytes * 8)) - 1;
+    return ((uint64_t)val & mask) == mask;
+}
+
 static Node *optimize_node(Program *prog, Node *node) {
     if (!node) return NULL;
     node->lhs = optimize_node(prog, node->lhs);
@@ -1454,6 +1495,88 @@ static Node *optimize_node(Program *prog, Node *node) {
         }
     }
 
+    // Cheap algebraic identities with one constant operand (no dataflow).
+    // "Keep-x" folds preserve the non-constant operand's evaluation --
+    // side effects included -- and only drop the constant, so they are
+    // sound for any x. "Drop-x" folds (x*0, x&0, x%1 -> 0) delete x's
+    // evaluation entirely and therefore require a side-effect-free,
+    // non-volatile x. All are gated on the surviving/replacement type
+    // matching node->ty (see ident_same_ty) and skip decimal and vector
+    // types. None of these fire at -O0: this walker only runs under
+    // -O1/-finline/-funroll.
+    if (node->ty && !is_decimal(node->ty) && !node->ty->is_vector) {
+        bool lhs_num = node->lhs && node->lhs->kind == ND_NUM;
+        bool rhs_num = node->rhs && node->rhs->kind == ND_NUM;
+        // Normalize a constant to the RHS of a commutative operator so
+        // codegen's RHS-immediate path fires (`2 + x` never reaches it
+        // otherwise). No-ops for EQ/NE (operand order is irrelevant
+        // there); LT/LE are NOT swappable without inverting the
+        // operator, which the AST has no node kind for.
+        if (lhs_num && !rhs_num &&
+            (node->kind == ND_ADD || node->kind == ND_MUL ||
+             node->kind == ND_BITAND || node->kind == ND_BITOR || node->kind == ND_BITXOR ||
+             node->kind == ND_EQ || node->kind == ND_NE)) {
+            Node *t = node->lhs;
+            node->lhs = node->rhs;
+            node->rhs = t;
+            lhs_num = false;
+            rhs_num = true;
+        }
+        if (rhs_num && ident_same_ty(node->ty, node->lhs ? node->lhs->ty : NULL)) {
+            long long c = node->rhs->val;
+            bool keep_x = false, drop_x_to_zero = false;
+            switch (node->kind) {
+            // x + 0, x - 0, x | 0, x ^ 0, x << 0, x >> 0, x & all-1s, x * 1, x / 1
+            case ND_ADD:
+            case ND_SUB:
+            case ND_BITOR:
+            case ND_BITXOR:
+            case ND_SHL:
+            case ND_SHR:
+                keep_x = c == 0;
+                break;
+            case ND_BITAND:
+                if (c == 0)
+                    drop_x_to_zero = true;
+                else if (node->ty->size > 0 && node->ty->size <= 8 &&
+                         is_all_ones_at_width(c, node->ty->size))
+                    keep_x = true;
+                break;
+            case ND_MUL:
+                if (c == 1)
+                    keep_x = true;
+                else if (c == 0)
+                    drop_x_to_zero = true;
+                break;
+            case ND_DIV:
+                keep_x = c == 1;
+                break;
+            case ND_MOD:
+                // x % 1 is always 0 (integers; float excluded below)
+                if (c == 1 && is_integer(node->ty))
+                    drop_x_to_zero = true;
+                break;
+            default:
+                break;
+            }
+            if (keep_x)
+                return node->lhs;
+            if (drop_x_to_zero && is_integer(node->ty) &&
+                arg_is_simple(node->lhs) && !expr_reads_volatile(node->lhs)) {
+                Node *fold = arena_alloc(sizeof(Node));
+                fold->kind = ND_NUM;
+                fold->val = 0;
+                fold->ty = node->ty;
+                fold->tok = node->tok;
+                return fold;
+            }
+        }
+        // -(-x) -> x (sign flip twice is exact, including for floats).
+        if (node->kind == ND_NEG && node->lhs && node->lhs->kind == ND_NEG &&
+            ident_same_ty(node->ty, node->lhs->lhs ? node->lhs->lhs->ty : NULL))
+            return node->lhs->lhs;
+    }
+
     // Constant folding for everything eval_const_expr() already evaluates
     // correctly but the narrower two-ND_NUM-literal fold above never
     // covered at all: bitwise/shift ops, comparisons, unary -/!/~, and a
@@ -1587,6 +1710,39 @@ static Node *optimize_node(Program *prog, Node *node) {
                     fold->ty = node->ty;
                     return fold;
                 }
+            }
+        }
+    }
+
+    // Drop an expression-statement that is nothing but a call to a
+    // known-pure function (-- the same fn_purity() table the FUNCALL
+    // fold above trusts: strlen/strcmp/abs/... plus C23
+    // [[unsequenced]]/[[reproducible]]): the call has no side effects
+    // and its result is discarded, so the statement is dead. Argument
+    // evaluation is NOT preserved by dropping the call itself, so every
+    // argument must be side-effect-free (arg_is_simple) and read no
+    // volatile -- `strlen(p++);` must still advance p, matching real
+    // GCC, which keeps the increment and drops only the call.
+    if (node->kind == ND_EXPR_STMT && node->lhs && node->lhs->kind == ND_FUNCALL) {
+        Node *call = node->lhs;
+        const char *fname = call->funcname;
+        if (!fname && call->lhs && call->lhs->kind == ND_LVAR && call->lhs->var)
+            fname = call->lhs->var->name;
+        if (fname && fn_purity(fname) != PF_NONE) {
+            bool droppable = true;
+            for (Node *a = call->args; a; a = a->next) {
+                if (!arg_is_simple(a) || expr_reads_volatile(a)) {
+                    droppable = false;
+                    break;
+                }
+            }
+            if (droppable) {
+                Node *noop = arena_alloc(sizeof(Node));
+                if (opt_v && opt_W)
+                    warn_tok(node->tok, "note: drop unused pure %s call", fname);
+                noop->kind = ND_NULL;
+                noop->tok = node->tok;
+                return noop;
             }
         }
     }

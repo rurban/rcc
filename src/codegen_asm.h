@@ -182,6 +182,15 @@ static inline size_t cg_label_ht_get(const char *name) {
             return n->offset;
     return (size_t)-1;
 }
+
+// Defined in codegen.c: the -O1 jump-threading pass's per-function
+// branch-site vector (see cg_thread_jumps there). The label-branch
+// emitters below record each branch at emission time; the peephole's
+// byte-range deletions keep the recorded offsets current via
+// cg_branch_sites_fixup_delete(), mirroring the asm_last ring fixups.
+void cg_record_branch(size_t off, int type);
+void cg_branch_sites_reset(void);
+void cg_branch_sites_fixup_delete(size_t off, size_t removed);
 // ---------------------------------------------------------------------------
 // Forward-fixup chain for local flow-control labels (.L.*)
 // Faster than hash table: no strcmp, no hash, just a linked list of
@@ -634,6 +643,7 @@ static inline void asm_peep_try(void) {
             cg_sec->len -= (end - off);
             for (int j = 0; j < ASM_HISTORY; j++)
                 if (asm_last[j].offset > off) asm_last[j].offset -= (end - off);
+            cg_branch_sites_fixup_delete(off, end - off);
             peep_pend_op = ASM_NONE;
             return;
         }
@@ -665,6 +675,7 @@ static inline void asm_peep_try(void) {
         cg_sec->len = ne + tail;
         for (int j = 0; j < ASM_HISTORY; j++)
             if (asm_last[j].offset > peep_pend[0].offset) asm_last[j].offset -= (oe - ne);
+        cg_branch_sites_fixup_delete(peep_pend[0].offset, oe - ne);
         peep_pend_op = ASM_NONE;
         return;
     }
@@ -756,6 +767,7 @@ static inline void asm_peep_try(void) {
             cg_sec->len -= (end - off);
             for (int j = 0; j < ASM_HISTORY; j++)
                 if (asm_last[j].offset > off) asm_last[j].offset -= (end - off);
+            cg_branch_sites_fixup_delete(off, end - off);
         } else {
             size_t oldlen = cg_sec->len; // before truncation; oe..oldlen is the (normally empty) tail
             cg_sec->len = peep_pend[0].offset;
@@ -772,6 +784,7 @@ static inline void asm_peep_try(void) {
             cg_sec->len = ne + tail;
             for (int j = 0; j < ASM_HISTORY; j++)
                 if (asm_last[j].offset > peep_pend[0].offset) asm_last[j].offset -= (oe - ne);
+            cg_branch_sites_fixup_delete(peep_pend[0].offset, oe - ne);
         }
         peep_pend_op = ASM_NONE;
         return;
@@ -1504,6 +1517,7 @@ static inline void asm_call_reg(SecBuf *s, VReg r) {
 
 static inline size_t asm_jcc_label(SecBuf *s, int cond) {
     size_t off = s->len;
+    cg_record_branch(off, 1);
 #ifdef ARCH_ARM64
     arm64_bcond(s, (Arm64Cond)cond, 0);
     asm_record(ASM_JCC, off, 1, -1, -1, -1, 0, 0, 0, NULL, cond, -1, false);
@@ -1519,6 +1533,7 @@ static inline size_t asm_jcc_label(SecBuf *s, int cond) {
 
 static inline size_t asm_jmp_label(SecBuf *s) {
     size_t off = s->len;
+    cg_record_branch(off, 0);
 #ifdef ARCH_ARM64
     arm64_b(s, 0);
     asm_record(ASM_JMP, off, 1, -1, -1, -1, 0, 0, 0, NULL, 0, -1, false);
@@ -1534,6 +1549,7 @@ static inline size_t asm_jmp_label(SecBuf *s) {
 // Emit B to a known target position (backward branch — no fixup needed)
 static inline size_t asm_b_back(SecBuf *s, size_t target_off) {
     size_t off = s->len;
+    cg_record_branch(off, 0);
 #ifdef ARCH_ARM64
     arm64_b(s, 0);
     int64_t delta = (int64_t)((int64_t)target_off - (int64_t)off);
@@ -1553,6 +1569,7 @@ static inline size_t asm_b_back(SecBuf *s, size_t target_off) {
 // Emit B.cond to a known target position (backward — no fixup needed)
 static inline size_t asm_bcond_back(SecBuf *s, int cond, size_t target_off) {
     size_t off = s->len;
+    cg_record_branch(off, 1);
 #ifdef ARCH_ARM64
     arm64_bcond(s, (Arm64Cond)cond, 0);
     int64_t delta = (int64_t)((int64_t)target_off - (int64_t)off);

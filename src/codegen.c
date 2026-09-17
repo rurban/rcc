@@ -19,6 +19,146 @@ static bool cg_discard_result;
 bool cg_dry_run; // pass 1: track regs only (extern for codegen_asm.h)
 CgAsciiStr *cg_ascii_strings;
 
+// ---------------------------------------------------------------------------
+// -O1 jump threading (cg_thread_jumps below)
+// ---------------------------------------------------------------------------
+
+// Per-function branch-site records: (offset, type) of every label branch
+// emitted in the current function, recorded at emission time by the
+// asm_jmp_label/asm_jcc_label/asm_b_back/asm_bcond_back wrappers in
+// codegen_asm.h. The peephole's byte-range deletions keep offsets current
+// via cg_branch_sites_fixup_delete(), mirroring the asm_last ring fixups.
+// Reset per function alongside cg_label_ht_reset(). Single definition here
+// (the emitters live in a header included by several TUs); label-defining
+// codegen all runs in this file, same as the file-static cg_label_htab.
+typedef struct {
+    size_t off;
+    int type; // 0=jmp (E9/B), 1=jcc (0F 8x/B.cond)
+} CgBranchSite;
+static CgBranchSite *cg_branch_sites;
+static int cg_branch_sites_n, cg_branch_sites_cap;
+
+void cg_branch_sites_reset(void) {
+    cg_branch_sites_n = 0;
+}
+
+void cg_record_branch(size_t off, int type) {
+    if (cg_dry_run) return;
+    if (cg_branch_sites_n == cg_branch_sites_cap) {
+        cg_branch_sites_cap = cg_branch_sites_cap ? cg_branch_sites_cap * 2 : 64;
+        cg_branch_sites = realloc(cg_branch_sites, (size_t)cg_branch_sites_cap * sizeof(*cg_branch_sites));
+        if (!cg_branch_sites)
+            error("out of memory recording branch site");
+    }
+    cg_branch_sites[cg_branch_sites_n].off = off;
+    cg_branch_sites[cg_branch_sites_n].type = type;
+    cg_branch_sites_n++;
+}
+
+// Peephole byte-deletion hook: shift recorded sites sitting below the
+// deleted [off, end) range down by the removed byte count.
+void cg_branch_sites_fixup_delete(size_t off, size_t removed) {
+    for (int i = 0; i < cg_branch_sites_n; i++)
+        if (cg_branch_sites[i].off > off)
+            cg_branch_sites[i].off -= removed;
+}
+
+// Decode the target of an unconditional jmp sitting at buffer offset `pos`:
+// the trampoline hop used by jump threading. (size_t)-1 when the bytes at
+// pos are not an unconditional jmp. E9/E8-disambiguated on x86 (E8 is a
+// call, never a trampoline); B (but never BL) on ARM64.
+static size_t cg_trampoline_target(SecBuf *s, size_t pos) {
+#ifdef ARCH_ARM64
+    if (pos + 4 > s->len) return (size_t)-1;
+    uint32_t insn;
+    memcpy(&insn, s->data + pos, 4);
+    if ((insn & 0xFC000000U) != 0x14000000U) return (size_t)-1; // B only, never BL
+    int32_t imm = (int32_t)(insn & 0x03FFFFFFU);
+    if (imm & 0x02000000) imm -= 0x04000000;
+    int64_t t = (int64_t)pos + (int64_t)imm * 4;
+    return t >= 0 ? (size_t)t : (size_t)-1;
+#else
+    if (pos + 2 > s->len) return (size_t)-1;
+    if (s->data[pos] == 0xE9) { // jmp rel32
+        if (pos + 5 > s->len) return (size_t)-1;
+        int32_t disp;
+        memcpy(&disp, s->data + pos + 1, 4);
+        int64_t t = (int64_t)pos + 5 + disp;
+        return t >= 0 ? (size_t)t : (size_t)-1;
+    }
+    if (s->data[pos] == 0xEB) { // jmp rel8
+        int32_t disp = (int8_t)s->data[pos + 1];
+        int64_t t = (int64_t)pos + 2 + disp;
+        return t >= 0 ? (size_t)t : (size_t)-1;
+    }
+    return (size_t)-1;
+#endif
+}
+
+// -O1 jump threading, run per function right after its body and epilogue
+// have been fully emitted (every branch site recorded, every label
+// resolved to a final offset). Any label branch -- jcc included, since the
+// trampoline jmp is unconditional and touches no flags -- that lands on a
+// label defined immediately before an unconditional jmp is retargeted
+// straight through to the trampoline's (possibly chained) final target.
+// The encoding-shape checks when decoding a source site double as
+// validation that its recorded offset still describes that branch after
+// any peephole shifts. Skipped entirely at -O0, which keeps predictable
+// straight-line control flow (same policy as the div-by-const
+// substitution).
+static void cg_thread_jumps(SecBuf *s) {
+    if (opt_O0) return;
+    for (int i = 0; i < cg_branch_sites_n; i++) {
+        size_t off = cg_branch_sites[i].off;
+        int type = cg_branch_sites[i].type;
+        // Decode the source branch's own current target.
+        size_t t;
+#ifdef ARCH_ARM64
+        if (off + 4 > s->len) continue;
+        uint32_t insn;
+        memcpy(&insn, s->data + off, 4);
+        if (type == 0) {
+            if ((insn & 0xFC000000U) != 0x14000000U) continue; // B
+            int32_t imm = (int32_t)(insn & 0x03FFFFFFU);
+            if (imm & 0x02000000) imm -= 0x04000000;
+            t = off + (size_t)((int64_t)imm * 4);
+        } else {
+            if ((insn & 0xFF000010U) != 0x54000000U) continue; // B.cond
+            int32_t imm = (int32_t)((insn >> 5) & 0x7FFFFU);
+            if (imm & 0x40000) imm -= 0x80000;
+            t = off + (size_t)((int64_t)imm * 4);
+        }
+#else
+        if (type == 0) { // E9 rel32
+            if (off + 5 > s->len || s->data[off] != 0xE9) continue;
+            int32_t disp;
+            memcpy(&disp, s->data + off + 1, 4);
+            t = off + 5 + (size_t)(int64_t)disp;
+        } else { // 0F 8x rel32
+            if (off + 6 > s->len || s->data[off] != 0x0F || (s->data[off + 1] & 0xF0) != 0x80) continue;
+            int32_t disp;
+            memcpy(&disp, s->data + off + 2, 4);
+            t = off + 6 + (size_t)(int64_t)disp;
+        }
+#endif
+        if (t >= s->len) continue;
+        // Follow the trampoline chain. Each hop goes through an
+        // unconditional jmp only, so the final address is reached
+        // whenever the original was; the hop cap only bounds time on
+        // pathological jmp cycles (still-correct mid-cycle target).
+        size_t orig = t;
+        int hops = 0;
+        while (hops++ < 64) {
+            size_t nt = cg_trampoline_target(s, t);
+            if (nt == (size_t)-1 || nt >= s->len || nt == t) break;
+            t = nt;
+        }
+        if (t != orig)
+            asm_patch_branch(s, off, t, type);
+    }
+}
+
+
 static void cg_set_section(int sec) {
     if (!cg_obj) return;
     switch (sec) {
@@ -17019,6 +17159,7 @@ struct ObjFile *codegen(Program *prog) {
     init_local_builtins();
     // Reset label and fixup hashtables for new compilation unit
     cg_label_ht_reset();
+    cg_branch_sites_reset();
     asm_fixup_ht_reset();
     pending_label_diffs = NULL;
 
@@ -18052,6 +18193,7 @@ struct ObjFile *codegen(Program *prog) {
         for (int _ci = 0; _ci < CMP_LHS_PROTECT_MAX_DEPTH; _ci++)
             cmp_lhs_protect_slots[_ci] = -1;
         cg_label_ht_reset();
+        cg_branch_sites_reset();
         asm_fixup_ht_reset();
 
 #ifdef ARCH_ARM64
@@ -19320,6 +19462,13 @@ struct ObjFile *codegen(Program *prog) {
         uw_endproc(); // .seh_endproc
 #endif
 #endif
+        // -O1 jump threading: retarget branches landing on a label defined
+        // immediately before an unconditional jmp straight through the
+        // trampoline chain. Runs now, after the epilogue, while every
+        // branch site and label offset is still this function's and the
+        // body's final disassembly is settled (cg_label_ht_reset() runs on
+        // the next iteration).
+        cg_thread_jumps(cg_sec);
         // Resolve every queued label-address-DIFFERENCE static-initializer
         // patch whose labels belong to THIS function, now that its body has
         // been fully generated (every ND_LABEL's cg_def_label() call has
