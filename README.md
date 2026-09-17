@@ -301,6 +301,18 @@ With musl the gcc torture tests fail 2 tests: c23-no-dfp-1 pr80692.
 gcc -std=c11 -O2 -o rcc src/*.c
 ```
 
+On FreeBSD/NetBSD/OpenBSD, `CC` defaults to `gcc` in the Makefile,
+which isn't installed by default there — pass `CC=cc` explicitly to
+use the platform's own system compiler (clang on FreeBSD/OpenBSD,
+gcc on NetBSD):
+
+```bash
+gmake CC=cc
+```
+
+`LDFLAGS` is optional and additive (e.g. `LDFLAGS=-fuse-ld=lld` to
+build rcc itself with LLVM's linker instead of the system default).
+
 ## Usage
 
 ```bash
