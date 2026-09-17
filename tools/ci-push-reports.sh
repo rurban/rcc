@@ -53,8 +53,9 @@ downloaded=
 m_files="bench/bench_report_darwin.md test/tcc_test_arm64.md test_report_arm64.md"
 w_files="bench/bench_report_mingw.md test_report_mingw.md test/tcc_test_mingw.md"
 l_files="test/tcc_test_linux.md test/torture_report_linux.log test_report_linux.md"
-dirs="linux-reports macos-reports windows-reports"
-rm -rf linux-reports macos-reports windows-reports
+b_files="test_report_FreeBSD.md test_report_NetBSD.md test_report_OpenBSD.md"
+dirs="linux-reports macos-reports windows-reports freebsd-reports netbsd-reports openbsd-reports"
+rm -rf linux-reports macos-reports windows-reports freebsd-reports netbsd-reports openbsd-reports
 if gh run download "$run_id" -D . 2>/dev/null; then
     downloaded=yes
 else
@@ -73,8 +74,8 @@ done
 
 echo "Staging downloaded report files..."
 # shellcheck disable=SC2086
-git add $m_files $w_files $l_files 2>/dev/null || true
-rm -rf macos-reports windows-reports linux-reports || true
+git add $m_files $w_files $l_files $b_files 2>/dev/null || true
+rm -rf macos-reports windows-reports linux-reports freebsd-reports netbsd-reports openbsd-reports || true
 
 if git diff --cached --quiet; then
     echo "No report files changed, nothing to commit."

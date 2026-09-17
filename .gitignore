@@ -71,6 +71,7 @@ test/tcc_test_linux_antcc.md
 test/tcc_test_linux_cake.md
 test/tcc_test_linux_ccomp.md
 test/tcc_test_linux_bcc.md
+test/tcc_test_*BSD.md
 test/tcc_test_musl.md
 test/tcc_test_musl_cross.md
 test/csmith

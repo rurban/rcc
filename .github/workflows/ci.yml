@@ -237,15 +237,7 @@ jobs:
               rcc-*.tar.xz
               rcc-*.zip
 
-  # Native BSD jobs via vmactions (real QEMU VMs -- GitHub Actions has no
-  # BSD-hosted runners). rcc's own native ELF linker only special-cases
-  # Linux paths (crt1.o search dirs, PT_INTERP); on the BSDs it can't find
-  # those and falls back to the host cc/ld (see src/main.c's
-  # native_link_capable / GCC-fallback path), so linking still produces a
-  # real, runnable executable. Mandatory: verified fully green (0 failed,
-  # a handful of platform-gated TODOs for genuine, unfixable-without-
-  # touching-tests OS gaps -- see is_todo_test()/run_one_test() in
-  # run_tests.c).
+  # Native BSD jobs via vmactions (real QEMU VMs)
   freebsd:
     runs-on: ubuntu-latest
     timeout-minutes: 60

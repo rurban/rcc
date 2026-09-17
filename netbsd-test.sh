@@ -1,25 +1,24 @@
 #!/bin/sh
-# Sync the current source tree to the local OpenBSD VM (see
-# tools/openbsd-vm-install.sh) and build+run tests there natively --
+# Sync the current source tree to the local Netbsd VM (see
+# tools/netbsd-vm-install.sh) and build+run tests there natively --
 # much faster iteration than round-tripping through CI's
-# vmactions/openbsd-vm job for OpenBSD-specific bugs.
-# Usage: ./openbsd-test.sh [test-name...]
+# vmactions/netbsd-vm job for Netbsd-specific bugs.
+# Usage: ./netbsd-test.sh [test-name...]
 #   (no args): full suite, mirroring the CI job (check + test-torture)
 #   test-name: build once, then `./run_tests ./rcc test-name...`
 set -e
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
-VM_DIR="${OPENBSD_VM_DIR:-$HOME/bsdvm}"
-VM_VER="${OPENBSD_VM_VER:-7.9}"
-SSH_PORT="${OPENBSD_VM_SSH_PORT:-2224}"
-SSH_KEY="$VM_DIR/openbsd-${VM_VER}-host.id_rsa"
-REMOTE_DIR="${OPENBSD_VM_REMOTE_DIR:-/root/rcc}"
+VM_DIR="${NETBSD_VM_DIR:-$HOME/bsdvm}"
+VM_VER="${NETBSD_VM_VER:-7.9}"
+SSH_PORT="${NETBSD_VM_SSH_PORT:-2224}"
+SSH_KEY="$VM_DIR/netbsd-${VM_VER}-host.id_rsa"
+REMOTE_DIR="${NETBSD_VM_REMOTE_DIR:-/root/rcc}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $SSH_KEY -p $SSH_PORT"
-# scp uses -P for port (-p means preserve-times there), so it needs its own opts.
 SCP_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $SSH_KEY -P $SSH_PORT"
 
-if ! "$SCRIPT_DIR/tools/install-openbsd-vm.sh" status >/dev/null 2>&1; then
-    "$SCRIPT_DIR/tools/install-openbsd-vm.sh" start
+if ! "$SCRIPT_DIR/tools/install-netbsd-vm.sh" status >/dev/null 2>&1; then
+    "$SCRIPT_DIR/tools/install-netbsd-vm.sh" start
 fi
 # shellcheck disable=SC2086,SC2029
 sshx() { ssh $SSH_OPTS root@127.0.0.1 "$@"; }
@@ -29,9 +28,9 @@ scpx() { scp $SCP_OPTS "$@"; }
 echo "==> Syncing tracked source to $REMOTE_DIR on the VM..."
 # A plain rsync of the working tree is slow and drags in stray build
 # artifacts; a git-ls-files tarball is small (~10MB) and clean.
-TARBALL="$(mktemp /tmp/rcc-openbsd-src.XXXXXX.tar.gz)"
+TARBALL="$(mktemp /tmp/rcc-netbsd-src.XXXXXX.tar.gz)"
 trap 'rm -f "$TARBALL"' EXIT
-git -C "$SCRIPT_DIR" ls-files -z | tar --null -C "$SCRIPT_DIR" -T - -czf "$TARBALL"
+git -C "$SCRIPT_DIR" ls-files -z | tar --null -T - -czf "$TARBALL" -C "$SCRIPT_DIR"
 sshx "mkdir -p $REMOTE_DIR"
 scpx "$TARBALL" "root@127.0.0.1:$REMOTE_DIR/../rcc-src.tar.gz"
 sshx "cd $REMOTE_DIR && tar xzf ../rcc-src.tar.gz"
@@ -54,8 +53,8 @@ sshx "cd $REMOTE_DIR && gmake CC=cc check" || FAIL=1
 sshx "cd $REMOTE_DIR && gmake CC=cc test-torture" || FAIL=1
 
 echo "==> Fetching reports into test/..."
-scpx "root@127.0.0.1:$REMOTE_DIR/test/tcc_test_OpenBSD.md" "$SCRIPT_DIR/test/" 2>/dev/null || true
-scpx "root@127.0.0.1:$REMOTE_DIR/test/torture_report_OpenBSD.log" "$SCRIPT_DIR/test/" 2>/dev/null || true
-scpx "root@127.0.0.1:$REMOTE_DIR/test_report_OpenBSD.md" "$SCRIPT_DIR/" 2>/dev/null || true
+scpx "root@127.0.0.1:$REMOTE_DIR/test/tcc_test_Netbsd.md" "$SCRIPT_DIR/test/" 2>/dev/null || true
+scpx "root@127.0.0.1:$REMOTE_DIR/test/torture_report_Netbsd.log" "$SCRIPT_DIR/test/" 2>/dev/null || true
+scpx "root@127.0.0.1:$REMOTE_DIR/test_report_Netbsd.md" "$SCRIPT_DIR/" 2>/dev/null || true
 
 test -z "$FAIL"
