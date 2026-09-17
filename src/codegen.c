@@ -343,11 +343,27 @@ size_t asm_mov_fs0_reg(SecBuf *s, VReg r) {
     secbuf_emit32le(s, 0);
     return s->len - off;
 }
-__attribute__((unused)) static size_t asm_lea_tpoff_base_reg(SecBuf *s, VReg dst, VReg base, const char *label) {
+__attribute__((unused)) static size_t asm_lea_tpoff_base_reg(SecBuf *s, VReg dst, VReg base, const char *label, bool force_ie) {
     X86Reg rd = REG(dst);
     X86Reg rb = REG(base);
     EMIT_GUARD;
-    if (opt_pic) {
+    // force_ie: the TLS variable is only *declared* (extern/weak) in
+    // this TU, not defined -- it may be resolved from a separate
+    // shared library at load time (e.g. FreeBSD's <runetype.h>
+    // _ThreadRuneLocale, referenced by an inlined __getCurrentRuneLocale()
+    // helper pulled into a caller's own object file by <ctype.h>).
+    // Local-exec TPOFF32 access assumes the variable's offset within
+    // *this executable's own* TLS block is a link-time constant -- only
+    // true when the defining module is this same link unit. A TLS
+    // variable genuinely owned by a shared library needs the GOT-
+    // indirected Initial-Exec sequence below regardless of whether
+    // -fPIC/opt_pic was requested for this compile: real ld rejects a
+    // direct TPOFF32 relocation against such a symbol outright
+    // ("relocation R_X86_64_TPOFF32 cannot be used against symbol
+    // '...'; recompile with -fPIC"). Mirrors the identical is_extern
+    // reasoning var_needs_got()'s callers already apply to ordinary
+    // (non-TLS) GOT-relative addressing just below.
+    if (opt_pic || force_ie) {
         // Initial-exec TLS model for shared objects/PIC code:
         //   mov %fs:0, %rdx
         //   mov var@GOTTPOFF(%rip), %rax
@@ -6455,7 +6471,8 @@ VReg gen_addr(Node *node) {
 #else
                 VReg base = alloc_reg();
                 asm_mov_fs0_reg(cg_sec, base);
-                asm_lea_tpoff_base_reg(cg_sec, r, base, var_sym_label(node->var));
+                asm_lea_tpoff_base_reg(cg_sec, r, base, var_sym_label(node->var),
+                                       node->var->is_extern || node->var->is_weak);
                 free_reg(base);
 #endif
             } else {
@@ -9917,7 +9934,8 @@ VReg gen(Node *node) {
 #else
                     VReg base = alloc_reg();
                     asm_mov_fs0_reg(cg_sec, base);
-                    asm_lea_tpoff_base_reg(cg_sec, r, base, var_sym_label(node->var));
+                    asm_lea_tpoff_base_reg(cg_sec, r, base, var_sym_label(node->var),
+                                           node->var->is_extern || node->var->is_weak);
                     free_reg(base);
 #endif
                 } else
@@ -10174,7 +10192,8 @@ VReg gen(Node *node) {
 #else
                     VReg base = alloc_reg();
                     asm_mov_fs0_reg(cg_sec, base);
-                    asm_lea_tpoff_base_reg(cg_sec, r, base, var_sym_label(node->var));
+                    asm_lea_tpoff_base_reg(cg_sec, r, base, var_sym_label(node->var),
+                                           node->var->is_extern || node->var->is_weak);
                     free_reg(base);
 #endif
                     emit_load(node->ty, r, r, 0);
@@ -10462,8 +10481,16 @@ VReg gen(Node *node) {
 #else
                     {
                         int st_sz = node->lhs->ty->size;
-                        if (st_sz < 4) st_sz = st_sz;
-                        asm_mov_reg_mem(cg_sec, src, dst, st_sz); // movl/movq src, (%dst)
+                        // asm_mov_reg_mem only encodes 1/2/4/8-byte movs;
+                        // round odd struct/union sizes (3, 5, 6, 7 -- e.g.
+                        // an all-char struct with alignment 1) up to the
+                        // next one so every byte of the scalar RHS's
+                        // leading sub-object actually gets stored, not
+                        // just a truncated prefix.
+                        if (st_sz == 3) st_sz = 4;
+                        else if (st_sz > 4 && st_sz < 8)
+                            st_sz = 8;
+                        asm_mov_reg_mem(cg_sec, src, dst, st_sz); // movb/movw/movl/movq src, (%dst)
                     }
 #endif
                 }

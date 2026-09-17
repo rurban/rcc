@@ -45,7 +45,12 @@ int main(void) {
 
     /* 1. A bare -Wl,-v with no inputs is a link-only probe: it must run
      * the external linker (collect2/ld print their version banners),
-     * not die with "no input files". */
+     * not die with "no input files". Checked loosely: "collect2" (GCC's
+     * own wrapper) or "GNU ld version" (older Binutils) are compiler-
+     * specific tells; "GNU ld (" (current Binutils' actual banner, e.g.
+     * "GNU ld (GNU Binutils for Ubuntu) 2.42") appears whether GCC's
+     * collect2 or clang invoked ld directly, so it's the one that must
+     * always be present for this to count as a real probe response. */
     {
         char cmd[800];
         snprintf(cmd, sizeof(cmd), "%s -Wl,-v " NULL_REDIRECT " 2>&1", rcc);
@@ -55,7 +60,7 @@ int main(void) {
         size_t n = fread(buf, 1, sizeof(buf) - 1, p);
         buf[n] = 0;
         int rc = pclose(p);
-        if (!strstr(buf, "GNU ld version") && !strstr(buf, "collect2")) {
+        if (!strstr(buf, "GNU ld version") && !strstr(buf, "collect2") && !strstr(buf, "GNU ld (")) {
             printf("FAIL: bare -Wl,-v produced no linker version output (rc=%d)\n%s\n", rc, buf);
             return 2;
         }

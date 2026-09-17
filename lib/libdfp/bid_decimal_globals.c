@@ -45,14 +45,16 @@ BID_THREAD _IDEC_flags _IDEC_glbflags = EXACT_STATUS;
 
 #if DECIMAL_GLOBAL_EXCEPTION_FLAGS_ACCESS_FUNCTIONS
 #include <fenv.h>
-/* fesetexcept is C23/glibc-2.33+; macOS/mingw clang's <fenv.h> lacks it.
- * rcc's vendored-build patch: fall back to feraiseexcept (the decimal
- * result never depends on the host FPU exception flags). */
-#ifndef __GLIBC__
-#if !defined(fesetexcept)
-int fesetexcept(int __excepts) { return feraiseexcept(__excepts); }
-#endif
-#endif
+/* fesetexcept is a glibc >= 2.33 / C23 <fenv.h> addition, gated there
+ * behind _GNU_SOURCE (rcc builds this file with no -std=, which does
+ * not imply it); other libcs (macOS, mingw, and every BSD) don't have
+ * it at all. Always provide our own `static` wrapper over the
+ * standard, always-available feraiseexcept -- `static` avoids any
+ * link collision with a real libc fesetexcept some future libc might
+ * declare/export; the decimal result never depends on the host FPU
+ * exception flags, so feraiseexcept's possible-trap semantics vs.
+ * fesetexcept's flag-only-set are immaterial here. */
+static int rcc_dfp_fesetexcept(int excepts) { return feraiseexcept(excepts); }
 
 void
 __dfp_clear_except (void) {
@@ -100,7 +102,7 @@ __dfp_set_status (int excepts) {
   _IDEC_glbflags |= excepts;
   if (excepts == INEXACT_EXCEPTION)
     {
-      fesetexcept (FE_INEXACT);
+      rcc_dfp_fesetexcept (FE_INEXACT);
     }
   else
     {
@@ -109,7 +111,7 @@ __dfp_set_status (int excepts) {
       fexcepts = (excepts & UNDERFLOW_EXCEPTION) ? FE_UNDERFLOW : 0;
       fexcepts = (excepts & ZERO_DIVIDE_EXCEPTION) ? FE_DIVBYZERO : 0;
       fexcepts = (excepts & INVALID_EXCEPTION) ? FE_INVALID: 0;
-      fesetexcept (fexcepts);
+      rcc_dfp_fesetexcept (fexcepts);
     }
 }
 #endif

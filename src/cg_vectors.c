@@ -1308,7 +1308,7 @@ VReg gen_ia32_builtin(Node *node) {
             x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(va), 0));
         free_reg(va);
         VReg r = alloc_reg();
-        x86_pmovmskb(cg_sec, (X86XmmReg)REG(r), X86_XMM0); // GP dst in reg field
+        x86_pmovmskb(cg_sec, REG(r), X86_XMM0); // GP dst in reg field
         return r;
     }
     // ================= F16C half-precision converts =================
@@ -2265,7 +2265,8 @@ VReg gen_ia32_builtin(Node *node) {
         int bytes = !strcmp(n, "pshufd") || !strcmp(n, "pshuflw") || !strcmp(n, "pshufhw") ? 16 : 8;
         ia32_load1(a1, bytes);
         uint8_t imm = ia32_imm8(a2, "imm");
-        if (!strcmp(n, "pshufd")) x86_pshufd(cg_sec, X86_XMM0, X86_XMM0, imm);
+        if (!strcmp(n, "pshufd"))
+            x86_pshufd(cg_sec, X86_XMM0, X86_XMM0, imm);
         else if (!strcmp(n, "pshuflw"))
             x86_pshuflw(cg_sec, X86_XMM0, X86_XMM0, imm);
         else if (!strcmp(n, "pshufhw"))

@@ -596,7 +596,8 @@ static int elf_load_object(LinkState *s, const char *path) {
                 // relocation left unresolved (e.g. R_AARCH64_LDST128 on
                 // the bundled libdfp.a's exception-flag globals produced
                 // a binary that read garbage data and segfaulted).
-                fprintf(stderr, "rcc: link: %s: unhandled reloc type %u\n", path, r_type);
+                if (getenv("RCC_LINK_DEBUG"))
+                    fprintf(stderr, "rcc: link: %s: unhandled reloc type %u\n", path, r_type);
                 free(sec_map);
                 free(sym_map);
                 elf_close(&ef);
@@ -1771,15 +1772,25 @@ static int load_crt_files(LinkState *s) {
         }
     }
     if (!crt_dir) {
-        fprintf(stderr, "rcc: link: cannot find crt1.o\n");
+        // Not found: rcc's native linker doesn't know this platform's crt
+        // file layout (e.g. any *BSD). This is expected, routine behavior
+        // -- the caller (rcc_link() in main.c) silently falls back to
+        // invoking the system cc/gcc as the linker driver, which always
+        // finds the right crt1.o for its own platform. Printing this
+        // unconditionally would misrepresent a successful fallback as an
+        // error and pollute any captured stderr (e.g. run_tests.c
+        // comparing a test's stdout against its .expect file); keep it
+        // behind RCC_LINK_DEBUG like the sibling fallback trace in
+        // main.c's rcc_link().
+        if (getenv("RCC_LINK_DEBUG")) fprintf(stderr, "rcc: link: cannot find crt1.o\n");
         return -1;
     }
     if (try_load_crt(s, crt_dir, "crti.o") != 0) {
-        fprintf(stderr, "rcc: link: cannot find crti.o\n");
+        if (getenv("RCC_LINK_DEBUG")) fprintf(stderr, "rcc: link: cannot find crti.o\n");
         return -1;
     }
     if (try_load_crt(s, crt_dir, "crtn.o") != 0) {
-        fprintf(stderr, "rcc: link: cannot find crtn.o\n");
+        if (getenv("RCC_LINK_DEBUG")) fprintf(stderr, "rcc: link: cannot find crtn.o\n");
         return -1;
     }
     return 0;
@@ -1807,6 +1818,19 @@ int link_elf(LinkState *s) {
     // Static + shared is nonsensical (there's no "statically linked
     // shared object" concept); refuse rather than guess which one wins.
     if (s->opt_static && s->opt_shared) return -1;
+#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    // The dynamic-linking section below hardcodes glibc/Linux SONAME
+    // conventions (libc.so.6, libgcc_s.so.1, libm.so.6,
+    // /lib64/ld-linux-x86-64.so.2) that don't exist under these BSDs'
+    // own libc/ld.so naming schemes -- a shared object built here would
+    // record DT_NEEDED entries ld.so can never resolve at load time
+    // ("can't load library 'libm.so.6'") even though the real system
+    // library exists under a different name. Fall back to the external
+    // cc/ld for shared objects here too, matching the crt1.o-driven
+    // executable fallback just below -- the system's own linker knows
+    // its platform's real SONAMEs.
+    if (s->opt_shared) return -1;
+#endif
     if (resolve_archives(s) != 0) return -1;
 
     // Ensure required sections exist.

@@ -40,6 +40,16 @@ case "$RCC" in
         ;;
 esac
 
+# dlopen()/dlsym() have lived in libc directly on every BSD forever, and
+# in glibc itself since 2.34 (-ldl became an empty compat stub there,
+# harmless to still pass) -- but there is no "libdl" of any kind to find
+# on these BSDs, so passing -ldl there is a hard link failure ("unable
+# to find library -ldl"), not a harmless no-op.
+case "$(uname -s)" in
+    FreeBSD|NetBSD|OpenBSD) NEED_LDL="" ;;
+    *)                      NEED_LDL="-ldl" ;;
+esac
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 PASS=0
@@ -310,7 +320,7 @@ EOF
 extern int exported_value(void);
 int call_exported(void) { return exported_value() + 1; }
 EOF
-    if "$RCC" -rdynamic "$TMP/rdmain.c" -ldl -o "$TMP/rdmain" 2>"$TMP/e6" \
+    if "$RCC" -rdynamic "$TMP/rdmain.c" $NEED_LDL -o "$TMP/rdmain" 2>"$TMP/e6" \
         && "$RCC" -shared -fPIC "$TMP/rdplugin.c" -o "$TMP/rdplugin.$SOEXT" 2>>"$TMP/e6" \
         && ( cd "$TMP" && ./rdmain ); then
         pass "-rdynamic dlopen callback (.$SOEXT)"
@@ -580,8 +590,7 @@ if [ "$SOEXT" = so ] || [ "$SOEXT" = dylib ]; then
 static int local_answer(void) { return 42; }
 int (*answer_fn)(void) = local_answer; /* forces R_*_RELATIVE / a Mach-O rebase entry */
 EOF
-    dl_lib=""
-    [ "$SOEXT" = so ] && dl_lib="-ldl"
+    dl_lib="$NEED_LDL"
     cat > "$TMP/dbgmain.c" <<EOF
 #include <dlfcn.h>
 int main(void) {
@@ -652,7 +661,7 @@ fi
 #    a broken config.h define. Count NEEDED libm.so.6 in the linked
 #    binary's dynamic section: must be exactly one.
 # ---------------------------------------------------------------------------
-if [ "$SOEXT" = so ]; then
+if [ "$SOEXT" = so ] && [ "$(uname -s)" = Linux ]; then
     cat > "$TMP/need.c" <<'EOF'
 #include <math.h>
 int main(void) { return trunc(1.5) == 1.0 ? 0 : 1; }

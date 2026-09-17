@@ -109,44 +109,53 @@ int main(void) {
     if (!eqf4(__builtin_ia32_cvtdq2ps(__builtin_ia32_cvtps2dq(c)), add_e)) return 17;
     if (__builtin_ia32_cvtss2si(c) != 11) return 18;
 
-    /* move masks */
+    /* move masks: dst is a GP register. An all-positive input (like `a`
+     * above) would pass even if the dst register field were scrambled
+     * with the src XMM field, since an all-zero mask reads the same
+     * either way; use mixed-sign inputs so a wrong dst register field
+     * would read back 0 (or garbage) instead of the true mask. */
     if (__builtin_ia32_movmskps(a) != 0) return 19;
+    __m128d neg_pd = _mm_set_pd(-1.5, 2.5); /* hi=-1.5 (bit1=1), lo=2.5 (bit0=0) */
+    if (__builtin_ia32_movmskpd(neg_pd) != 0b10) return 20;
+    __m128i alt_bytes = _mm_set_epi8(0, -128, 0, -128, 0, -128, 0, -128,
+                                      0, -128, 0, -128, 0, -128, 0, -128); /* bytes 0,2,4,... negative */
+    if (__builtin_ia32_pmovmskb128(alt_bytes) != 0x5555) return 21;
 
     /* SSSE3: pshufb128 byte permute + unary pabsd128 */
     __m128i shuf_mask = _mm_set_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
     int shufb_e[4] = {4, 3, 2, 1}; /* verified identical to gcc -mssse3 */
-    if (!eqi4(__builtin_ia32_pshufb128(i1, shuf_mask), shufb_e)) return 20;
+    if (!eqi4(__builtin_ia32_pshufb128(i1, shuf_mask), shufb_e)) return 22;
     __m128i neg = _mm_set_epi32(-4, -3, -2, -1); /* lanes {-1,-2,-3,-4} */
     int abs_e[4] = {1, 2, 3, 4};
-    if (!eqi4(__builtin_ia32_pabsd128(neg), abs_e)) return 21;
+    if (!eqi4(__builtin_ia32_pabsd128(neg), abs_e)) return 23;
 
     /* SSE4.1: blendps (imm), roundps (unary imm), ptestz128 */
     float bl_e[4] = {10, 2, 3, 40}; /* imm 0x9: lanes 0,3 from b */
-    if (!eqf4(__builtin_ia32_blendps(a, b, 0x9), bl_e)) return 22;
-    if (!eqf4(__builtin_ia32_roundps(c, 0), add_e)) return 23;
+    if (!eqf4(__builtin_ia32_blendps(a, b, 0x9), bl_e)) return 24;
+    if (!eqf4(__builtin_ia32_roundps(c, 0), add_e)) return 25;
     __m128i zz = _mm_setzero_si128();
-    if (!__builtin_ia32_ptestz128(zz, zz)) return 24;
+    if (!__builtin_ia32_ptestz128(zz, zz)) return 26;
 
     /* MMX (8-byte) via vec_init_v4hi + paddw */
     __m64 m1 = __builtin_ia32_vec_init_v4hi(1, 2, 3, 4);
     __m64 m2 = __builtin_ia32_vec_init_v4hi(5, 6, 7, 8);
     long long mm = (long long)__builtin_ia32_paddw(m1, m2);
-    if ((mm & 0xffff) != 6 || ((mm >> 16) & 0xffff) != 8) return 25;
-    if ((mm >> 32) != 0x000C000ALL) return 26; /* high lanes {10, 12} */
+    if ((mm & 0xffff) != 6 || ((mm >> 16) & 0xffff) != 8) return 27;
+    if ((mm >> 32) != 0x000C000ALL) return 28; /* high lanes {10, 12} */
 
     /* scalar -> vector cast splat (was: "Invalid register -1" ICE) */
     __v8qi spl_b = (__v8qi)7LL;
-    if (spl_b[0] != 7 || spl_b[7] != 7) return 27;
+    if (spl_b[0] != 7 || spl_b[7] != 7) return 29;
     __v4sf spl_f = (__v4sf)2.5f;
-    if (spl_f[0] != 2.5f || spl_f[3] != 2.5f) return 28;
+    if (spl_f[0] != 2.5f || spl_f[3] != 2.5f) return 30;
     double dv = 1.25;
     __v2df spl_d = (__v2df)dv;
-    if (spl_d[0] != 1.25 || spl_d[1] != 1.25) return 29;
+    if (spl_d[0] != 1.25 || spl_d[1] != 1.25) return 31;
 
     /* crc32 (mingw's smmintrin.h compiles these wrappers as local copies
      * even when unused, so the builtins must exist) */
-    if (__builtin_ia32_crc32qi(0xFFFFFFFFu, 0xAA) != 0x642B3130u) return 30;
-    if (__builtin_ia32_crc32si(0xFFFFFFFFu, 0xCCCCCCCCu) != 0x70B16A3Du) return 31;
+    if (__builtin_ia32_crc32qi(0xFFFFFFFFu, 0xAA) != 0x642B3130u) return 32;
+    if (__builtin_ia32_crc32si(0xFFFFFFFFu, 0xCCCCCCCCu) != 0x70B16A3Du) return 33;
 
 #if defined(__x86_64__) || defined(_M_X64)
     /* GNU inline-asm crc32b/crc32q with a MEMORY source operand (as used
@@ -181,8 +190,8 @@ int main(void) {
                                   : "r"(next), "m"(*next));
             next += 8;
         }
-        if (crc_byte != crc_qword) return 32;
-        if ((unsigned)~crc_qword != 0xa0de6714u) return 32;
+        if (crc_byte != crc_qword) return 34;
+        if ((unsigned)~crc_qword != 0xa0de6714u) return 34;
 
         /* register-source form must still agree with the memory-source
          * form for the same data -- guards against a fix that repairs
@@ -191,7 +200,7 @@ int main(void) {
         unsigned int crc_reg = 0, crc_mem = 0;
         __asm__ __volatile__("crc32l\t%1, %0" : "+r"(crc_reg) : "r"(w));
         __asm__ __volatile__("crc32l\t%1, %0" : "+r"(crc_mem) : "m"(w));
-        if (crc_reg != crc_mem) return 32;
+        if (crc_reg != crc_mem) return 34;
     }
 #endif
 
@@ -199,16 +208,16 @@ int main(void) {
      * misimplemented as vec_init_*, corrupting the unchanged lane. */
     __m128i ins = _mm_set_epi64x(0x123456789abcdef0ULL, 0xfedcba9876543210ULL);
     __m128i ins1 = _mm_insert_epi64(ins, 0xaaaaaaaaaaaaaaaaULL, 1);
-    if ((unsigned long long)_mm_extract_epi64(ins1, 0) != 0xfedcba9876543210ULL) return 33;
-    if ((unsigned long long)_mm_extract_epi64(ins1, 1) != 0xaaaaaaaaaaaaaaaaULL) return 34;
+    if ((unsigned long long)_mm_extract_epi64(ins1, 0) != 0xfedcba9876543210ULL) return 35;
+    if ((unsigned long long)_mm_extract_epi64(ins1, 1) != 0xaaaaaaaaaaaaaaaaULL) return 36;
     __m128i ins0 = _mm_insert_epi64(ins, 0xbbbbbbbbbbbbbbbbULL, 0);
-    if ((unsigned long long)_mm_extract_epi64(ins0, 0) != 0xbbbbbbbbbbbbbbbbULL) return 35;
-    if ((unsigned long long)_mm_extract_epi64(ins0, 1) != 0x123456789abcdef0ULL) return 36;
+    if ((unsigned long long)_mm_extract_epi64(ins0, 0) != 0xbbbbbbbbbbbbbbbbULL) return 37;
+    if ((unsigned long long)_mm_extract_epi64(ins0, 1) != 0x123456789abcdef0ULL) return 38;
 
     __m128i ins32 = _mm_set_epi32(4, 3, 2, 1);
     ins32 = _mm_insert_epi32(ins32, 0xccccccccU, 2);
     int ins32_e[4] = {1, 2, (int)0xccccccccU, 4};
-    if (memcmp(&ins32, ins32_e, sizeof(ins32_e)) != 0) return 37;
+    if (memcmp(&ins32, ins32_e, sizeof(ins32_e)) != 0) return 39;
 
     __builtin_ia32_emms();
     return 0;

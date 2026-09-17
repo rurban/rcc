@@ -437,7 +437,21 @@ int elf_write(ObjFile *obj, const char *path) {
         // against the image base) actually satisfies it.
         uint64_t a = obj->extra_secs[i].align > 16 ? obj->extra_secs[i].align : 16;
         extra_off[i] = align_n(running, a);
-        extra_size[i] = obj->extra_secs[i].buf.len;
+        // SHF_MERGE requires sh_size to be a multiple of sh_entsize per
+        // the ELF spec. GNU ld tolerates a mismatch (real-world inline
+        // asm, e.g. the Linux kernel's ALTERNATIVE() macro's
+        // .altinstructions .pushsection, routinely declares an entsize
+        // that doesn't evenly divide the emitted alt_instr bytes), but
+        // LLVM's ld.lld correctly rejects it ("SHF_MERGE section size
+        // (N) must be a multiple of sh_entsize (M)"). Round the on-disk
+        // size up to the next multiple with trailing zero padding
+        // (appended after the real content, which stays byte-for-byte
+        // identical and at the same offsets) so both linkers accept it.
+        uint64_t raw_size = obj->extra_secs[i].buf.len;
+        uint64_t es = obj->extra_secs[i].sh_entsize;
+        extra_size[i] = (es && (obj->extra_secs[i].sh_flags & SHF_MERGE) && raw_size % es != 0)
+            ? raw_size + (es - raw_size % es)
+            : raw_size;
         running = extra_off[i] + extra_size[i];
     }
 
@@ -530,7 +544,9 @@ int elf_write(ObjFile *obj, const char *path) {
     uint64_t written_to = fini_arr_off + fini_arr_size;
     for (int i = 0; i < nextra; i++) {
         wzeros(f, extra_off[i] - written_to);
-        if (extra_size[i]) wbuf(f, obj->extra_secs[i].buf.data, extra_size[i]);
+        uint64_t raw = obj->extra_secs[i].buf.len;
+        if (raw) wbuf(f, obj->extra_secs[i].buf.data, raw);
+        if (extra_size[i] > raw) wzeros(f, extra_size[i] - raw);
         written_to = extra_off[i] + extra_size[i];
     }
     wzeros(f, rela_txt_off - written_to);

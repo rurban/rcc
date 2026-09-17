@@ -13508,6 +13508,42 @@ static Node *unary(Token **rest, Token *tok) {
         check_type(chain);
         return chain;
     }
+    // Clang __builtin_convertvector(vec, type): per-lane scalar conversion
+    // to a vector type with the same lane count -- pairs with
+    // __builtin_shufflevector above in clang's smmintrin.h sign/zero-extend
+    // intrinsics (_mm_cvtepi8_epi16 et al).
+    if (equalc(tok, "__builtin_convertvector")) {
+        Token *start = tok;
+        tok = skip(tok->next, "(");
+        Node *a1 = assign(&tok, tok);
+        tok = skip(tok, ",");
+        check_type(a1);
+        if (!a1->ty || !a1->ty->is_vector)
+            error_tok(start, "__builtin_convertvector requires a vector argument");
+        if (!is_typename(tok))
+            error_tok(start, "__builtin_convertvector requires a vector type argument");
+        Type *rty = type_name(&tok, tok);
+        *rest = skip(tok, ")");
+        if (!rty->is_vector)
+            error_tok(start, "__builtin_convertvector requires a vector result type");
+        Type *vt1 = a1->ty;
+        int n1 = (int)(vt1->size / vt1->base->size);
+        int nr = (int)(rty->size / rty->base->size);
+        if (n1 != nr)
+            error_tok(start, "__builtin_convertvector: element counts must match");
+        Node *chain = NULL;
+        LVar *ta = vec_bind(&chain, a1, vt1, start);
+        LVar *tr = new_var("", rty, true);
+        for (int i = 0; i < nr; i++) {
+            Node *cast = new_unary(ND_CAST, vec_lane(ta, vt1, i, start), start);
+            cast->ty = rty->base;
+            Node *st = new_binary(ND_ASSIGN, vec_lane(tr, rty, i, start), cast, start);
+            chain = new_binary(ND_COMMA, chain, st, start);
+        }
+        chain = new_binary(ND_COMMA, chain, new_var_node(tr, start), start);
+        check_type(chain);
+        return chain;
+    }
     if (equalc(tok, "__builtin_choose_expr")) {
         Token *start = tok;
         tok = skip(tok->next, "(");

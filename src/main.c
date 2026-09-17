@@ -1736,8 +1736,46 @@ int main(int argc, char **argv) {
             xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -pie -o \"%s\"", backend_out);
         else if (opt_pic)
             xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -o \"%s\"", backend_out);
+#if defined(__FreeBSD__)
+        else
+            // FreeBSD's base libc.so has shipped PIE-only since FreeBSD 12
+            // and some of its internals (e.g. the rune/locale TLS
+            // accessor _ThreadRuneLocale) are only reachable through a
+            // PIC-relative relocation: `-no-pie` makes ld.lld reject
+            // those with "relocation R_X86_64_TPOFF32 cannot be used
+            // against symbol '_ThreadRuneLocale'; recompile with -fPIC"
+            // for any program that ends up calling into locale-aware
+            // libc (isalpha/tolower/printf's %s width handling/...).
+            // Omit the flag entirely and let cc's own FreeBSD default
+            // (PIE) apply, matching what its libc actually expects.
+            xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -o \"%s\"", backend_out);
+#else
         else
             xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -no-pie -o \"%s\"", backend_out);
+#endif
+#ifdef __clang__
+        // GCC's fallback linker driver is RCC_GCC == the same $(CC) rcc
+        // itself was built with (see Makefile), so __clang__ here reliably
+        // means the fallback below also invokes clang. Some clang/target
+        // combinations (e.g. FreeBSD's default non-PIE cc) treat -no-pie
+        // as unused and print "warning: argument unused during
+        // compilation: '-no-pie'" to stderr on an otherwise successful
+        // link -- harmless, but it pollutes any caller capturing this
+        // process's stderr (run_tests.c folds compile stderr into a
+        // test's compared output). Suppress that specific warning class.
+        //
+        // Separately, the BSDs' own ld.lld carries local patches that
+        // print a "warning: strcpy() is almost always misused, please
+        // use strlcpy()"-style notice for any object referencing a
+        // handful of libc functions it considers risky (strcpy/sprintf/
+        // etc, regardless of whether the call is actually unsafe) --
+        // the exact same output-pollution problem. -Wl,-w
+        // (--no-warnings) silences every ld *warning* without touching
+        // *errors*: a genuine link failure still exits non-zero and
+        // still prints, this only drops opinions about code this
+        // fallback link was never asked to lint.
+        xappendf(&cmd, &cmd_len, &cmd_cap, " -Wno-unused-command-line-argument -Wl,-w");
+#endif
 #endif
 
         // Codegen already produced .o files; add them directly to linker command

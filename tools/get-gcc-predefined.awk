@@ -9,6 +9,14 @@ BEGIN {
     skip["__STDC_IEC_60559_BFP__"]   = 1  # missing femode_t, fesetexcept, fegetmode, strfromd/f/l, fromfp, SNANF, iseqsig, CR_DECIMAL_DIG
     skip["__STDC_IEC_60559_TYPES__"] = 1  # _FloatNx extended types not fully implemented
     skip["__STDC_IEC_60559_DFP__"]   = 1  # _DecimalN aliased to binary float, not true IEEE 754-2008 decimal
+    # glibc's fortify headers gate their unimplemented pass_object_size/
+    # overloadable open()/printf() wrappers on __clang_major__ -- don't
+    # claim clang identity when $(CC) is clang (rcc stays __GNUC__-only).
+    skip["__clang__"] = 1
+    skip["__clang_major__"] = 1
+    skip["__clang_minor__"] = 1
+    skip["__clang_patchlevel__"] = 1
+    skip["__clang_version__"] = 1
 }
 
 /^#define / {
