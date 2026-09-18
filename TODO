@@ -4,7 +4,22 @@
 
 - add opt_O as int level. no opt_On needed. default -1
 
-- -O2 Tail calls — return f(args) → jmp f. Non-SSA but ABI-sensitive (frame layout, varargs callee)
+- -O2 miscompile: test/test_csmith_ternary_spill.c gets the wrong checksum
+  under -finline/-funroll (passes at -O1; still fails with the -O2 tail-jmp
+  fast path above forced off, so it's an -finline/-funroll bug, not a tail-
+  call one -- reproduces identically on a352075d, before tail calls existed
+  at all). Not yet isolated to inlining vs unrolling vs their interaction;
+  csmith-generated, 1450 lines, needs delta-reduction to a minimal repro.
+
+- -O2 Tail calls — return f(args) → jmp f. Non-SSA but ABI-sensitive (frame layout, varargs callee).
+  Single-scalar-arg/scalar-return case implemented (codegen.c's ND_RETURN tail-jmp fast path,
+  x86-64 only); found and fixed two soundness bugs in it: (1) frame-escape aliasing -- a tail-jmp
+  reuses the caller's frame before the callee's own prologue runs, unsound whenever a local
+  array/struct/VLA or an explicit `&local` could still be read through by the callee (pr36339,
+  pr38048-2, vect/pr44507); (2) __builtin_* names have no real linkable symbol to jmp to, only an
+  inline expansion the ordinary call path provides (bswap-1). See test_opt_tail_call_safety.c.
+  Still open: multiple arguments (needs the same argument-overlap care GCC's sibcall pass takes --
+  see torture/20050713-1.c's own comment) and ARM64 (x86-64 only right now).
 
 - SSA conversion for -O2, and the usual optimizations with SSA, as in xcc, antcc or ccc.
 

@@ -773,6 +773,7 @@ static int ever_used_regs = 0;
 static int tail_frame_need;
 static int tail_callee_mask;
 static int tail_callee_count;
+static bool tail_call_frame_escapes;
 #endif
 #ifdef BENCH
 // Cumulative Pass-1 (dry-run) wall time across every function in this
@@ -10074,6 +10075,52 @@ static void switch_emit_hash_dispatch(VReg cond, int sz, bool is_uns, int32_t k,
     free_reg(table);
 }
 
+#ifndef ARCH_ARM64
+// A tail-jmp deallocates the current frame before the callee's own
+// prologue reuses that same stack region -- see the ND_RETURN case in
+// gen() for the full rationale (torture/pr36339.c is the reproducer:
+// `hp = heap; ...; return check_a((uintptr_t)hp + 1);` -- check_a
+// dereferences a pointer into try_a's own `heap[]`, which the tail-jmp's
+// reused frame overwrites before check_a ever runs). No interprocedural
+// alias analysis here, so this is deliberately conservative: true
+// whenever `&var` appears anywhere in the body for a parameter/local of
+// `fn`, regardless of where the resulting pointer actually flows.
+static bool tail_call_addr_escapes(Node *node, Function *fn) {
+    if (!node) return false;
+    if (node->kind == ND_ADDR && node->lhs && node->lhs->kind == ND_LVAR && node->lhs->var) {
+        LVar *v = node->lhs->var;
+        for (LVar *p = fn->params; p; p = p->next)
+            if (p == v) return true;
+        for (LVar *p = fn->locals; p; p = p->next)
+            if (p == v) return true;
+    }
+    if (tail_call_addr_escapes(node->lhs, fn) || tail_call_addr_escapes(node->rhs, fn) ||
+        tail_call_addr_escapes(node->cond, fn) || tail_call_addr_escapes(node->then, fn) ||
+        tail_call_addr_escapes(node->els, fn) || tail_call_addr_escapes(node->init, fn) ||
+        tail_call_addr_escapes(node->inc, fn) || tail_call_addr_escapes(node->body, fn) ||
+        tail_call_addr_escapes(node->next, fn))
+        return true;
+    for (Node *arg = node->args; arg; arg = arg->next)
+        if (tail_call_addr_escapes(arg, fn)) return true;
+    return false;
+}
+
+// A bare array/VLA/struct/union parameter or local can expose its own
+// address just by being *used* (array-to-pointer decay; a struct/union
+// copy can involve an internal address too) -- no explicit `&` required
+// -- so any such type disqualifies the whole function outright, on top
+// of the explicit-`&` walk above.
+static bool tail_call_frame_may_escape(Function *fn) {
+    for (LVar *v = fn->params; v; v = v->next)
+        if (v->ty && (v->ty->kind == TY_ARRAY || v->ty->kind == TY_VLA || v->ty->kind == TY_STRUCT || v->ty->kind == TY_UNION))
+            return true;
+    for (LVar *v = fn->locals; v; v = v->next)
+        if (v->ty && (v->ty->kind == TY_ARRAY || v->ty->kind == TY_VLA || v->ty->kind == TY_STRUCT || v->ty->kind == TY_UNION))
+            return true;
+    return tail_call_addr_escapes(fn->body, fn);
+}
+#endif
+
 // Generate code for a given node.
 VReg gen(Node *node) {
     if (!node) return R_NONE;
@@ -12343,10 +12390,24 @@ VReg gen(Node *node) {
         // keeps the ordinary call-and-return path.
         if (!cg_dry_run && opt_finline && opt_funroll && node->lhs && node->lhs->kind == ND_FUNCALL &&
             !node->defer_retspill && current_fn_def && !current_fn_def->is_variadic &&
-            !current_fn_def->is_nested && !fn_uses_alloca) {
+            !current_fn_def->is_nested && !fn_uses_alloca && !tail_call_frame_escapes) {
             Node *call = node->lhs;
-            LVar *callee = call->lhs && call->lhs->kind == ND_LVAR ? call->lhs->var : NULL;
-            if (!callee && call->funcname)
+            // A __builtin_* name (bswap64, clz, popcount, ...) is a
+            // compiler intrinsic the ordinary FUNCALL codegen expands
+            // inline (cg_builtins.c) -- it has no real linkable symbol to
+            // jmp to at all. declare_builtin_on_demand() synthesizes an
+            // extern-function LVar for some of these (so `call->lhs` is
+            // already an ND_LVAR, not just `call->funcname`), so both
+            // lookups below need excluding, not just the funcname one
+            // (torture/bswap-1.c: `return __builtin_bswap64(a);` linked
+            // as "undefined reference to `__builtin_bswap64'" once this
+            // fast path skipped cg_builtins.c's expansion and tail-jmp'd
+            // to the bare name instead).
+            bool is_builtin_name = call->funcname && !strncmp(call->funcname, "__builtin_", 10);
+            LVar *callee = (!is_builtin_name && call->lhs && call->lhs->kind == ND_LVAR)
+                ? call->lhs->var
+                : NULL;
+            if (!callee && call->funcname && !is_builtin_name)
                 callee = find_global_name(call->funcname);
             Type *ret_ty = current_fn_def->ty ? current_fn_def->ty->return_ty : NULL;
             Node *arg = call->args;
@@ -19258,6 +19319,7 @@ struct ObjFile *codegen(Program *prog) {
         tail_frame_need = need;
         tail_callee_mask = callee_mask;
         tail_callee_count = callee_count;
+        tail_call_frame_escapes = tail_call_frame_may_escape(fn);
         // Callee-saved registers are stored in a dedicated save area BELOW
         // the locals/spill region, at [rbp - need - 8 .. rbp - need -
         // push_bytes]. They must NOT be pushed at [rbp-8..]: locals and
