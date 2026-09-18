@@ -2,27 +2,13 @@
 
 - interchange and extended float types (just aliased, no __STDC_IEC_60559_TYPES__)
 
+- add opt_O as int level. no opt_On needed. default -1
+
 - add more cheap -O1 passes, without SSA analysis.
-  Ranked candidates, all doable without SSA:
-  1. Switch lowering — today every switch case is a linear cmp+jcc chain (codegen.c:13083). Already in TODO:
-     dense small ints → jump table (the &&label label-address machinery this needs already exists),
-     sparse → sorted binary search. sparse small ints (elsif chains), sparse large ints (perfect hashes).
-     Biggest single win; no dataflow.
-  2. x86 peephole parity — asm_peep_try() is #ifdef ARCH_ARM64 only. The mov+mov fold,
-     mov-imm+ALU→ALU-imm fold, and identity-op deletion all have direct x86 equivalents. Mechanical port
-     of existing logic.
-  3. Algebraic identities in optimize_node — codegen only sees const-on-RHS (x+0, x*1 at
-     codegen.c:16515). 0+x, 1*x, x<<0, x/1, x%1, !!x, and const-on-left normalization are trivial AST
-     walker additions. (Guard x*0→0 on side-effect-free lhs.)
-  4. Block-local copy/const propagation — one forward pass per straight-line block: a=5; b=a+1 → b=6,
-     store-to-load forwarding. No SSA: small map keyed by LVar->offset (the CTFE env in opt.c already
-     uses offset/8 as its key), invalidated by any call, pointer store, or address-taken local.
-  5. Block-local dead-store elimination — same pass as #4: x=1; x=2; drops the first store if not volatile;
-     unused-result x++ drops the inc. Requires the local-not-address-taken check, same invalidation set.
-  6. Jump threading — jcc .L1 … .L1: jmp .L2 → retarget .L1 users to .L2; jmp to the
-     immediately-following label → delete. Pure fixup-table surgery on the emitted buffer, no analysis.
-  7. Unused pure-call statements — strlen(x); as an expression statement → drop. fn_purity() and the
-     pure-fn table already exist in opt.c:78; this is just a statement-list filter.
+  Sparse switch lowering — a switch that doesn't qualify for the dense
+  jump table (sparse or large-span values) still falls back to a
+  linear cmp+jcc chain (codegen.c:13083). Sorted binary search for
+  sparse small ints, perfect hashes for sparse large ints.
 
 - -O2 Tail calls — return f(args) → jmp f. Non-SSA but ABI-sensitive (frame layout, varargs callee)
 

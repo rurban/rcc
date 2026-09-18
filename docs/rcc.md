@@ -301,6 +301,46 @@ rcc has two independent optimization layers:
   this file still takes regardless of `-O` (matching gcc/clang, whose
   `-O0` also never substitutes magic-number division).
 
+- **Jump threading** (`src/codegen.c`'s `cg_thread_jumps()`): runs once
+  per function immediately after its body and epilogue are fully
+  emitted. Any branch — conditional or not — that lands on a label
+  defined immediately before an unconditional `jmp`/`b` is retargeted
+  straight through that trampoline (following up to 64 hops, so a chain
+  of several such labels collapses to one final jump) without
+  re-walking or re-emitting anything; it's pure fixup-table surgery on
+  the already-emitted machine code. Skipped under an explicit `-O0`,
+  like the strength reduction above.
+- **Register-copy and immediate-fold peephole**
+  (`src/codegen_asm.h`'s `asm_peep_try()`, both architectures): after
+  every emitted instruction, checks the last one or two for a fixed set
+  of shapes and rewrites them in place directly in the just-emitted
+  machine code — a byte-level truncate/re-encode, not a separate IR
+  pass:
+  - `mov ra, rb; mov rc, ra` → `mov rc, rb` (skip the dead intermediate
+    register), when `rc != ra`.
+  - `mov ra, #imm; mov rc, ra` → `mov rc, #imm` (fold a materialized
+    immediate straight into its only consumer); skipped when the first
+    move is itself a truncating/zero-extending cast, which would
+    silently widen back to the second move's size.
+  - `mov ra, #imm; add/sub/and/or/xor rb, ra` → the immediate form of
+    that op, or deleted outright when `imm == 0` and the op is
+    add/sub/or/xor (a no-op). ARM64 additionally requires the immediate
+    to fit that op's own encoding (12-bit unshifted for add/sub, a
+    logical bitmask immediate for and/or/xor) and leaves both
+    instructions alone when it doesn't.
+  - x86-64 only: a 3-instruction load-then-op-then-move chain — `load
+rX; add/sub/and/or/xor rX, rY; mov rZ, rX`, where `rX` is dead
+    after the move — fuses into `load rZ; op rZ, rY`, eliminating the
+    now-redundant final move. ARM64 has no equivalent 3-instruction
+    fusion.
+
+  Every fold requires byte-adjacency between the recorded instructions
+  (bails out, unfolded, if anything untracked slipped in between) and
+  shifts any pending branch-fixup offsets past the folded/deleted
+  region. Skipped under an explicit `-O0`, like the two passes above.
+  Exercised end to end by `test/test_peep.c`, which drives each shape
+  through both raw inline `asm` text and equivalent C source.
+
 #### `-O1` and up: the peephole optimizer (`src/opt.c`)
 
 Runs a fixed-point-free, single top-down/bottom-up walk over every
@@ -318,6 +358,15 @@ function's AST:
   just extended to the expression position too. Skipped for `__int128`,
   `_BitInt`, and vector-typed operands (the evaluator is a single 64-bit
   accumulator, not a per-lane or wide-integer one).
+- **Algebraic identities with one constant operand** (no dataflow
+  needed): `x+0`, `x-0`, `x|0`, `x^0`, `x<<0`, `x>>0`, `x*1`, `x/1`, and
+  `x &` (all-ones-at-width) fold to `x`; `x*0`, `x&0`, and `x%1` fold to
+  `0` (only when `x` is side-effect-free and non-volatile, since these
+  drop `x`'s evaluation entirely); double negation `-(-x)` folds to
+  `x`. A left-hand-side constant on a commutative operator
+  (`+ * & | ^ == !=`) is swapped to the right first, so `2 + x` gets
+  the same treatment as `x + 2` and reaches codegen's RHS-immediate
+  path either way.
 - **Dead-branch elimination** for `if` with a compile-time-constant
   condition: the untaken branch is dropped from the AST entirely — not
   just "unreachable at runtime", never emitted or referenced at all.
@@ -332,6 +381,14 @@ function's AST:
 - **Pure built-in call folding** for a small table of known-pure
   functions (`strlen`, `abs`, `isdigit`, `strcmp`, `toupper`, ...) called
   with constant/string-literal arguments.
+- **Unused pure-call statement elision**: an expression-statement that
+  is nothing but a call to a known-pure function (the same table the
+  fold above uses) — `strlen(x);` on its own line — is dropped
+  entirely when every argument is side-effect-free and reads no
+  `volatile`, since discarding an already-unused pure result changes
+  nothing observable. Argument evaluation with real side effects is
+  still preserved (`strlen(p++);` keeps the increment and drops only
+  the call), matching real GCC.
 - **CTFE** (compile-time function evaluation): a call to a user-defined
   function is replaced by its constant result when every argument is a
   compile-time constant, by literally interpreting the callee's AST (an
@@ -349,6 +406,32 @@ function's AST:
   early-exit from the macro body (very common) is retargeted to a
   `goto` past the end of the spliced-in code rather than block the fold,
   correctly re-scoping at any nested loop/switch in between.
+- **Block-local copy/constant propagation and dead-store elimination**
+  (`local_opt_stmt_list()`): a forward pass over each `{ }` block's
+  statement list, plus one more over the whole function body, tracks
+  the last known value stored into each eligible local — a
+  non-`volatile`, non-`static`, non-`_Thread_local`, non-register-`asm`
+  scalar integer up to 8 bytes whose address is never taken and that
+  isn't a `__attribute__((cleanup))`/C23 `defer` target (whose implicit
+  read/write at scope exit no AST walk can see). A later read of that
+  local is replaced by its known value, and a store later overwritten
+  without an intervening read is deleted outright unless the
+  overwritten expression has side effects. Any function call, write
+  through a pointer, or label conservatively clears every tracked value
+  (no alias analysis); an `if`/`switch` condition (evaluated exactly
+  once) may have a known value substituted in, but a `for`/`do`
+  condition — re-evaluated after the body/increment mutates the
+  variable — never is. Skipped entirely for a function containing
+  inline `asm`.
+- **Dense small-integer `switch` → jump table** (x86-64 only,
+  `src/codegen.c`): when every `case` is an exact, non-range integer
+  value fitting `int32_t`, there are at least 4 of them, and they span
+  no more than 256 values with no more than 3x as many table slots as
+  actual cases, the switch compiles to a bounds check plus an indirect
+  jump through a generated label-address table instead of a linear
+  chain of `cmp`/`jcc` per case. Any other shape (sparse values,
+  ranges, too few cases, too wide a span) — and every switch on ARM64 —
+  still lowers to the linear compare chain.
 
 Note: passing `-finline` or `-funroll` **alone**, with no `-O` flag at
 all, also turns on this _entire_ peephole pass (constant folding,

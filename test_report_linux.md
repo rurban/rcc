@@ -2,36 +2,36 @@
 
 **Platform**: Linux x86_64
 
-Generated: September 18 2026 09:08
+Generated: September 18 2026 11:37
 
 ## Overall Summary
 
-- **Total**: 5328
-- **Passed**: 4804
-- **Failed**: 115
+- **Total**: 5330
+- **Passed**: 4842
+- **Failed**: 79
 - **Skipped**: 405
 - **Overall Pass Rate**: 98%
 
 ## TCC Compatibility Tests
 
 - **Total**: 118
-- **Passed**: 112
-- **Failed**: 6
-- **Pass Rate**: 95%
+- **Passed**: 118
+- **Failed**: 0
+- **Pass Rate**: 100%
 
 ## RCC Unit Tests
 
-- **Total**: 407
-- **Passed**: 403
-- **Failed**: 4
-- **Pass Rate**: 99%
+- **Total**: 409
+- **Passed**: 409
+- **Failed**: 0
+- **Pass Rate**: 100%
 
 ## c-testsuite
 
 - **Total**: 220
-- **Passed**: 212
-- **Failed**: 8
-- **Pass Rate**: 96%
+- **Passed**: 220
+- **Failed**: 0
+- **Pass Rate**: 100%
 
 ## NCC Compliance Tests (vs GCC)
 
@@ -43,12 +43,11 @@ Generated: September 18 2026 09:08
 ## GCC Torture Tests
 
 - **Total**: 3963
-- **Passed**: 3587
-- **Failed**: 18
+- **Passed**: 3605
+- **Failed**: 0
 - **Skipped**: 354
-- **Fail Runtime**: 18
 - **Dg-error Tests**: 36/36 passed, 0 failed
-- **Pass Rate (excl. skip)**: 99%
+- **Pass Rate (excl. skip)**: 100%
 
 ## GCC Bugs
 

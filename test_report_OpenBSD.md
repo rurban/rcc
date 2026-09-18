@@ -2,27 +2,26 @@
 
 **Platform**: OpenBSD
 
-Generated: September 17 2026 08:17
+Generated: September 18 2026 10:18
 
 ## Overall Summary
 
-- **Total**: 4702
-- **Passed**: 4324
-- **Failed**: 3
-- **Skipped**: 368
-- **Overall Pass Rate**: 100%
+- **Total**: 746
+- **Passed**: 742
+- **Failed**: 0
+- **Overall Pass Rate**: 99%
 
 ## TCC Compatibility Tests
 
 - **Total**: 118
 - **Passed**: 116
-- **Failed**: 1
+- **Failed**: 0
 - **Pass Rate**: 98%
 
 ## RCC Unit Tests
 
-- **Total**: 401
-- **Passed**: 399
+- **Total**: 408
+- **Passed**: 406
 - **Failed**: 0
 - **Pass Rate**: 100%
 
@@ -32,13 +31,3 @@ Generated: September 17 2026 08:17
 - **Passed**: 220
 - **Failed**: 0
 - **Pass Rate**: 100%
-
-## GCC Torture Tests
-
-- **Total**: 3963
-- **Passed**: 3589
-- **Failed**: 2
-- **Skipped**: 368
-- **Fail Compile**: 2
-- **Dg-error Tests**: 36/36 passed, 0 failed
-- **Pass Rate (excl. skip)**: 100%

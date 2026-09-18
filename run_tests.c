@@ -3818,6 +3818,16 @@ static int run_unit_tests(void) {
                 add_row(base, "SKIP", "Skipped");
                 continue;
             }
+            /* GNU nested-function trampolines need an executable stack slot;
+             * only proven reliable on Linux and qemu-emulated arm64_cross
+             * (see torture_should_skip's SKIP_TRAMPOLINES). OpenBSD W^X,
+             * NetBSD, native macOS/arm64 and Windows/wine all crash here. */
+            if (!streq(platform, "linux") && !streq(platform, "arm64_cross") &&
+                streq(base, "test_nested_chain_localopt")) {
+                print_result(base, COL_YELLOW, "SKIP");
+                add_row(base, "SKIP", "Skipped");
+                continue;
+            }
             if (n_tests >= n_alloc) {
                 n_alloc = n_alloc ? n_alloc * 2 : 16;
                 entries = xrealloc(entries, (size_t)n_alloc * sizeof(*entries));
@@ -3892,6 +3902,16 @@ static int run_unit_tests(void) {
                   streq(base, "test_toplevel_asm") ||
                   streq(base, "test_pcrel_paren_addend") ||
                   streq(base, "test_asm_cpp_hash_comment")))) {
+                print_result(base, COL_YELLOW, "SKIP");
+                add_row(base, "SKIP", "Skipped");
+                free(nl[i]);
+                continue;
+            }
+
+            /* See the parallel path's matching skip: trampolines need an
+             * executable stack slot, only proven reliable on Linux/arm64_cross. */
+            if (!streq(platform, "linux") && !streq(platform, "arm64_cross") &&
+                streq(base, "test_nested_chain_localopt")) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
                 free(nl[i]);

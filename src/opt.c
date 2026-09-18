@@ -1228,12 +1228,23 @@ typedef struct {
 
 static bool local_opt_eligible(LVar *var) {
     Type *ty = var ? var->ty : NULL;
+    // cleanup_func/defer_stmt variables have their address passed to
+    // arbitrary code at scope exit -- an invisible write/read the AST
+    // walk (and even var->addr_taken) never sees. Dropping such a var's
+    // store as "dead" leaves the cleanup reading a stale slot (tinycc
+    // 101_cleanup's test_cleanup1 printed -1 instead of 42, the value
+    // an earlier frame left at the same offset).
     return !local_opt_has_asm && var && var->is_local && !var->is_static && !var->is_tls &&
         !var->is_global_reg && !var->addr_taken && !local_opt_addr_taken(var) &&
+        !var->cleanup_func && !var->defer_stmt &&
         ty && !ty_volatile(ty) && is_integer(ty) && ty->kind != TY_BITINT &&
         !ty->is_vector && ty->size > 0 && ty->size <= 8;
 }
 
+static bool local_opt_lvar_eligible(Node *node) {
+    return node && node->kind == ND_LVAR && node->chain_depth == 0 &&
+        local_opt_eligible(node->var);
+}
 
 static int local_opt_find(LocalOptState **states, int *len, int *cap, LVar *var, bool add) {
     for (int i = 0; i < *len; i++)
@@ -1278,7 +1289,7 @@ static void local_opt_note_lvalue(Node *node, LocalOptState **states, int *len, 
 
 static void local_opt_note_read(Node *node, LocalOptState **states, int *len, int *cap) {
     if (!node) return;
-    if (node->kind == ND_LVAR && local_opt_eligible(node->var)) {
+    if (local_opt_lvar_eligible(node)) {
         int i = local_opt_find(states, len, cap, node->var, false);
         if (i >= 0) (*states)[i].last_store = NULL;
         return;
@@ -1300,6 +1311,8 @@ static void local_opt_note_read(Node *node, LocalOptState **states, int *len, in
     local_opt_note_read(node->lhs, states, len, cap);
     local_opt_note_read(node->rhs, states, len, cap);
     local_opt_note_read(node->cond, states, len, cap);
+    local_opt_note_read(node->then, states, len, cap);
+    local_opt_note_read(node->els, states, len, cap);
     for (Node *arg = node->args; arg; arg = arg->next)
         local_opt_note_read(arg, states, len, cap);
 }
@@ -1313,7 +1326,7 @@ static Node *local_opt_subst_lvalue(Node *node, LocalOptState *states, int len) 
 
 static Node *local_opt_subst_read(Node *node, LocalOptState *states, int len) {
     if (!node) return NULL;
-    if (node->kind == ND_LVAR && local_opt_eligible(node->var)) {
+    if (local_opt_lvar_eligible(node)) {
         for (int i = 0; i < len; i++)
             if (states[i].var == node->var && states[i].value)
                 return clone_expr(states[i].value);
@@ -1333,6 +1346,8 @@ static Node *local_opt_subst_read(Node *node, LocalOptState *states, int len) {
     node->lhs = local_opt_subst_read(node->lhs, states, len);
     node->rhs = local_opt_subst_read(node->rhs, states, len);
     node->cond = local_opt_subst_read(node->cond, states, len);
+    node->then = local_opt_subst_read(node->then, states, len);
+    node->els = local_opt_subst_read(node->els, states, len);
     for (Node *arg = node->args; arg; arg = arg->next)
         local_opt_subst_read(arg, states, len);
     return node;
@@ -1348,7 +1363,8 @@ static bool local_opt_has_write(Node *node) {
         node->kind == ND_STMT_EXPR)
         return true;
     if (local_opt_has_write(node->lhs) || local_opt_has_write(node->rhs) ||
-        local_opt_has_write(node->cond))
+        local_opt_has_write(node->cond) || local_opt_has_write(node->then) ||
+        local_opt_has_write(node->els))
         return true;
     for (Node *arg = node->args; arg; arg = arg->next)
         if (local_opt_has_write(arg)) return true;
@@ -1359,7 +1375,8 @@ static bool local_opt_has_call(Node *node) {
     if (!node) return false;
     if (node->kind == ND_FUNCALL || node->kind == ND_ASM) return true;
     if (local_opt_has_call(node->lhs) || local_opt_has_call(node->rhs) ||
-        local_opt_has_call(node->cond))
+        local_opt_has_call(node->cond) || local_opt_has_call(node->then) ||
+        local_opt_has_call(node->els))
         return true;
     for (Node *arg = node->args; arg; arg = arg->next)
         if (local_opt_has_call(arg)) return true;
@@ -1369,7 +1386,7 @@ static bool local_opt_has_call(Node *node) {
 static Node *local_opt_known_value(Node *rhs, Type *ty) {
     if (!rhs || !ident_same_ty(rhs->ty, ty)) return NULL;
     if (rhs->kind == ND_NUM) return rhs;
-    if (rhs->kind == ND_LVAR && local_opt_eligible(rhs->var)) return rhs;
+    if (local_opt_lvar_eligible(rhs)) return rhs;
     if (!is_integer(ty) || ty->kind == TY_BITINT || ty->is_vector ||
         ty->size <= 0 || ty->size > 8 || expr_has_float(rhs))
         return NULL;
@@ -1386,8 +1403,7 @@ static Node *local_opt_known_value(Node *rhs, Type *ty) {
 static bool local_opt_droppable(Node *stmt) {
     Node *assign = stmt && stmt->kind == ND_EXPR_STMT ? stmt->lhs : NULL;
     return assign && assign->kind == ND_ASSIGN &&
-        assign->lhs && assign->lhs->kind == ND_LVAR &&
-        local_opt_eligible(assign->lhs->var) &&
+        local_opt_lvar_eligible(assign->lhs) &&
         arg_is_simple(assign->rhs) && !expr_reads_volatile(assign->rhs);
 }
 
@@ -1408,19 +1424,28 @@ static void local_opt_stmt_list(Node *head, bool function_root) {
     for (Node *stmt = head; stmt; stmt = stmt->next) {
         Node *assign = stmt->kind == ND_EXPR_STMT ? stmt->lhs : NULL;
         bool direct = assign && assign->kind == ND_ASSIGN &&
-            assign->lhs && assign->lhs->kind == ND_LVAR &&
-            local_opt_eligible(assign->lhs->var);
+            local_opt_lvar_eligible(assign->lhs);
         Node *value = direct ? assign->rhs : local_opt_stmt_value(stmt);
         bool writes = value && local_opt_has_write(value);
         if (value && !writes) {
             if (direct) {
                 assign->rhs = local_opt_subst_read(assign->rhs, states, len);
             } else if (stmt->kind != ND_EXPR_STMT || assign->kind != ND_ASSIGN) {
-                Node *repl = local_opt_subst_read(value, states, len);
-                if (stmt->kind == ND_RETURN || stmt->kind == ND_EXPR_STMT)
-                    stmt->lhs = repl;
-                else
-                    stmt->cond = repl;
+                // A FOR/DO loop condition is re-evaluated after the
+                // body/inc clause runs, so a pre-loop known value is
+                // only valid for the FIRST evaluation -- substituting
+                // it freezes the condition ("while (i < 10)" with i==0
+                // became "while (0 < 10)"), miscompiling any loop whose
+                // body/inc mutates the variable into an infinite loop.
+                // IF/SWITCH conditions are evaluated exactly once, so
+                // substitution there is sound.
+                if (stmt->kind != ND_FOR && stmt->kind != ND_DO) {
+                    Node *repl = local_opt_subst_read(value, states, len);
+                    if (stmt->kind == ND_RETURN || stmt->kind == ND_EXPR_STMT)
+                        stmt->lhs = repl;
+                    else
+                        stmt->cond = repl;
+                }
             }
             value = direct ? assign->rhs : local_opt_stmt_value(stmt);
         }

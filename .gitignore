@@ -113,6 +113,7 @@ amazon_bug_bounty/
 /session-ses*.md.gz
 /omp-*.html
 /omp-*.html.gz
+/codex-session-*
 pngout.png
 rcc-preview2.png
 /chat_export*.md
