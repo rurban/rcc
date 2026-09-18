@@ -9820,6 +9820,248 @@ static VReg gen_bitint(Node *node) {
     }
 }
 
+// ─── Sparse switch lowering: binary search / perfect hash (-O1) ─────────
+// Both apply only when every case is an exact value (no case-range: a
+// range needs the interval logic the linear chain in ND_SWITCH already
+// implements, which neither sorted comparison nor hashing on discrete
+// keys can safely replace) and the switch didn't already win the dense
+// small-int jump table. Both are architecture-portable: binary search is
+// plain cmp/jcc control flow (no new primitives at all), and the hash
+// dispatch reuses the dense table's own "index * fixed-width-jmp-
+// instruction, then indirect jump" trick, just indexed by a hash instead
+// of value-minus-min.
+#define SWITCH_BSEARCH_MIN 8 // fewer cases: linear chain is as fast and simpler
+#define SWITCH_HASH_MIN 17 // fewer cases: binary search's simplicity wins over 2 tables
+#define SWITCH_HASH_MAX_N 256 // above this, random multiplicative search rarely converges in budget -- go straight to binary search
+#define SWITCH_HASH_MAX_M 4096u // hard cap on hash-table growth attempts
+#define SWITCH_HASH_TRIES 2000 // random multipliers tried per table-size level
+
+static int switch_case_cmp(const void *a, const void *b) {
+    int64_t va = (*(Node *const *)a)->case_val;
+    int64_t vb = (*(Node *const *)b)->case_val;
+    return va < vb ? -1 : (va > vb ? 1 : 0);
+}
+
+// Collects every case into a sorted-by-value array. Returns NULL when the
+// switch has fewer than 2 cases or contains any case-range.
+static Node **switch_collect_sparse_cases(Node *case_next, int *out_n) {
+    int n = 0;
+    for (Node *cs = case_next; cs; cs = cs->case_next) {
+        if (cs->is_case_range) return NULL;
+        n++;
+    }
+    if (n < 2) return NULL;
+    Node **arr = arena_alloc(sizeof(Node *) * (size_t)n);
+    int i = 0;
+    for (Node *cs = case_next; cs; cs = cs->case_next) arr[i++] = cs;
+    qsort(arr, (size_t)n, sizeof(Node *), switch_case_cmp);
+    *out_n = n;
+    return arr;
+}
+
+// Emits `cmp cond, #case_val`, spilling the constant through a scratch
+// register when it doesn't fit a 32-bit immediate (asm_cmp_imm handles
+// the rest of the ARM64/x86 encoding split internally). `cond` is always
+// the compare's left operand, so a later EQ/LT/GT check reads the same
+// way regardless of which operand-order convention either encoder uses
+// internally.
+static void switch_cmp_case(VReg cond, int sz, int64_t case_val) {
+    if (case_val == (int32_t)case_val)
+        asm_cmp_imm(cg_sec, cond, sz, (int32_t)case_val);
+    else {
+        VReg tmp = alloc_reg();
+        asm_mov_imm(cg_sec, tmp, 8, case_val);
+        asm_cmp_reg_reg(cg_sec, cond, tmp, 8);
+        free_reg(tmp);
+    }
+}
+
+// Recursive balanced binary search over sorted[lo..hi]. Every leaf either
+// jumps to a case body or falls through to miss_label; there is no path
+// that reaches whatever code follows this call, matching the dense jump
+// table's no-fallthrough shape.
+static void switch_emit_bsearch(VReg cond, int sz, bool is_uns, Node **sorted,
+                                int lo, int hi, const char *miss_label) {
+    if (lo > hi) {
+        size_t o = asm_jmp_label(cg_sec);
+        asm_fixup_add(cg_sec, o, miss_label, 0);
+        return;
+    }
+    int mid = lo + (hi - lo) / 2;
+    Node *cs = sorted[mid];
+    switch_cmp_case(cond, sz, cs->case_val);
+    size_t eq = asm_jcc_label(cg_sec,
+#ifdef ARCH_ARM64
+                              ARM64_EQ
+#else
+                              X86_E
+#endif
+    );
+    asm_fixup_add(cg_sec, eq, format(".L.case.%d", cs->label_id), 1);
+    if (lo == hi) {
+        size_t o = asm_jmp_label(cg_sec);
+        asm_fixup_add(cg_sec, o, miss_label, 0);
+        return;
+    }
+    size_t lo_jmp = asm_jcc_label(cg_sec,
+#ifdef ARCH_ARM64
+                                  is_uns ? ARM64_LO : ARM64_LT
+#else
+                                  is_uns ? X86_B : X86_L
+#endif
+    );
+    const char *skip_label = format(".L.bsearch.%d", ++rcc_label_count);
+    asm_fixup_add(cg_sec, lo_jmp, skip_label, 1);
+    // Fall through: cond > sorted[mid]->case_val -- high half.
+    switch_emit_bsearch(cond, sz, is_uns, sorted, mid + 1, hi, miss_label);
+    cg_def_label(skip_label);
+    switch_emit_bsearch(cond, sz, is_uns, sorted, lo, mid - 1, miss_label);
+}
+
+// Deterministic splitmix64 PRNG so hash construction is 100% reproducible
+// across builds/machines -- never seeded from time/pid, which would make
+// identical source produce a different binary on every compile.
+static uint64_t switch_hash_rng(uint64_t *state) {
+    uint64_t z = (*state += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+// Extends case_val's low `sz` bytes to a full 64-bit value exactly the way
+// the runtime dispatch below extends `cond`'s register -- bit-for-bit
+// agreement between this and the runtime extension is what makes the
+// eventual `cmp` against the loaded table key sound.
+static uint64_t switch_extend_key(int64_t case_val, int sz, bool is_uns) {
+    uint64_t mask = (sz >= 8) ? ~0ULL : ((1ULL << (sz * 8)) - 1);
+    uint64_t raw = (uint64_t)case_val & mask;
+    if (!is_uns && sz < 8 && (raw & (1ULL << (sz * 8 - 1))))
+        raw |= ~mask;
+    return raw;
+}
+
+// Searches for a collision-free multiplicative hash (Fibonacci-style:
+// idx = (key * k) >> (64 - log2 m)) placing all `n` sorted cases into a
+// power-of-two table of `m` slots, growing `m` (more empty slots, easier
+// to avoid collisions) and retrying up to SWITCH_HASH_MAX_M. On success,
+// `*out_slot` is a fresh m-entry array: slot i is the case landing in
+// bucket i, or NULL for an empty bucket. Construction is best-effort: a
+// failed search (returns false) costs a missed optimization, never
+// correctness -- callers always fall back to binary search. A random
+// multiplicative probe scales poorly past a few hundred keys (birthday
+// collisions dominate the fixed try budget well before SWITCH_HASH_MAX_M
+// helps), which is exactly why callers gate this on SWITCH_HASH_MAX_N.
+static bool switch_build_hash(Node **sorted, int n, int sz, bool is_uns,
+                              int32_t *out_k, int *out_shift, uint32_t *out_m,
+                              Node ***out_slot) {
+    uint64_t *keys = arena_alloc(sizeof(uint64_t) * (size_t)n);
+    for (int i = 0; i < n; i++)
+        keys[i] = switch_extend_key(sorted[i]->case_val, sz, is_uns);
+    uint32_t m = 4;
+    while (m < (uint32_t)n * 2) m <<= 1;
+    uint64_t rng_state = 0x2545F4914F6CDD1DULL ^ (uint64_t)n;
+    for (; m <= SWITCH_HASH_MAX_M; m <<= 1) {
+        int shift = 64 - __builtin_ctz(m);
+        Node **slot = arena_alloc(sizeof(Node *) * (size_t)m);
+        for (int attempt = 0; attempt < SWITCH_HASH_TRIES; attempt++) {
+            int32_t k = (int32_t)(switch_hash_rng(&rng_state) | 1);
+            uint64_t k64 = (uint64_t)(int64_t)k;
+            for (uint32_t s = 0; s < m; s++) slot[s] = NULL;
+            bool collision = false;
+            for (int i = 0; i < n; i++) {
+                uint32_t idx = (uint32_t)((keys[i] * k64) >> shift);
+                if (slot[idx]) {
+                    collision = true;
+                    break;
+                }
+                slot[idx] = sorted[i];
+            }
+            if (!collision) {
+                *out_k = k;
+                *out_shift = shift;
+                *out_m = m;
+                *out_slot = slot;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Runtime dispatch for a perfect-hash-eligible switch: extend `cond` to 64
+// bits, hash it, load the bucket's stored key and compare against `cond`.
+// A mismatch (an absent value, including one that happens to collide by
+// hash with an occupied bucket) falls to miss_label; a match falls through
+// to that bucket's indexed jump-table entry. `keytab` holds `m` consecutive
+// 8-byte int64 slots (an empty bucket's stored value is never meaningful --
+// its jump-table entry always targets miss_label regardless of what a
+// spurious key match there would do); `jmptab` holds `m` consecutive
+// fixed-width unconditional jumps (5 bytes/x86 `jmp rel32`, 4 bytes/ARM64
+// `b`), the same code-table trick the dense jump table above already uses.
+// Loads label's address into r: ARM64's ADRP+ADD or x86's RIP-relative
+// LEA, matching ND_LABEL_VAL's own architecture split above.
+static void switch_emit_lea_label(VReg r, const char *label) {
+#ifdef ARCH_ARM64
+    emit_adrp_add(r, label);
+#else
+    asm_lea_rip_reg(cg_sec, r, label);
+#endif
+}
+
+static void switch_emit_hash_dispatch(VReg cond, int sz, bool is_uns, int32_t k,
+                                      int shift, const char *keytab,
+                                      const char *jmptab, const char *miss_label) {
+    VReg ext = alloc_reg();
+    if (sz < 8) {
+        if (is_uns) asm_movzx(cg_sec, ext, cond, 8, sz);
+        else
+            asm_movsx(cg_sec, ext, cond, 8, sz);
+    } else
+        asm_mov_reg_reg(cg_sec, ext, cond, 8);
+    VReg idx = alloc_reg();
+#ifdef ARCH_ARM64
+    VReg ktmp = alloc_reg();
+    asm_mov_imm(cg_sec, ktmp, 8, (int64_t)k);
+    asm_mul_rd_rn_rm(cg_sec, idx, ext, ktmp, 8);
+    free_reg(ktmp);
+#else
+    asm_imul_imm(cg_sec, idx, ext, 8, k);
+#endif
+    asm_shr_imm(cg_sec, idx, 8, (uint8_t)shift);
+    VReg addr = alloc_reg();
+    switch_emit_lea_label(addr, keytab);
+    VReg scaled = alloc_reg();
+    asm_mov_reg_reg(cg_sec, scaled, idx, 8);
+    asm_shl_imm(cg_sec, scaled, 8, 3); // *8: key-table entry width
+    asm_add_reg_reg(cg_sec, addr, scaled, 8);
+    free_reg(scaled);
+    VReg key = alloc_reg();
+    emit_load(ty_llong, key, addr, 0);
+    free_reg(addr);
+    asm_cmp_reg_reg(cg_sec, ext, key, 8);
+    free_reg(key);
+    free_reg(ext);
+    size_t miss = asm_jcc_label(cg_sec,
+#ifdef ARCH_ARM64
+                                ARM64_NE
+#else
+                                X86_NE
+#endif
+    );
+    asm_fixup_add(cg_sec, miss, miss_label, 1);
+    VReg table = alloc_reg();
+    switch_emit_lea_label(table, jmptab);
+#ifdef ARCH_ARM64
+    asm_shl_imm(cg_sec, idx, 8, 2); // *4: `b` instruction width
+#else
+    x86_lea(cg_sec, 8, REG(idx), x86_mem_idx(REG(idx), REG(idx), 4, 0)); // *5: `jmp rel32` width
+#endif
+    asm_add_reg_reg(cg_sec, table, idx, 8);
+    free_reg(idx);
+    asm_jmp_reg(cg_sec, table);
+    free_reg(table);
+}
+
 // Generate code for a given node.
 VReg gen(Node *node) {
     if (!node) return R_NONE;
@@ -13320,6 +13562,15 @@ VReg gen(Node *node) {
                 cs->label_id = ++rcc_label_count;
         if (node->default_case && !node->default_case->label_id)
             node->default_case->label_id = ++rcc_label_count;
+        bool use_hash = false, use_bsearch = false;
+        const char *sparse_fallback = node->default_case
+            ? format(".L.case.%d", node->default_case->label_id)
+            : format(".L.end.%d", c);
+        const char *hash_keytab = NULL, *hash_jmptab = NULL;
+        int32_t hash_k = 0;
+        int hash_shift = 0;
+        uint32_t hash_m = 0;
+        Node **hash_slot = NULL;
 #ifndef ARCH_ARM64
         bool use_jt = false;
         int64_t jt_min = 0, jt_max = 0;
@@ -13340,9 +13591,7 @@ VReg gen(Node *node) {
             if (count >= 4 && span <= 256 && span <= (uint64_t)count * 3) {
                 use_jt = true;
                 jt_table = format(".L.switch.table.%d", c);
-                jt_fallback = node->default_case
-                    ? format(".L.case.%d", node->default_case->label_id)
-                    : format(".L.end.%d", c);
+                jt_fallback = sparse_fallback;
                 asm_cmp_imm(cg_sec, cond, sz, jt_max);
                 size_t out = asm_jcc_label(cg_sec, X86_A);
                 asm_fixup_add(cg_sec, out, jt_fallback, 1);
@@ -13357,9 +13606,37 @@ VReg gen(Node *node) {
                 free_reg(table);
             }
         }
-#endif
-#ifndef ARCH_ARM64
         if (!use_jt)
+#endif
+        {
+            // Sparse switch lowering: perfect hash, else binary search,
+            // else fall through to the linear chain below. Both need
+            // every case to be an exact value -- see
+            // switch_collect_sparse_cases -- and opt_O1.
+            int sparse_n = 0;
+            Node **sparse_sorted = opt_O1
+                ? switch_collect_sparse_cases(node->case_next, &sparse_n)
+                : NULL;
+            if (sparse_sorted && sparse_n >= SWITCH_HASH_MIN && sparse_n <= SWITCH_HASH_MAX_N &&
+                switch_build_hash(sparse_sorted, sparse_n, sz, is_uns,
+                                  &hash_k, &hash_shift, &hash_m, &hash_slot))
+                use_hash = true;
+            else if (sparse_sorted && sparse_n >= SWITCH_BSEARCH_MIN)
+                use_bsearch = true;
+            if (use_hash) {
+                hash_keytab = format(".L.switch.keytab.%d", c);
+                hash_jmptab = format(".L.switch.jmptab.%d", c);
+                switch_emit_hash_dispatch(cond, sz, is_uns, hash_k, hash_shift,
+                                          hash_keytab, hash_jmptab, sparse_fallback);
+            } else if (use_bsearch) {
+                switch_emit_bsearch(cond, sz, is_uns, sparse_sorted, 0, sparse_n - 1,
+                                    sparse_fallback);
+            }
+        }
+#ifndef ARCH_ARM64
+        if (!use_jt && !use_hash && !use_bsearch)
+#else
+        if (!use_hash && !use_bsearch)
 #endif
             for (Node *cs = node->case_next; cs; cs = cs->case_next) {
                 if (!cs->label_id)
@@ -13394,30 +13671,30 @@ VReg gen(Node *node) {
                         asm_fixup_add(cg_sec, o, format(".L.case.%d", (int)cs->label_id), 1);
                     } /* movabs $%lld, %s\n */
 #else
-                if (cs->case_val == (int32_t)cs->case_val)
-                    asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_val); // cmp $(long long)cs->case_val, rcond
-                else {
-                    VReg tmp = alloc_reg();
-                    asm_mov_imm(cg_sec, tmp, 8, (long long)cs->case_val); // mov $(long long)cs->case_val, rtmp
-                    asm_cmp_reg_reg(cg_sec, cond, tmp, 8); // cmp rtmp, rcond
-                    free_reg(tmp);
-                }
-                {
-                    size_t o = asm_jcc_label(cg_sec, is_uns ? X86_B : X86_L); // jcc label
-                    asm_fixup_add(cg_sec, o, format(".L.skip.%d", skip_lbl), 1);
-                } /* cmp %s, %s\n */
-                if (cs->case_end == (int32_t)cs->case_end)
-                    asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_end); // cmp $(long long)cs->case_end, rcond
-                else {
-                    VReg tmp = alloc_reg();
-                    asm_mov_imm(cg_sec, tmp, 8, (long long)cs->case_end); // mov $(long long)cs->case_end, rtmp
-                    asm_cmp_reg_reg(cg_sec, cond, tmp, 8); // cmp rtmp, rcond
-                    free_reg(tmp);
-                }
-                {
-                    size_t o = asm_jcc_label(cg_sec, is_uns ? X86_BE : X86_LE); // jcc label
-                    asm_fixup_add(cg_sec, o, format(".L.case.%d", (int)cs->label_id), 1);
-                } /* b.eq .L.case.%d\n */
+                    if (cs->case_val == (int32_t)cs->case_val)
+                        asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_val); // cmp $(long long)cs->case_val, rcond
+                    else {
+                        VReg tmp = alloc_reg();
+                        asm_mov_imm(cg_sec, tmp, 8, (long long)cs->case_val); // mov $(long long)cs->case_val, rtmp
+                        asm_cmp_reg_reg(cg_sec, cond, tmp, 8); // cmp rtmp, rcond
+                        free_reg(tmp);
+                    }
+                    {
+                        size_t o = asm_jcc_label(cg_sec, is_uns ? X86_B : X86_L); // jcc label
+                        asm_fixup_add(cg_sec, o, format(".L.skip.%d", skip_lbl), 1);
+                    } /* cmp %s, %s\n */
+                    if (cs->case_end == (int32_t)cs->case_end)
+                        asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_end); // cmp $(long long)cs->case_end, rcond
+                    else {
+                        VReg tmp = alloc_reg();
+                        asm_mov_imm(cg_sec, tmp, 8, (long long)cs->case_end); // mov $(long long)cs->case_end, rtmp
+                        asm_cmp_reg_reg(cg_sec, cond, tmp, 8); // cmp rtmp, rcond
+                        free_reg(tmp);
+                    }
+                    {
+                        size_t o = asm_jcc_label(cg_sec, is_uns ? X86_BE : X86_LE); // jcc label
+                        asm_fixup_add(cg_sec, o, format(".L.case.%d", (int)cs->label_id), 1);
+                    } /* b.eq .L.case.%d\n */
 #endif
                     cg_def_label(format(".L.skip.%d", skip_lbl)); // cmp $%lld, %s
                 } else {
@@ -13436,21 +13713,23 @@ VReg gen(Node *node) {
                         asm_fixup_add(cg_sec, case_jmp, format(".L.case.%d", (int)cs->label_id), 1);
                     }
 #else
-                if (cs->case_val == (int32_t)cs->case_val) {
-                    asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_val); // cmp $(long long)cs->case_val, rcond
-                } else {
-                    VReg tmp = alloc_reg();
-                    asm_mov_imm(cg_sec, tmp, 8, (long long)cs->case_val); // mov $(long long)cs->case_val, rtmp
-                    asm_cmp_reg_reg(cg_sec, tmp, cond, 8); // cmp rcond, rtmp
-                    free_reg(tmp);
-                }
-                size_t case_jmp = asm_jcc_label(cg_sec, X86_E); // jcc label
-                asm_fixup_add(cg_sec, case_jmp, format(".L.case.%d", cs->label_id), 1); // fixup label
+                    if (cs->case_val == (int32_t)cs->case_val) {
+                        asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_val); // cmp $(long long)cs->case_val, rcond
+                    } else {
+                        VReg tmp = alloc_reg();
+                        asm_mov_imm(cg_sec, tmp, 8, (long long)cs->case_val); // mov $(long long)cs->case_val, rtmp
+                        asm_cmp_reg_reg(cg_sec, tmp, cond, 8); // cmp rcond, rtmp
+                        free_reg(tmp);
+                    }
+                    size_t case_jmp = asm_jcc_label(cg_sec, X86_E); // jcc label
+                    asm_fixup_add(cg_sec, case_jmp, format(".L.case.%d", cs->label_id), 1); // fixup label
 #endif
                 }
             }
 #ifndef ARCH_ARM64
-        if (!use_jt) {
+        if (!use_jt && !use_hash && !use_bsearch) {
+#else
+        if (!use_hash && !use_bsearch) {
 #endif
             if (node->default_case) {
                 size_t sw_jmp = asm_jmp_label(cg_sec); // jmp default
@@ -13461,6 +13740,8 @@ VReg gen(Node *node) {
                 asm_fixup_add(cg_sec, sw_jmp, format(".L.end.%d", c), 0);
             }
 #ifndef ARCH_ARM64
+        }
+#else
         }
 #endif
         free_reg(cond);
@@ -13488,6 +13769,23 @@ VReg gen(Node *node) {
             }
         }
 #endif
+        if (use_hash) {
+            size_t end_jmp = asm_jmp_label(cg_sec);
+            asm_fixup_add(cg_sec, end_jmp, format(".L.end.%d", c), 0);
+            cg_set_section(SEC_RODATA);
+            cg_def_label_sec(hash_keytab, SEC_RODATA);
+            for (uint32_t i = 0; i < hash_m; i++) {
+                uint64_t key = hash_slot[i] ? switch_extend_key(hash_slot[i]->case_val, sz, is_uns) : 0;
+                secbuf_emit64le(cg_sec, key);
+            }
+            cg_set_section(SEC_TEXT);
+            cg_def_label(hash_jmptab);
+            for (uint32_t i = 0; i < hash_m; i++) {
+                size_t entry = asm_jmp_label(cg_sec);
+                asm_fixup_add(cg_sec, entry,
+                              hash_slot[i] ? format(".L.case.%d", hash_slot[i]->label_id) : sparse_fallback, 0);
+            }
+        }
         cg_def_label(format(".L.end.%d", c)); // .L.end.%d:
         return -1;
     }

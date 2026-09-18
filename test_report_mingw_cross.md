@@ -2,13 +2,13 @@
 
 **Platform**: Windows x86_64 (mingw cross)
 
-Generated: September 18 2026 11:10
+Generated: September 18 2026 16:18
 
 ## Overall Summary
 
-- **Total**: 4723
-- **Passed**: 4333
-- **Failed**: 0
+- **Total**: 4726
+- **Passed**: 4334
+- **Failed**: 2
 - **Skipped**: 385
 - **Overall Pass Rate**: 100%
 
@@ -21,10 +21,10 @@ Generated: September 18 2026 11:10
 
 ## RCC Unit Tests
 
-- **Total**: 407
-- **Passed**: 406
-- **Failed**: 0
-- **Pass Rate**: 100%
+- **Total**: 410
+- **Passed**: 407
+- **Failed**: 2
+- **Pass Rate**: 99%
 
 ## c-testsuite
 

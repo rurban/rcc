@@ -2060,11 +2060,27 @@ static inline void asm_lea_rbp_reg(SecBuf *s, VReg r, int size, int offset) {
 }
 #endif
 
+// `imm12, sh` -- ARM64's SUBS/CMP immediate form only encodes a 12-bit
+// unsigned value, optionally left-shifted by 12 (a multiple of 4096 up to
+// 0xffffff). A caller passing anything else (including any negative
+// value) previously got silently truncated to that 12-bit field instead
+// of a compile error -- e.g. `cmp w, #4096` encoded as `cmp w, #0`, wrong
+// on any input. Falls back to materializing the constant into X17 (ARM64's
+// intra-procedure scratch register, never in the allocatable VReg pool --
+// codegen_asm.h has no allocator access here, matching emit_load's
+// identical X17 scratch use for an out-of-LDUR-range offset).
 static inline void asm_cmp_imm(SecBuf *s, VReg r, int size, int32_t imm) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;
-    arm64_subs_imm(s, sf, 31, REG(r), imm, 0);
+    if (imm >= 0 && imm <= 4095)
+        arm64_subs_imm(s, sf, 31, REG(r), imm, 0);
+    else if (imm > 0 && imm <= 0xffffff && (imm & 0xfff) == 0)
+        arm64_subs_imm(s, sf, 31, REG(r), imm >> 12, 1);
+    else {
+        peep_arm64_mov_ri(ARM64_X17, 8, (int64_t)imm);
+        arm64_subs_reg(s, sf, 31, REG(r), ARM64_X17, ARM64_LSL, 0);
+    }
 #else
     x86_cmp_ri(s, size, REG(r), imm);
 #endif

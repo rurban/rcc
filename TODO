@@ -4,12 +4,11 @@
 
 - add opt_O as int level. no opt_On needed. default -1
 
-- add more cheap -O1 passes, without SSA analysis.
-  Sparse switch lowering — a switch that doesn't qualify for the dense
-  jump table (sparse or large-span values) still falls back to a
-  linear cmp+jcc chain (codegen.c:13083). Sorted binary search for
-  sparse small ints, perfect hashes for sparse large ints.
-
+- add more cheap -O1 passes, without SSA analysis: dense/sparse switch
+  lowering, algebraic identities, block-local copy/const propagation
+  and dead-store elimination, jump threading, unused pure-call
+  statement elision, x86/ARM64 register-copy peephole. See
+  docs/rcc.md's Optimizations section. No further items open here.
 - -O2 Tail calls — return f(args) → jmp f. Non-SSA but ABI-sensitive (frame layout, varargs callee)
 
 - SSA conversion for -O2, and the usual optimizations with SSA, as in xcc, antcc or ccc.

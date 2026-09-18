@@ -429,9 +429,40 @@ function's AST:
   no more than 256 values with no more than 3x as many table slots as
   actual cases, the switch compiles to a bounds check plus an indirect
   jump through a generated label-address table instead of a linear
-  chain of `cmp`/`jcc` per case. Any other shape (sparse values,
-  ranges, too few cases, too wide a span) — and every switch on ARM64 —
-  still lowers to the linear compare chain.
+  chain of `cmp`/`jcc` per case. Any other shape (sparse values, ranges,
+  too few cases, too wide a span) — and every switch on ARM64 — falls
+  through to the sparse strategies below, and ultimately the linear
+  compare chain if none of those apply either.
+- **Sparse `switch` → binary search or perfect hash** (both
+  architectures, `src/codegen.c`): a switch with zero case-ranges that
+  doesn't qualify for the dense jump table above still skips the linear
+  chain when there are enough cases to make a smarter dispatch worth
+  the extra code size:
+  - **8 or more cases**: a balanced binary search — `cmp`/`jcc` against
+    the sorted median, recursing into the low or high half — replaces
+    the linear chain's up-to-N compares with ~log2(N). Every leaf either
+    matches or falls through to the default case/switch end; there is
+    no shared "no match" tail to jump to, matching the dense table's
+    no-fallthrough shape.
+  - **17 or more cases, up to 256**: a compile-time search first tries
+    to build a _perfect hash_ — a 32-bit multiplicative constant
+    (`idx = (key * k) >> shift`, tried against a bounded number of
+    random-but-reproducible candidates, growing the power-of-two table
+    size on repeated failure) that maps every case value to its own
+    table slot with zero collisions. On success the switch compiles to:
+    hash the (sign/zero-extended) input, load that slot's stored key
+    from a read-only table and compare it against the input (rejecting
+    an absent value that merely collides by hash with an occupied
+    slot), then jump through a second table of one fixed-width
+    unconditional jump per slot, indexed by the same hash — an O(1)
+    dispatch after the one hash+compare. The random search is
+    deterministic (a fixed PRNG seed, never wall-clock/PID-derived) so
+    identical source always produces an identical binary. It is also
+    best-effort: a random multiplicative hash scales poorly past a few
+    hundred keys (a fixed try budget increasingly rarely finds a
+    collision-free assignment), so failure — or a case count above 256
+    to begin with — falls back to the binary search above instead of
+    ever affecting correctness.
 
 Note: passing `-finline` or `-funroll` **alone**, with no `-O` flag at
 all, also turns on this _entire_ peephole pass (constant folding,
