@@ -4,94 +4,94 @@ _Generated: September 2026_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) | Spread |
 | :-------- | -----------: | -----------: | ---------: | -----: |
-| RCC       |           62 |          767 |        829 |    58% |
-| RCC -O1   |           72 |          731 |        803 |    19% |
-| RCC -O2   |           77 |          789 |        866 |    66% |
-| TCC       |           73 |          759 |        832 |   147% |
-| GCC -O0   |          103 |          608 |        711 |    85% |
-| GCC -O2   |          146 |          309 |        455 |    89% |
-| Clang -O0 |          115 |          568 |        683 |    56% |
-| Clang -O2 |           98 |          327 |        425 |   102% |
+| RCC       |           81 |          752 |        833 |    48% |
+| RCC -O1   |           72 |          710 |        782 |     7% |
+| RCC -O2   |           65 |          746 |        811 |    12% |
+| TCC       |           35 |          546 |        581 |   157% |
+| GCC -O0   |           68 |          441 |        509 |    17% |
+| GCC -O2   |           92 |          271 |        363 |     5% |
+| Clang -O0 |           60 |          439 |        499 |    20% |
+| Clang -O2 |          109 |          283 |        392 |    19% |
 
 ## Are-We-Fast-Yet Suite (14 benchmarks)
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) | Spread |
 | :-------- | -----------: | -----------: | ---------: | -----: |
-| RCC       |          209 |         6264 |       6473 |    40% |
-| RCC -O1   |          214 |         6327 |       6541 |     7% |
-| RCC -O2   |          128 |         5133 |       5261 |   128% |
-| TCC       |          100 |         4730 |       4830 |   110% |
-| GCC -O0   |          498 |         3371 |       3869 |    48% |
-| GCC -O2   |          796 |         1799 |       2595 |    55% |
-| Clang -O0 |          462 |         3648 |       4110 |    21% |
-| Clang -O2 |          886 |         2192 |       3078 |    37% |
+| RCC       |          137 |         5392 |       5529 |    14% |
+| RCC -O1   |          128 |         5318 |       5446 |    89% |
+| RCC -O2   |          129 |         4613 |       4742 |   139% |
+| TCC       |          122 |         3862 |       3984 |    42% |
+| GCC -O0   |          534 |         3290 |       3824 |    28% |
+| GCC -O2   |          802 |         1799 |       2601 |     7% |
+| Clang -O0 |          461 |         3184 |       3645 |    11% |
+| Clang -O2 |          793 |         1843 |       2636 |    28% |
 
 ## RCC Substep Timing
 
 ```
 RCC:
-  preprocess  bench.c       :   1319 us
-  parse       bench.c       :    169 us
-  typecheck   bench.c       :      4 us
-  codegen     bench.c       :    158 us
-  link        bench_rcc     :    209 us
-  link        bench_rcc     :  85016 us
+  preprocess  bench.c       :    978 us
+  parse       bench.c       :    126 us
+  typecheck   bench.c       :      3 us
+  codegen     bench.c       :    118 us
+  link        bench_rcc     :     70 us
+  link        bench_rcc     :  77040 us
 
 RCC -O1:
-  preprocess  bench.c       :    641 us
-  parse       bench.c       :    152 us
-  typecheck   bench.c       :      4 us
-  opt         bench.c       :     50 us
-  codegen     bench.c       :    135 us
-  link        bench_o1      :    188 us
-  link        bench_o1      :  86234 us
+  preprocess  bench.c       :    670 us
+  parse       bench.c       :    150 us
+  typecheck   bench.c       :      3 us
+  opt         bench.c       :     52 us
+  codegen     bench.c       :    138 us
+  link        bench_o1      :    152 us
+  link        bench_o1      :  63985 us
 
 RCC -O2:
-  preprocess  bench.c       :    697 us
-  parse       bench.c       :    165 us
-  typecheck   bench.c       :      4 us
-  opt         bench.c       :     54 us
-  codegen     bench.c       :    144 us
-  link        bench_o2      :    241 us
-  link        bench_o2      :  79940 us
+  preprocess  bench.c       :   1081 us
+  parse       bench.c       :    181 us
+  typecheck   bench.c       :     40 us
+  opt         bench.c       :     76 us
+  codegen     bench.c       :    155 us
+  link        bench_o2      :    677 us
+  link        bench_o2      :  73718 us
 ```
 
 ## RCC Substep Timing -- sqlite3.c
 
 ```
 RCC:
-  preprocess  sqlite3.c     : 306871 us
-  parse       sqlite3.c     : 222720 us
-  typecheck   sqlite3.c     :  23843 us
-  codegen     sqlite3.c     : 158327 us
-  link        sqlite3.so    :  19655 us
+  preprocess  sqlite3.c     : 338466 us
+  parse       sqlite3.c     : 314598 us
+  typecheck   sqlite3.c     :  24317 us
+  codegen     sqlite3.c     : 221594 us
+  link        sqlite3.so    :  20473 us
 
 RCC -O1:
-  preprocess  sqlite3.c     : 342340 us
-  parse       sqlite3.c     :  63960 us
-  typecheck   sqlite3.c     :  15377 us
-  opt         sqlite3.c     :  52119 us
-  codegen     sqlite3.c     : 210449 us
-  link        sqlite3.so    :  18310 us
+  preprocess  sqlite3.c     : 323252 us
+  parse       sqlite3.c     :  91575 us
+  typecheck   sqlite3.c     :  14883 us
+  opt         sqlite3.c     : 105402 us
+  codegen     sqlite3.c     : 322435 us
+  link        sqlite3.so    :  28246 us
 
 RCC -O2:
-  preprocess  sqlite3.c     : 282634 us
-  parse       sqlite3.c     : 109442 us
-  typecheck   sqlite3.c     :  13289 us
-  opt         sqlite3.c     :  58142 us
-  codegen     sqlite3.c     : 218527 us
-  link        sqlite3.so    :  17383 us
+  preprocess  sqlite3.c     : 428261 us
+  parse       sqlite3.c     :  91940 us
+  typecheck   sqlite3.c     :  22982 us
+  opt         sqlite3.c     :  72483 us
+  codegen     sqlite3.c     : 261003 us
+  link        sqlite3.so    :  23143 us
 ```
 
 ## Large File Compile-Only (sqlite3.c)
 
 | Compiler  | Compile (ms) | Spread |
 | :-------- | -----------: | -----: |
-| RCC       |       442 ms |    76% |
-| RCC -O1   |       487 ms |    24% |
-| RCC -O2   |       505 ms |     0% |
-| TCC       |        87 ms |    37% |
-| GCC -O0   |       929 ms |    15% |
-| GCC -O2   |      9035 ms |     3% |
-| Clang -O0 |       963 ms |    39% |
-| Clang -O2 |      8762 ms |     3% |
+| RCC       |       457 ms |    59% |
+| RCC -O1   |       427 ms |    14% |
+| RCC -O2   |       432 ms |     2% |
+| TCC       |        84 ms |    29% |
+| GCC -O0   |       988 ms |     7% |
+| GCC -O2   |      9419 ms |     0% |
+| Clang -O0 |       929 ms |    15% |
+| Clang -O2 |      9939 ms |     6% |

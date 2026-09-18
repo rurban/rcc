@@ -433,19 +433,19 @@ function's AST:
   too few cases, too wide a span) — and every switch on ARM64 — falls
   through to the sparse strategies below, and ultimately the linear
   compare chain if none of those apply either.
-- **Sparse `switch` → binary search or perfect hash** (both
+- **Sparse `switch` → perfect hash or binary search** (both
   architectures, `src/codegen.c`): a switch with zero case-ranges that
   doesn't qualify for the dense jump table above still skips the linear
-  chain when there are enough cases to make a smarter dispatch worth
-  the extra code size:
-  - **8 or more cases**: a balanced binary search — `cmp`/`jcc` against
-    the sorted median, recursing into the low or high half — replaces
-    the linear chain's up-to-N compares with ~log2(N). Every leaf either
-    matches or falls through to the default case/switch end; there is
-    no shared "no match" tail to jump to, matching the dense table's
-    no-fallthrough shape.
-  - **17 or more cases, up to 256**: a compile-time search first tries
-    to build a _perfect hash_ — a 32-bit multiplicative constant
+  chain once there are enough cases — 150 or more — to make a smarter
+  dispatch a measured win rather than a measured loss (see
+  [README.md's benchmark](../README.md#switch-dispatch-lowering-binary-search--perfect-hash):
+  below roughly 100-130 cases, a balanced tree's/hash's own far-less-
+  predictable branches cost more in mispredictions than they save in
+  instruction count, so both strategies are gated on this
+  benchmark-derived floor rather than an "asymptotically better"
+  handful of cases):
+  - **150 to 256 cases**: a compile-time search first tries to build a
+    _perfect hash_ — a 32-bit multiplicative constant
     (`idx = (key * k) >> shift`, tried against a bounded number of
     random-but-reproducible candidates, growing the power-of-two table
     size on repeated failure) that maps every case value to its own
@@ -457,12 +457,18 @@ function's AST:
     unconditional jump per slot, indexed by the same hash — an O(1)
     dispatch after the one hash+compare. The random search is
     deterministic (a fixed PRNG seed, never wall-clock/PID-derived) so
-    identical source always produces an identical binary. It is also
-    best-effort: a random multiplicative hash scales poorly past a few
+    identical source always produces an identical binary.
+  - **Above 256 cases, or whenever the hash search above fails**: a
+    balanced binary search — `cmp`/`jcc` against the sorted median,
+    recursing into the low or high half — replaces the linear chain's
+    up-to-N compares with ~log2(N). Every leaf either matches or falls
+    through to the default case/switch end; there is no shared "no
+    match" tail to jump to, matching the dense table's no-fallthrough
+    shape. A random multiplicative hash scales poorly past a few
     hundred keys (a fixed try budget increasingly rarely finds a
-    collision-free assignment), so failure — or a case count above 256
-    to begin with — falls back to the binary search above instead of
-    ever affecting correctness.
+    collision-free assignment), so hash-search failure below 256 cases
+    also lands here — never affecting correctness, only which strategy
+    ran.
 
 Note: passing `-finline` or `-funroll` **alone**, with no `-O` flag at
 all, also turns on this _entire_ peephole pass (constant folding,

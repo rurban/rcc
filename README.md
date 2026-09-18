@@ -115,6 +115,49 @@ For more see [bench_report](bench/bench_report.md),
 [bench_report_darwin](bench/bench_report_darwin.md) and
 [bench_report_mingw](bench/bench_report_mingw.md).
 
+### Switch-Dispatch Lowering: Binary Search / Perfect Hash
+
+`-O1` lowers a `switch` with no case-ranges to a dense jump table (x86,
+small contiguous values), else a compile-time perfect hash or sorted
+binary search once there are enough cases (both architectures), else a
+plain linear `cmp`/`jcc` chain — see
+[docs/rcc.md#optimizations](docs/rcc.md#optimizations). The eligibility
+floor (150 cases) is itself benchmark-derived, not a guess:
+`bench/bench_switch.c` drives each strategy with a realistic ~90% hit
+rate (dispatch mostly lands on a real case, like a typical opcode/enum
+dispatch; an all-miss stream unfairly favors a trivially-predicted
+linear scan) against the _old_ (pre-lowering, always-linear) codegen,
+same input stream, median of 5 runs, Linux x86-64:
+
+| Cases | Old (linear), ns/call | New, ns/call |  Delta |
+| ----: | --------------------: | -----------: | -----: |
+|    20 |                 32.50 |        34.68 |  -6.7% |
+|    60 |                 38.25 |        40.69 |  -6.4% |
+|    80 |                 38.61 |        43.51 | -12.7% |
+|   100 |                 45.43 |        45.62 |  -0.4% |
+|   110 |                 44.48 |        45.30 |  -1.8% |
+|   128 |                 46.28 |        45.62 |  +1.4% |
+|   140 |                 48.66 |        47.82 |  +1.7% |
+|   150 |                 49.32 |        46.68 |  +5.4% |
+|   200 |                 58.72 |        50.69 | +13.7% |
+|   300 |                 81.45 |        50.58 | +37.9% |
+|   500 |                113.37 |        57.11 | +49.6% |
+
+A balanced tree's or hash's own branches are far less predictable than
+a long run of heavily-biased "not this one" compares — below roughly
+100-130 cases that more than offsets the fewer static instructions,
+making both new strategies a measured _loss_ against the plain linear
+chain, not just a wash. The win only becomes consistent (not
+noise-level) from ~150 cases up, which is why `SWITCH_BSEARCH_MIN` and
+`SWITCH_HASH_MIN` (`src/codegen.c`) are both set to 150 rather than the
+much smaller "asymptotically better" floor a naive complexity argument
+would suggest — below it, `-O1` always emits the plain chain. Perfect
+hash also beat standalone binary search at every case count tested up
+to hash's own 256-case search-budget ceiling, so above 150 cases binary
+search's practical role is the >256-case tier and hash-construction-
+failure fallback, not competing with hash below it. Run it yourself:
+`rcc -O1 -o bench_switch bench/bench_switch.c && ./bench_switch`.
+
 ## Test Results
 
 Linux x86-64, combined across all test suites (TCC compatibility,
@@ -171,6 +214,15 @@ All compilers but rcc fail the -Whomoglyph test/test_unicode.c
   - 3-instruction chain folding (`load; op; mov dst` → `load dst; op dst`)
   - Dead jump elimination (`jmp .L; .L:` → `.L:`)
   - Operates on emitted bytecode via `asm_record`/`asm_peep_try` with no separate pass
+- **Switch-dispatch lowering** — `-O1`: dense small-int `switch` → jump
+  table (x86); a sparse switch (no case-ranges) with >= 150 cases →
+  compile-time perfect hash (32-bit multiplicative, deterministic
+  bounded search, 150-256 cases, both architectures) or, above that,
+  sorted binary search; fewer cases → plain linear `cmp`/`jcc` chain.
+  The 150-case floor is benchmark-derived (see
+  [Switch-Dispatch Lowering](#switch-dispatch-lowering-binary-search--perfect-hash)):
+  below it, the tree's/hash's own less-predictable branches lose to a
+  linear scan despite fewer instructions.
 - **Shadow space** — Maximal 32-byte shadow space in stack frame; no `sub rsp`/`add rsp`
   per call for ≤4 args.
 - **Compile-Time Function Execution (CTFE)** — AST interpreter evaluates pure functions

@@ -9830,8 +9830,20 @@ static VReg gen_bitint(Node *node) {
 // dispatch reuses the dense table's own "index * fixed-width-jmp-
 // instruction, then indirect jump" trick, just indexed by a hash instead
 // of value-minus-min.
-#define SWITCH_BSEARCH_MIN 8 // fewer cases: linear chain is as fast and simpler
-#define SWITCH_HASH_MIN 17 // fewer cases: binary search's simplicity wins over 2 tables
+// Measured on x86-64 (Ryzen, realistic ~90% hit rate against a linear
+// chain of the same case count -- see bench/bench_switch.c): below
+// ~100-130 cases both strategies lose to the linear chain outright --
+// a balanced tree's/hash's own branches are far less predictable than
+// a long run of heavily-biased "not this one" compares, more than
+// offsetting the fewer static instructions -- and the win only becomes
+// consistent (not just noise-level) from ~150 cases up. 150 is that
+// floor with margin, for both strategies alike (hash beat standalone
+// binary search at every case count tested up to its own
+// SWITCH_HASH_MAX_N ceiling, so binary search's own realistic role is
+// the >SWITCH_HASH_MAX_N tier and hash-construction-failure fallback,
+// not competing with hash below it).
+#define SWITCH_BSEARCH_MIN 150 // fewer cases: linear chain wins outright, not just "close enough"
+#define SWITCH_HASH_MIN 150 // fewer cases: ditto; hash's 2-table overhead never pays for itself below here
 #define SWITCH_HASH_MAX_N 256 // above this, random multiplicative search rarely converges in budget -- go straight to binary search
 #define SWITCH_HASH_MAX_M 4096u // hard cap on hash-table growth attempts
 #define SWITCH_HASH_TRIES 2000 // random multipliers tried per table-size level
