@@ -4,12 +4,12 @@
 
 **Compiler**: /usr/bin/x86_64-linux-gnu-gcc-15
 
-Generated: September 19 2026 10:58
+Generated: September 19 2026 20:49
 
 ## Overall Summary
 
-- **Total**: 5334
-- **Passed**: 4844
+- **Total**: 5335
+- **Passed**: 4845
 - **Failed**: 244
 - **Skipped**: 246
 - **Overall Pass Rate**: 95%
@@ -23,8 +23,8 @@ Generated: September 19 2026 10:58
 
 ## RCC Unit Tests
 
-- **Total**: 413
-- **Passed**: 376
+- **Total**: 414
+- **Passed**: 377
 - **Failed**: 37
 - **Pass Rate**: 91%
 
