@@ -3752,7 +3752,7 @@ Token *preprocess(char *filename, char *p) {
             if (!find_macro("bool")) define_pre("bool", "_Bool");
             if (!find_macro("__bool_true_false_are_defined")) define_pre("__bool_true_false_are_defined", "1");
         }
-        if (opt_O1) define_pre("__OPTIMIZE__", "1");
+        if (opt_O > 0) define_pre("__OPTIMIZE__", "1");
         if (!find_macro("__USE_FORTIFY_LEVEL")) define_pre("__USE_FORTIFY_LEVEL", "0");
 #ifdef __APPLE__
         if (!find_macro("__APPLE__")) define_macro("__APPLE__", false, NULL, 0, "1");

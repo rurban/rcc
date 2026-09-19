@@ -434,13 +434,8 @@ extern Type *ty_decimal128;
 extern Type *ty_nullptr_t;
 Type *size_t_type(void);
 
-extern bool opt_O0;
-extern bool opt_O1;
-// -O3-only: NOT a real extra codegen optimization tier (rcc's own passes
-// don't distinguish -O2/-O3 otherwise) -- gates the contract range
-// prover (parser.c) alone, so it never runs at the default fast-compile
-// levels. See parser.c's "Contract range prover" section.
-extern bool opt_O3;
+// Optimization level: -1 = no -O flag given, 0/1/2/3 = -O0..3.
+extern int opt_O;
 extern bool opt_finline;
 extern bool opt_funroll;
 extern bool opt_v;

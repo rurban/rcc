@@ -2061,7 +2061,7 @@ static Node *optimize_node(Program *prog, Node *node) {
         Node *unrolled = try_unroll(node);
         if (unrolled) return unrolled;
     }
-    if (opt_O1 && node->kind == ND_BLOCK)
+    if (opt_O >= 1 && node->kind == ND_BLOCK)
         local_opt_stmt_list(node->body, false);
 
     return node;
@@ -2073,7 +2073,7 @@ void optimize(Program *prog) {
         if (item->kind != TL_FUNC)
             continue;
         Function *fn = item->fn;
-        if (opt_O1)
+        if (opt_O >= 1)
             local_opt_collect_addrs(fn->body);
         Node *prev = NULL;
         for (Node *n = fn->body; n; n = n->next) {
@@ -2087,9 +2087,9 @@ void optimize(Program *prog) {
                 break;
             }
         }
-        if (opt_O1)
+        if (opt_O >= 1)
             local_opt_stmt_list(fn->body, true);
-        if (opt_O1)
+        if (opt_O >= 1)
             local_opt_clear_addrs();
     }
 }
@@ -2106,7 +2106,7 @@ void optimize(Program *prog) {
 // permits an always_inline callee even when opt_finline is false) --
 // the missing piece was that optimize()/optimize_node() (which is where
 // every try_inline() call site lives) was itself gated on
-// `opt_O1 || opt_finline || opt_funroll`, so a translation unit compiled
+// `opt_O >= 1 || opt_finline || opt_funroll`, so a translation unit compiled
 // with no -O/-finline flag at all never ran try_inline() a single time.
 // This walker performs NO other transformation (no constant folding, no
 // dead-branch elimination, no CTFE, no unrolling) so it's safe to run
@@ -2438,7 +2438,7 @@ void eliminate_unused_static_inline(Program *prog) {
         // empty-bodied static/inline candidate alive unconditionally.
         bool omittable = !f->is_used && !f->is_weak &&
             !f->is_constructor && !f->is_destructor &&
-            ((f->is_static && (f->is_inline || opt_O1)) ||
+            ((f->is_static && (f->is_inline || opt_O >= 1)) ||
              // GNU `extern __inline __gnu_inline__`: the body is an inline
              // definition only — emitted as a per-TU local copy only when
              // something actually calls it (see codegen.c's

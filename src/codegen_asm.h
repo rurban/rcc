@@ -12,7 +12,7 @@
 #include "x86_enc.h"
 #endif
 
-extern bool opt_O0;
+extern int opt_O;
 extern SecBuf *cg_sec;
 #include <stdint.h>
 #include <stdbool.h>
@@ -566,7 +566,7 @@ static inline void asm_record(AsmOp op, size_t offset, size_t count,
     rec->is_store = is_store;
     asm_last_idx = (asm_last_idx + 1) % ASM_HISTORY;
     if (asm_last_count < ASM_HISTORY) asm_last_count++;
-    if (!opt_O0) asm_peep_try();
+    if (opt_O != 0) asm_peep_try();
 }
 
 static AsmOp peep_pend_op = ASM_NONE;
@@ -593,7 +593,7 @@ static inline void peep_arm64_mov_ri(Arm64Reg rd, int size, int64_t imm) {
 
 static inline void asm_peep_try(void) {
 #ifdef ARCH_ARM64
-    if (opt_O0 || asm_last_count < 2) return;
+    if (opt_O == 0 || asm_last_count < 2) return;
     int c0 = (asm_last_idx - 1 + ASM_HISTORY) % ASM_HISTORY;
     int c1 = (asm_last_idx - 2 + ASM_HISTORY) % ASM_HISTORY;
     AsmInsn *cur = &asm_last[c0], *prv = &asm_last[c1];
@@ -681,7 +681,7 @@ static inline void asm_peep_try(void) {
     }
     peep_pend_op = ASM_NONE;
 #else
-    if (opt_O0 || asm_last_count < 2) return;
+    if (opt_O == 0 || asm_last_count < 2) return;
     int c0 = (asm_last_idx - 1 + ASM_HISTORY) % ASM_HISTORY;
     int c1 = (asm_last_idx - 2 + ASM_HISTORY) % ASM_HISTORY;
     AsmInsn *cur = &asm_last[c0], *prv = &asm_last[c1];

@@ -2,8 +2,6 @@
 
 - interchange and extended float types (just aliased, no __STDC_IEC_60559_TYPES__)
 
-- add opt_O as int level. no opt_On needed. default -1
-
 - -O2 miscompile: test/test_csmith_ternary_spill.c gets the wrong checksum
   under -finline/-funroll (passes at -O1; still fails with the -O2 tail-jmp
   fast path above forced off, so it's an -finline/-funroll bug, not a tail-

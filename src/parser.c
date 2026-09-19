@@ -2066,11 +2066,11 @@ typedef enum { PROVE_UNKNOWN,
                PROVE_FALSE } ProveResult;
 
 // Entry point: try to decide `cond` from `env` alone. NULL/no-op unless
-// -O3 (opt_O3) is active — this whole pass costs nothing at any other
+// -O3 (opt_O >= 3) is active — this whole pass costs nothing at any other
 // optimization level, matching -O3's existing "extra, slower analysis"
 // convention in real compilers.
 static ProveResult try_prove_range(Node *cond, RangeBind *env) {
-    if (!opt_O3)
+    if (opt_O < 3)
         return PROVE_UNKNOWN;
     int t = range_truthiness(compute_range(cond, env));
     if (t == 1) return PROVE_TRUE;
@@ -2130,8 +2130,8 @@ static Node *parse_contract_stmt(Token **rest, Token *tok, bool is_assert) {
         return make_unreachable_stmt(kw_tok);
     }
 
-    ProveResult pr = opt_O3 ? try_prove_range(cond, build_range_env(current_fn_range_params))
-                            : PROVE_UNKNOWN;
+    ProveResult pr = opt_O >= 3 ? try_prove_range(cond, build_range_env(current_fn_range_params))
+                                : PROVE_UNKNOWN;
     if (pr == PROVE_TRUE)
         return new_node(ND_NULL, kw_tok);
     if (pr == PROVE_FALSE) {
@@ -2230,7 +2230,7 @@ static Node *activate_function_contracts(Type *fty, char *fn_name, LVar *params,
     current_fn_postcond_binds = bind_head.next;
     current_fn_postconds = fty->postconds;
 
-    RangeBind *param_env = opt_O3 ? build_range_env(params) : NULL;
+    RangeBind *param_env = opt_O >= 3 ? build_range_env(params) : NULL;
     Node head = {0};
     Node *cur = &head;
     for (Contract *c = fty->preconds; c; c = c->next) {
@@ -2256,7 +2256,7 @@ static Node *apply_postconds_to_return(Node *node, Token *tok) {
     // Must be captured from the ORIGINAL return expression before the
     // rewrite below swaps node->lhs for a read of the bound temp.
     RangeBind *range_env = NULL;
-    if (opt_O3) {
+    if (opt_O >= 3) {
         range_env = build_range_env(current_fn_range_params);
         if (node->lhs && current_fn_postcond_binds) {
             Range ret_range = compute_range(node->lhs, range_env);

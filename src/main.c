@@ -371,9 +371,15 @@ void help(void) {
            "--version\n");
 }
 
-bool opt_O0 = false;
-bool opt_O1 = false;
-bool opt_O3 = false; // -O3-only: gates the contract range prover, see rcc.h
+// Optimization level: -1 = no -O flag given at all (rcc's own hybrid
+// default -- peephole runs, but -O1's extra passes don't; see the -O0/
+// -O1 handlers below for why that's a real, distinct third state, not
+// just "same as -O0"), 0/1/2/3 = -O0.._O3. `opt_O >= N` is the general
+// "at least this level" test (e.g. what used to be plain `opt_O1`);
+// `opt_O == 0` is the old `opt_O0` ("exactly -O0, no -O flag doesn't
+// count"). No opt_O2 test exists because nothing keys off it alone --
+// -O2 differs from -O1 only via opt_finline/opt_funroll below.
+int opt_O = -1;
 bool opt_finline = false; // -finline / enabled at -O2+
 bool opt_funroll = false; // -funroll / enabled at -O2+
 const char *opt_std_version = "202311L"; /* rcc defaults to C23 */
@@ -614,31 +620,23 @@ int main(int argc, char **argv) {
             // earlier one. kbuild routinely appends a per-file "-O0" after
             // the whole-build "-O2" (e.g. crypto/jitterentropy.c's
             // CFLAGS_jitterentropy.o = -O0) specifically to keep
-            // __OPTIMIZE__ from being defined; leaving opt_O1 (and the
+            // __OPTIMIZE__ from being defined; leaving opt_O (and the
             // inlining/unrolling it implies) sticky from the earlier -O2
             // wrongly kept __OPTIMIZE__ defined and tripped that file's own
             // "#ifdef __OPTIMIZE__ #error ..." guard.
-            opt_O0 = true;
-            opt_O1 = false;
-            opt_O3 = false;
+            opt_O = 0;
             opt_finline = false;
             opt_funroll = false;
         } else if (!strcmp(argv[i], "-O1")) {
-            opt_O0 = false;
-            opt_O1 = true;
-            opt_O3 = false;
+            opt_O = 1;
             opt_finline = false;
             opt_funroll = false;
         } else if (!strcmp(argv[i], "-O2")) {
-            opt_O0 = false;
-            opt_O1 = true;
-            opt_O3 = false;
+            opt_O = 2;
             opt_finline = true; // -O2 and up enable inlining
             opt_funroll = true; // -O2 and up enable unrolling
         } else if (!strcmp(argv[i], "-O3")) {
-            opt_O0 = false;
-            opt_O1 = true;
-            opt_O3 = true; // -O3-only: enables the contract range prover
+            opt_O = 3; // -O3-only: enables the contract range prover
             opt_finline = true;
             opt_funroll = true;
         } else if (!strcmp(argv[i], "-finline") || !strcmp(argv[i], "-finline-functions") ||
@@ -730,9 +728,7 @@ int main(int argc, char **argv) {
             // probe, which tries -Oz first and silently landed on it since
             // an unrecognized flag is a warning, not a hard error -- see
             // the -Werror-gated catch-all far below).
-            opt_O0 = false;
-            opt_O1 = true;
-            opt_O3 = false;
+            opt_O = 1;
             opt_finline = false;
             opt_funroll = false;
         } else if (!strcmp(argv[i], "-mms-bitfields")) {
@@ -1380,7 +1376,7 @@ int main(int argc, char **argv) {
                     (unsigned long long)ticks_us(timer_sub(timer_end(), t0)));
 
         // CTFE runs only with -O1; peephole skipped with -O0.
-        if (opt_O1 || opt_finline || opt_funroll) {
+        if (opt_O >= 1 || opt_finline || opt_funroll) {
             t0 = opt_time ? timer_start() : 0;
             optimize(prog);
             if (opt_time)

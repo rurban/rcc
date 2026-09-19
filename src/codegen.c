@@ -107,7 +107,7 @@ static size_t cg_trampoline_target(SecBuf *s, size_t pos) {
 // straight-line control flow (same policy as the div-by-const
 // substitution).
 static void cg_thread_jumps(SecBuf *s) {
-    if (opt_O0) return;
+    if (opt_O == 0) return;
     for (int i = 0; i < cg_branch_sites_n; i++) {
         size_t off = cg_branch_sites[i].off;
         int type = cg_branch_sites[i].type;
@@ -2712,7 +2712,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     if (call_target && call_target == bi_unreachable)
         return -1;
     /*
-    if (0 && opt_O1 && call_target && nargs >= 2) {
+    if (0 && opt_O >= 1 && call_target && nargs >= 2) {
         if ((strcmp(call_target, "__printf_chk") == 0 && nargs >= 2) ||
             (strcmp(call_target, "__vprintf_chk") == 0 && nargs == 3)) {
             node->args = argv[1];
@@ -2740,7 +2740,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     // puts/fputs return values differ from printf/fprintf, so only when unused.
     bool discard_result = cg_discard_result;
     cg_discard_result = false;
-    if (discard_result && opt_O1 && call_target &&
+    if (discard_result && opt_O >= 1 && call_target &&
         !(node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION))) {
         if (nargs == 2 && call_target == bi_s_printf) {
             Node *fmt = node->args;
@@ -2828,7 +2828,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 
     // Inline expansion for common libc builtins (x86_64 only for now)
 #ifndef ARCH_ARM64
-    if (opt_O1 && call_target && !has_hidden_retbuf) {
+    if (opt_O >= 1 && call_target && !has_hidden_retbuf) {
         // Inline expansion for common libc builtins
         bool is_memset = call_target == bi_s_memset || call_target == bi_memset;
         bool is_memcpy = call_target == bi_s_memcpy || call_target == bi_memcpy;
@@ -6503,6 +6503,7 @@ static int global_reg_lookup(const char *name) {
     return -1;
 }
 #endif
+
 
 // Materialize `r = <hardware register named by var->global_reg_name>` for a
 // read of a GCC global register variable (LVar.is_global_reg — see rcc.h).
@@ -13076,7 +13077,7 @@ VReg gen(Node *node) {
             }
             VReg r = gen(n);
             if (r != -1) free_reg(r);
-            if (opt_O1 && stmt_is_unreachable(n))
+            if (opt_O >= 1 && stmt_is_unreachable(n))
                 dead = true;
         }
         return -1;
@@ -13701,7 +13702,7 @@ VReg gen(Node *node) {
         bool use_jt = false;
         int64_t jt_min = 0, jt_max = 0;
         const char *jt_table = NULL, *jt_fallback = NULL;
-        if (opt_O1 && node->cond->ty && is_integer(node->cond->ty) &&
+        if (opt_O >= 1 && node->cond->ty && is_integer(node->cond->ty) &&
             node->cond->ty->size > 0 && node->cond->ty->size <= 4) {
             int count = 0;
             for (Node *cs = node->case_next; cs; cs = cs->case_next) {
@@ -13738,9 +13739,9 @@ VReg gen(Node *node) {
             // Sparse switch lowering: perfect hash, else binary search,
             // else fall through to the linear chain below. Both need
             // every case to be an exact value -- see
-            // switch_collect_sparse_cases -- and opt_O1.
+            // switch_collect_sparse_cases -- and opt_O >= 1.
             int sparse_n = 0;
-            Node **sparse_sorted = opt_O1
+            Node **sparse_sorted = opt_O >= 1
                 ? switch_collect_sparse_cases(node->case_next, &sparse_n)
                 : NULL;
             if (sparse_sorted && sparse_n >= SWITCH_HASH_MIN && sparse_n <= SWITCH_HASH_MAX_N &&
@@ -17057,7 +17058,7 @@ VReg gen(Node *node) {
         // arithmetic operand. eval_const_expr() truncates/sign-extends
         // to node->ty like real arithmetic, matching runtime codegen.
         long long const_rhs;
-        if (!opt_O0 && (sz == 4 || sz == 8) && eval_const_expr(node->rhs, &const_rhs)) {
+        if (opt_O != 0 && (sz == 4 || sz == 8) && eval_const_expr(node->rhs, &const_rhs)) {
             int64_t d = is_unsigned
                 ? (sz == 4 ? (int64_t)(uint32_t)(uint64_t)const_rhs : const_rhs)
                 : (sz == 4 ? (int64_t)(int32_t)const_rhs : const_rhs);

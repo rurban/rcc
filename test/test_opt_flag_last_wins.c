@@ -1,7 +1,8 @@
 /* Optimization-level flags (-O0/-O1/-O2/-O3) are not additive: like every
  * real C compiler, whichever "-On" appears LAST on the command line is the
  * one that takes effect, overriding any earlier one. rcc instead treated
- * opt_O1 (and the inlining/unrolling it implies) as a sticky flag that,
+ * opt_O1 (now folded into the single `opt_O` level, see main.c) as a
+ * sticky flag that,
  * once set by an earlier -O2/-O3, was never cleared by a later -O0 — so
  * __OPTIMIZE__ stayed defined regardless of command-line order.
  *
@@ -13,9 +14,7 @@
  * and crypto/Makefile sets "CFLAGS_jitterentropy.o = -O0" specifically to
  * satisfy this — kbuild's per-file CFLAGS mechanism appends that -O0
  * AFTER the whole-build "-O2" already on the command line, giving rcc
- * "... -O2 ... -O0 -c -o jitterentropy.o jitterentropy.c". Since -O2 had
- * already flipped opt_O1 on and rcc's -O0 handler never cleared it,
- * __OPTIMIZE__ stayed defined and the file's own safety #error fired.
+ * "... -O2 ... -O0 -c -o jitterentropy.o jitterentropy.c".
  */
 #include <stdio.h>
 #include <stdlib.h>
