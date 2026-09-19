@@ -717,6 +717,46 @@ else
     printf '  %-44s SKIP (ELF/Linux only)\n' "weak symbol interposed from executable without -rdynamic"
 fi
 
+# ---------------------------------------------------------------------------
+# 19. Link-only invocation (every input already a pre-built .o, none
+#    freshly compiled by this invocation) must still take the native
+#    linker, not fall straight through to the GCC/system-linker fallback.
+#    main.c only attempted rcc_link() when out_paths (objects codegen'd
+#    THIS run) was non-empty, even though link_elf.c's resolve_archives()
+#    already loads bare *.o/*.a positional link inputs straight out of
+#    `libs` -- so a plain `rcc a.o b.o -o prog` (no source on the command
+#    line at all, the common "relink from prebuilt objects" shape used by
+#    incremental Makefile rules and muon/meson's link-only steps) always
+#    skipped the native path. Verified by presence of the
+#    RCC_LINK_DEBUG=1 "DBG link objs:" trace, only emitted once the
+#    native linker is actually attempted -- a stronger check than merely
+#    "the program produces the right answer", which the GCC-fallback
+#    path (silently skipping the native attempt entirely, pre-fix) could
+#    satisfy just as well.
+# ---------------------------------------------------------------------------
+cat > "$TMP/lo_a.c" <<'EOF'
+int lo_helper(void) { return 19; }
+EOF
+cat > "$TMP/lo_main.c" <<'EOF'
+int lo_helper(void);
+int main(void) { return lo_helper() == 19 ? 0 : 1; }
+EOF
+if "$RCC" -c "$TMP/lo_a.c" -o "$TMP/lo_a.o" 2>"$TMP/e18" \
+    && "$RCC" -c "$TMP/lo_main.c" -o "$TMP/lo_main.o" 2>>"$TMP/e18"; then
+    if RCC_LINK_DEBUG=1 "$RCC" "$TMP/lo_main.o" "$TMP/lo_a.o" -o "$TMP/lo_prog" 2>"$TMP/e18lnk" \
+        && grep -q "DBG link objs:" "$TMP/e18lnk"; then
+        if "$(winprog "$TMP/lo_prog")"; then
+            pass "link-only .o inputs use the native linker"
+        else
+            fail "link-only .o inputs use the native linker" "program exited nonzero"
+        fi
+    else
+        fail "link-only .o inputs use the native linker" "$(tr '\n' ' ' < "$TMP/e18lnk")"
+    fi
+else
+    fail "link-only .o inputs use the native linker" "$(tr '\n' ' ' < "$TMP/e18")"
+fi
+
 echo ""
 echo "Link tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

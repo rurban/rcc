@@ -1633,8 +1633,19 @@ int main(int argc, char **argv) {
         if (native_link_capable) {
             int n_link_objs = 0;
             for (OutPath *p = out_paths; p; p = p->next) n_link_objs++;
-            if (n_link_objs > 0) {
-                char **link_objs = arena_alloc((size_t)n_link_objs * sizeof(char *));
+            // Attempt the native link whenever there is anything to link,
+            // not just when this invocation freshly compiled a .o itself:
+            // resolve_archives() already loads bare *.o/*.a positional
+            // link inputs straight out of `libs` (see its own comment in
+            // link_elf.c), so an all-`.o` link-only invocation (no source
+            // compiled this run, out_paths empty) is just as native-link-
+            // capable as one that did -- only n_link_objs==0 skipped it
+            // before, forcing every link-only rebuild through the GCC
+            // fallback for no reason.
+            if (n_link_objs > 0 || have_link_inputs) {
+                char **link_objs = n_link_objs > 0
+                    ? arena_alloc((size_t)n_link_objs * sizeof(char *))
+                    : NULL;
                 int i = 0;
                 for (OutPath *p = out_paths; p; p = p->next)
                     link_objs[i++] = p->path;

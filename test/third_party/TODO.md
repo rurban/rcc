@@ -2761,6 +2761,21 @@ Full suite verified: Torture 3605/3609 (100% of non-skipped), Dg-error
 confirmed clean on the mingw and arm64 cross-compile targets (compile
 only — `-rdynamic`'s native-ELF-linker effect is Linux-specific).
 
+### Fixed (2026-09-19, link-only invocations now take the native linker)
+
+- The gap noted just above ("an all-`.o` link-only invocation... always
+  falls through to the GCC fallback") is fixed: main.c only attempted
+  `rcc_link()` when `out_paths` (objects freshly compiled _this_
+  invocation) was non-empty, even though `resolve_archives()` already
+  loads bare `*.o`/`*.a` positional link inputs straight out of `libs`.
+  A plain `rcc a.o b.o -o prog` (no source on the command line) now
+  takes the native ELF/PE/Mach-O linker instead of unconditionally
+  shelling out to GCC. New regression: `test/test-link.sh` case 19
+  ("link-only .o inputs use the native linker"), verified via
+  `RCC_LINK_DEBUG=1` trace presence (absent pre-fix, confirmed by a
+  `git stash`-isolated rebuild). Full suite unaffected: 4847/5335
+  passed, matching the pre-fix baseline exactly.
+
 ### Fixed (2026-08-08, continued — assignment-expression-as-lvalue)
 
 - \*\*`gen_addr()`'s `ND_ASSIGN` case computed the address of an

@@ -1,4 +1,8 @@
-- Native linker: some features missing, falling back to external linker
+- Native linker: still falls back to the external linker for -Wl,<opt>
+  (rpath/soname/--start-group/--as-needed/--no-undefined/-v/-z/...),
+  -nodefaultlibs, -nostdlib, and -r; link-only invocations (all inputs
+  already .o/.a, nothing freshly compiled this run) now take the native
+  path too (fixed 2026-09-19, see test/third_party/TODO.md).
 
 - interchange and extended float types (just aliased, no __STDC_IEC_60559_TYPES__)
 
