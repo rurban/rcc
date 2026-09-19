@@ -961,6 +961,26 @@ int link_macho(LinkState *s) {
             }
         }
     }
+    // An executable needs a real entry point to jump to -- unlike a dylib
+    // (which the loader enters via DYLD_PROCESS_ATTACH/DllMain-equivalent
+    // constructors, not LC_MAIN), a plain Mach-O executable's LC_MAIN
+    // entryoff comes straight from this symbol. Resolve it now (every
+    // object is already loaded by this point) and bail out to the
+    // external linker when it's missing -- e.g. a link-only invocation
+    // whose positional *.o/*.a inputs never got loaded at all (Mach-O has
+    // no resolve_archives()-equivalent path for bare `libs` positionals
+    // yet, unlike link_elf.c) previously fell through to here with zero
+    // symbols defined and silently wrote out an entryoff of 0 -- a
+    // "successful" link producing a binary that crashes on launch,
+    // exactly the missing safety net link_pe.c's own `main_sym < 0`
+    // check already has.
+    int entry_sym = -1;
+    if (!is_dylib) {
+        entry_sym = link_find_sym(s, "_main");
+        if (entry_sym < 0) entry_sym = link_find_sym(s, "main");
+        if (entry_sym < 0) entry_sym = link_find_sym(s, "start");
+        if (entry_sym < 0) return -1;
+    }
     // Build GOT and PLT for external symbols.
     int got_sec = link_find_or_create_sec(s, ".got", true, true, false, false, false, 8);
     int stubs_sec = link_find_or_create_sec(s, ".stubs", true, false, true, false, false, 16);
@@ -1449,10 +1469,8 @@ int link_macho(LinkState *s) {
         }
     }
 
-    // Entry point
-    int entry_sym = link_find_sym(s, "_main");
-    if (entry_sym < 0) entry_sym = link_find_sym(s, "main");
-    if (entry_sym < 0) entry_sym = link_find_sym(s, "start");
+    // Entry point (entry_sym already resolved by the executable-only
+    // bailout check above; stays -1 for a dylib, so entry_addr stays 0).
     uint64_t entry_addr = 0;
     if (entry_sym >= 0) entry_addr = mo_symbol_address(s, entry_sym);
 
