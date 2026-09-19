@@ -2,6 +2,12 @@ This is the NEWS file for RCC, the Regoshi C Compiler. It summarizes
 user-visible changes for each release, most recent first. For the
 complete list of changes see the git log.
 
+* Changes in v1.2.3 (????-??-??) (Reini Urban)
+
+  - Security: non-`-shared` links no longer get an unconditionally
+    executable stack (PT_GNU_STACK RWE); only requested when a
+    linked-in object actually needs one (nested-fn trampoline) (GH #63).
+
 * Changes in v1.2.2 (2026-09-19) (Reini Urban)
 
   - New -O1 codegen passes: local value propagation with dead-store

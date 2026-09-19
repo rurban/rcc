@@ -116,6 +116,11 @@ struct LinkState {
     bool opt_pie;
     bool opt_shared;
     bool opt_export_dynamic;
+    // ELF only: whether any loaded object requested (SHF_EXECINSTR on its
+    // .note.GNU-stack section) or implicitly requires (section absent) an
+    // executable stack.  Drives the output PT_GNU_STACK flags in link_elf.c.
+    bool stack_note_exec;
+    bool stack_note_missing;
     const char *libs; // -l and other linker flags
 
     LinkSec *secs;

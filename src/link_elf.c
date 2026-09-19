@@ -401,11 +401,23 @@ static int elf_load_object(LinkState *s, const char *path) {
     for (int i = 0; i < e_shnum; i++) sec_map[i] = -1;
 
     // First pass: create output sections for allocatable input sections.
+    // Also track whether this object's .note.GNU-stack section (if any)
+    // requests an executable stack, and whether the section is present at
+    // all -- mirrors GNU ld's algorithm: the output only gets an
+    // executable-stack PT_GNU_STACK if some linked-in object explicitly
+    // asked for one (SHF_EXECINSTR) or is missing the marker section
+    // entirely (pre-marker-era object, treated conservatively).
+    bool saw_stack_note = false;
     for (int i = 0; i < e_shnum; i++) {
         const uint8_t *sh = ef.image + e_shoff + (uint64_t)i * 64;
         uint32_t type = r32le(sh + 4);
         if (type == SHT_NULL) continue;
         const char *name = shstr(&ef, shstroff, r32le(sh));
+        if (strcmp(name, ".note.GNU-stack") == 0) {
+            saw_stack_note = true;
+            uint64_t flags = r64le(sh + 8);
+            if (flags & SHF_EXECINSTR) s->stack_note_exec = true;
+        }
         bool alloc, write, exec, bss, tls;
         int kind = map_input_sec_to_output(name, &alloc, &write, &exec, &bss, &tls);
         if (kind == 0) {
@@ -419,6 +431,7 @@ static int elf_load_object(LinkState *s, const char *path) {
             sec_map[i] = link_find_or_create_sec(s, name, alloc, write, exec, bss, tls, align);
         }
     }
+    if (!saw_stack_note) s->stack_note_missing = true;
 
     // Second pass: append section data and record base offsets.
     for (int i = 0; i < e_shnum; i++) {
@@ -3371,10 +3384,16 @@ int link_elf(LinkState *s) {
     // object whose PT_GNU_STACK requests an executable stack ("cannot
     // enable executable stack as shared object requires") -- a
     // hardening check that doesn't apply to ET_EXEC (the kernel's own
-    // loader doesn't enforce it). PF_X here exists for GNU nested-
-    // function trampolines, which -shared doesn't support emitting
-    // executable-stack code into anyway; keep it only for executables.
-    write_phdr(f, PT_GNU_STACK, PF_R | PF_W | (s->opt_shared ? 0 : PF_X), 0, 0, 0, 0, 0, 0x10);
+    // loader doesn't enforce it). PF_X here exists only for GNU nested-
+    // function trampolines (-shared doesn't support emitting
+    // executable-stack code into anyway); mirror GNU ld's algorithm and
+    // only request it when some linked-in object's .note.GNU-stack
+    // section actually asked for it (SHF_EXECINSTR) or is missing the
+    // marker entirely (pre-marker-era object, treated conservatively) --
+    // NOT unconditionally for every non-shared link.
+    bool need_exec_stack = !s->opt_shared &&
+        (s->stack_note_exec || s->stack_note_missing);
+    write_phdr(f, PT_GNU_STACK, PF_R | PF_W | (need_exec_stack ? PF_X : 0), 0, 0, 0, 0, 0, 0x10);
     cur += 56;
     wzeros(f, file_off - cur);
 
