@@ -769,7 +769,12 @@ static char *reg8[] = {"%r10b", "%r11b", "%bl", "%r12b", "%r13b", "%r14b", "%r15
 
 static int used_regs = 0;
 static int ever_used_regs = 0;
-#ifndef ARCH_ARM64
+#ifdef ARCH_ARM64
+static int tail_frame_size;
+static int tail_callee_mask;
+static int tail_cs_off_base;
+static bool tail_call_frame_escapes;
+#else
 static int tail_frame_need;
 static int tail_callee_mask;
 static int tail_callee_count;
@@ -1072,9 +1077,8 @@ static void emit_dec128_ret(VReg dst) {
 }
 
 static void emit_direct_call(char *name, bool is_asm_label);
-#ifndef ARCH_ARM64
 static void emit_direct_jmp(char *name, bool is_asm_label);
-#endif
+
 
 // Call a __bid_* helper preserving live VRegs (same scheme as
 // emit_bitint_call: push/pop r10/r11 on x86, per-reg spill on arm64).
@@ -1789,16 +1793,38 @@ static void emit_direct_call(char *name, bool is_asm_label) {
 #endif
 }
 
-#ifndef ARCH_ARM64
 static void emit_direct_jmp(char *name, bool is_asm_label) {
     if (cg_dry_run) return;
     if (is_asm_reserved(name))
         name = format(".L_rcc_%s", name);
     Function *target_fn = NULL;
     const char *label = is_asm_label ? asm_sym_name(name) : func_label2(name, &target_fn);
-    size_t off = asm_jmp_label(cg_sec);
+    size_t off = asm_jmp_label(cg_sec); // b %s (arm64) / jmp %s (x86)
     int sidx = target_fn && target_fn->cg_sym_idx ? target_fn->cg_sym_idx - 1 : objfile_find_sym(cg_obj, label);
     if (target_fn && sidx >= 0) target_fn->cg_sym_idx = sidx + 1;
+#ifdef ARCH_ARM64
+    // Same reasoning as emit_direct_call's ARM64 branch: only a same-
+    // section STATIC target may be patched directly; a same-TU GLOBAL/
+    // WEAK target must stay a reloc (R_AARCH64_JUMP26, `b`'s counterpart
+    // to `bl`'s R_AARCH64_CALL26) so the shared-library linker/ld.so
+    // interposition path still applies to tail-called functions.
+#ifdef _WIN32
+    if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT) {
+#else
+    if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT &&
+        cg_obj->syms[sidx].bind == SB_LOCAL) {
+#endif
+        int32_t disp = (int32_t)((int64_t)cg_obj->syms[sidx].offset - (int64_t)off);
+        uint32_t insn = 0x14000000 | (((uint32_t)(disp / 4)) & 0x03FFFFFF);
+        secbuf_patch32le(cg_sec, off, insn);
+        return;
+    }
+    if (sidx < 0) {
+        sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
+        if (target_fn) target_fn->cg_sym_idx = sidx + 1;
+    }
+    objfile_add_reloc(cg_obj, SEC_TEXT, off, sidx, R_AARCH64_JUMP26, 0);
+#else
 #ifdef _WIN32
     if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT) {
 #else
@@ -1813,9 +1839,10 @@ static void emit_direct_jmp(char *name, bool is_asm_label) {
         sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
         if (target_fn) target_fn->cg_sym_idx = sidx + 1;
     }
+    // jmp label
     objfile_add_reloc(cg_obj, SEC_TEXT, off + 1, sidx, R_X86_64_PLT32, -4);
-}
 #endif
+}
 
 
 // Call a rcc_bitint_* helper, preserving every live VReg across the call.
@@ -10075,7 +10102,7 @@ static void switch_emit_hash_dispatch(VReg cond, int sz, bool is_uns, int32_t k,
     free_reg(table);
 }
 
-#ifndef ARCH_ARM64
+
 // A tail-jmp deallocates the current frame before the callee's own
 // prologue reuses that same stack region -- see the ND_RETURN case in
 // gen() for the full rationale (torture/pr36339.c is the reproducer:
@@ -10119,7 +10146,7 @@ static bool tail_call_frame_may_escape(Function *fn) {
             return true;
     return tail_call_addr_escapes(fn->body, fn);
 }
-#endif
+
 
 // Generate code for a given node.
 VReg gen(Node *node) {
@@ -12383,7 +12410,6 @@ VReg gen(Node *node) {
         return r;
     }
     case ND_RETURN: {
-#ifndef ARCH_ARM64
         // Tail-jump a direct, one-scalar-argument call only after Pass 1
         // fixed this function's save area. Anything with cleanup, dynamic
         // stack adjustment, ABI register pairs, floats or stack arguments
@@ -12426,6 +12452,33 @@ VReg gen(Node *node) {
             if (callee && callee->is_function && !callee->is_nested_fn && !callee->asm_name &&
                 arg && !arg->next && scalar_arg && same_ret && !has_cleanup) {
                 VReg r = gen(arg);
+#ifdef ARCH_ARM64
+                asm_mov_phy_phy(cg_sec, ARM64_X0, REG(r), arg->ty->size <= 4 ? 0 : 1); // mov x0/w0, r
+                free_reg(r);
+                // Same unwind the ordinary epilogue performs (restore
+                // x19-x24 from their save slots, deallocate the frame,
+                // pop fp/lr) except the final branch is a plain `b`, not
+                // `ret`: x30 (lr) still holds the ORIGINAL caller's
+                // return address after the ldp below, so callee's own
+                // `ret` returns straight past this frame -- the classic
+                // AArch64 sibcall trick (no return address lives on the
+                // stack the way it does on x86, so nothing needs popping
+                // beyond fp/lr themselves).
+                int cs_off = tail_cs_off_base;
+                for (int j = 0; j < 6; j++)
+                    if (tail_callee_mask & (1 << j)) {
+                        arm64_ldr_uoff(cg_sec, 3, (Arm64Reg)(ARM64_X19 + j), ARM64_SP, cs_off / 8);
+                        cs_off += 8;
+                    }
+                if (tail_frame_size <= 4095)
+                    arm64_add_imm(cg_sec, 1, ARM64_SP, ARM64_SP, tail_frame_size, 0); // add sp, sp, #frame_size
+                else {
+                    emit_mov_imm64(ARM64_X16, (uint64_t)tail_frame_size); // mov x16, #frame_size
+                    arm64_add_extreg(cg_sec, 1, ARM64_SP, ARM64_SP, ARM64_X16, ARM64_UXTX, 0); // add sp, sp, x16
+                }
+                asm_ldp_fp_lr(cg_sec); // ldp x29, x30, [sp], #16
+                emit_direct_jmp(callee->name, false); // b callee (NOT bl -- must not clobber x30)
+#else
 #ifdef _WIN32
                 x86_mov_rr(cg_sec, arg->ty->size <= 4 ? 4 : 8, X86_RCX, REG(r));
 #else
@@ -12440,10 +12493,10 @@ VReg gen(Node *node) {
                 asm_mov_rbp_rsp(cg_sec);
                 asm_pop(cg_sec, X86_RBP);
                 emit_direct_jmp(callee->name, false);
+#endif
                 return -1;
             }
         }
-#endif
         if (node->lhs) {
             // Returning a _Complex value from a function whose declared
             // return type is a plain scalar (GNU extension: discards the
@@ -18779,6 +18832,16 @@ struct ObjFile *codegen(Program *prog) {
         // Round up to 16-byte alignment
         frame_size = (frame_size + 15) & ~15;
         // va_reg_save_ofs not used on ARM64; reg_save_area is stored as sp in va_start
+
+        // Stash this function's frame layout for the ND_RETURN tail-jmp
+        // fast path below: it needs the exact same numbers the epilogue
+        // uses to unwind (frame_size for the sp deallocation, callee_mask
+        // + the cs_off base for restoring x19-x24) without duplicating
+        // the va_save_size/ldouble_stash_size arithmetic above.
+        tail_frame_size = frame_size;
+        tail_callee_mask = callee_mask;
+        tail_cs_off_base = 16 + va_save_size + ldouble_stash_size;
+        tail_call_frame_escapes = tail_call_frame_may_escape(fn);
 
         // Symbol linkage
         bool has_noninline_decl = false;

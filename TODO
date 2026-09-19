@@ -19,7 +19,7 @@
   pr38048-2, vect/pr44507); (2) __builtin_* names have no real linkable symbol to jmp to, only an
   inline expansion the ordinary call path provides (bswap-1). See test_opt_tail_call_safety.c.
   Still open: multiple arguments (needs the same argument-overlap care GCC's sibcall pass takes --
-  see torture/20050713-1.c's own comment) and ARM64 (x86-64 only right now).
+  see torture/20050713-1.c's own comment).
 
 - SSA conversion for -O2, and the usual optimizations with SSA, as in xcc, antcc or ccc.
 

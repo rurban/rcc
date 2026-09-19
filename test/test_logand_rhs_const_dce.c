@@ -81,7 +81,7 @@ int main(void) {
     fclose(f);
 
     // opt.c's optimize() pass (where this fold lives) only runs at
-    // -O1 and above (main.c: `if (opt_O1 || opt_finline || opt_funroll)`)
+    // -O1 and above (main.c: `if (opt_O >= 1 || opt_finline || opt_funroll)`)
     // -- matching real libtommath's own build, which always compiles at
     // -O3, and the pre-existing sibling (LHS-constant) fold this mirrors.
     // Must actually LINK (not just `-c` compile to an object file) --
