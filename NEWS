@@ -4,6 +4,15 @@ complete list of changes see the git log.
 
 * Changes in v1.2.2 (????-??-??) (Reini Urban) [planned]
 
+  - New -O1 codegen passes: local value propagation with dead-store
+    elimination, jump threading, cheap algebraic-identity folds, and
+    dense small-int switch → jump table lowering. Sparse switches
+    (>=150 exact-value cases, benchmarked breakeven) now lower to a
+    balanced binary search or a perfect-hash dispatch instead of a
+    linear cmp/jcc chain.
+  - New -O2 single-scalar-arg/return tail-call optimization on
+    x86-64 and ARM64 (ND_RETURN tail-jmp under -finline+-funroll),
+    with frame-escape and __builtin_* safety checks.
   - Added FreeBSD, NetBSD and OpenBSD support, all three built and
     tested in CI (vmactions QEMU VMs) as mandatory, blocking jobs —
     no `continue-on-error`. Also added a `clang`-built matrix job on

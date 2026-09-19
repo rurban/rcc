@@ -62,10 +62,9 @@ Linux:
   same as TCC. The peephole optimizer uses a 3-line sliding window
   (single pass over emitted asm), while TCC works on an internal
   abstract representation. Together these account for the compile-time
-  gap. Faster branch patching as in TCC is in works. Generated code
-  quality is on par with TCC. CCC is claudes-c-compiler vibe-coded in
-  rust, which can compile the kernel. XCC is very fast, but cannot
-  compile much.
+  gap. Generated code quality is on par with TCC. CCC is
+  claudes-c-compiler vibe-coded in rust, which can compile the kernel.
+  XCC and ANTCC are very fast, but cannot compile much.
 
 rcc -O1 -time:
 
@@ -93,20 +92,20 @@ Linux, total time (compile + best-of-3 execute) for the whole suite:
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) | Spread |
 | :-------- | -----------: | -----------: | ---------: | -----: |
-| RCC       |          307 |         5817 |       6124 |     7% |
-| RCC -O1   |          304 |         6545 |       6849 |     4% |
-| RCC -O2   |          303 |         6102 |       6405 |     4% |
-| TCC       |           68 |         5038 |       5106 |     1% |
-| SLIMCC    |          256 |         4922 |       5178 |     3% |
-| KEFIR     |         4388 |         5269 |       9657 |     0% |
-| KEFIR -O1 |         4824 |         3692 |       8516 |     0% |
-| ANTCC     |          191 |         3731 |       3922 |     2% |
-| CCC       |          869 |         4467 |       5336 |     0% |
-| BCC       |         2965 |         4678 |       7643 |     3% |
-| GCC -O0   |          843 |         4814 |       5657 |     2% |
-| GCC -O2   |         1853 |         2520 |       4373 |     1% |
-| Clang -O0 |          874 |         4569 |       5443 |     3% |
-| Clang -O2 |         1587 |         2554 |       4141 |     3% |
+| RCC       |          274 |         5822 |       6096 |     1% |
+| RCC -O1   |          275 |         6542 |       6817 |     1% |
+| RCC -O2   |          273 |         6060 |       6333 |     2% |
+| TCC       |           65 |         5040 |       5105 |     1% |
+| SLIMCC    |          249 |         4889 |       5138 |     0% |
+| KEFIR     |         4363 |         5276 |       9639 |     1% |
+| KEFIR -O1 |         4813 |         3669 |       8482 |     0% |
+| ANTCC     |          185 |         3710 |       3895 |     1% |
+| CCC       |          854 |         4466 |       5320 |     1% |
+| BCC       |         2962 |         4637 |       7599 |     2% |
+| GCC -O0   |          832 |         4800 |       5632 |     1% |
+| GCC -O2   |         1844 |         2515 |       4359 |     1% |
+| Clang -O0 |          870 |         4570 |       5440 |     0% |
+| Clang -O2 |         1583 |         2543 |       4126 |     0% |
 
 Run it yourself: `./bench/awfy/run.sh` (this benchmark alone) or
 `./bench/run_bench.sh` (both tables together, plus the large-file
@@ -174,21 +173,21 @@ Without gcc-bugs, rcc has 0 fails.
 
 | Compiler | Passed | Failed | Skipped | Notes                     |
 | -------- | ------ | ------ | ------- | ------------------------- |
-| rcc      | 4832   | 80     | 404     | 98%, 21c/58e/1r failures  |
-| gcc      | 4831   | 243    | 246     | 95%, 96c/41e/5r failures  |
-| ccc      | 4569   | 495    | 251     | 90%, 46c/86e/5r failures  |
-| clang    | 4250   | 824    | 241     | 83%, 112c/40e/3r failures |
+| rcc      | 4846   | 80     | 404     | 98%, 21c/58e/1r failures  |
+| gcc      | 4844   | 244    | 246     | 95%, 96c/41e/5r failures  |
+| ccc      | 4581   | 497    | 251     | 90%, 46c/86e/5r failures  |
+| clang    | 4262   | 826    | 241     | 83%, 112c/40e/3r failures |
 | cake     | 2395   | 2041   | 515     | 53%, 437c/3r failures     |
 | compcert | 1674   | 2525   | 399     | 40%, 2336c/141r failures  |
-| bcc      | 1426   | 3342   | 549     | 29%, 129c failures        |
-| tcc      | 1045   | 2731   | 1526    | 27%, 116c/61r failures    |
-| kefir    | 1081   | 3519   | 702     | 23%, 161c failures        |
-| antcc    | 843    | 2924   | 1535    | 22%, 209c failures        |
-| slimcc   | 829    | 3261   | 1212    | 20%, 207c failures        |
-| lacc     | 563    | 3530   | 1209    | 13%, 294c failures        |
-| scc      | 648    | 4059   | 595     | 13%, 301c failures        |
-| xcc      | 812    | 3112   | 1378    | 20%, 227c failures        |
-| cproc    | 362    | 4314   | 626     | 7%, 288c failures         |
+| bcc      | 1258   | 3524   | 549     | 26%, 129c failures        |
+| tcc      | 1002   | 2788   | 1526    | 26%, 116c/61r failures    |
+| kefir    | 1081   | 3533   | 702     | 23%, 161c failures        |
+| antcc    | 843    | 2938   | 1535    | 22%, 209c failures        |
+| slimcc   | 829    | 3275   | 1212    | 20%, 207c failures        |
+| xcc      | 812    | 3126   | 1378    | 20%, 227c failures        |
+| lacc     | 563    | 3544   | 1209    | 13%, 294c failures        |
+| scc      | 648    | 4073   | 595     | 13%, 301c failures        |
+| cproc    | 362    | 4324   | 630     | 7%, 287c failures         |
 
 <!-- TEST_RESULTS_TABLE_END -->
 
