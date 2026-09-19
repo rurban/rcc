@@ -82,9 +82,20 @@
 #define LLONG_WIDTH 64
 #define ULLONG_WIDTH 64
 
-/* C23 bool limits */
+/* C23 bool limits. BOOL_MAX is always 1 (the only representable _Bool
+ * value) regardless of storage width. BOOL_WIDTH tracks __BOOL_WIDTH__
+ * (predefined in gcc_predefined.h from the real host compiler's own
+ * -dM output, same as LONG_WIDTH/__LONG_WIDTH__ above) when the host
+ * compiler defines it -- Clang/Apple's C23 <limits.h> reports 8 (a
+ * _Bool occupies a full byte, even though only 1 bit is meaningful);
+ * a host gcc too old to know __BOOL_WIDTH__ at all falls back to the
+ * GCC-only convention of 1. */
 #define BOOL_MAX 1
+#ifdef __BOOL_WIDTH__
+#define BOOL_WIDTH __BOOL_WIDTH__
+#else
 #define BOOL_WIDTH 1
+#endif
 #endif // C23
 
 /* All limits (ISO C, POSIX/XSI, Linux kernel, GNU extensions) are defined
