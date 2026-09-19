@@ -25,16 +25,15 @@ beyond standard C23/C29.
 
     rcc [options] [-o outfile] [-c|-S|-E] infile...
 
-rcc is a from-scratch, self-contained C23 (and draft C29/C2y)
-compiler for x86-64 (Windows, Linux, and FreeBSD/NetBSD/OpenBSD) and
+rcc is a from-scratch, self-contained C23 (and draft C29/C2y) compiler
+for x86-64 (Windows, Linux, and FreeBSD/NetBSD/OpenBSD) and
 AArch64/ARM64 (ELF and Darwin), with its own integrated assembler and
 linker — no external `as`/`ld` is invoked (on the BSDs, the native
 linker falls back to the system `cc`/`ld` for a handful of cases it
 doesn't special-case yet — `crt1.o` layout, `PT_INTERP`/`DT_NEEDED`
-naming — tracked in [`TODO`](../TODO)). rcc builds with either gcc or
-clang. It targets close GCC/Clang command-line and language
-compatibility while compiling and linking substantially faster, at
-execution speed close to `tcc`. See
+naming. rcc builds with either gcc or clang. It targets close
+GCC/Clang command-line and language compatibility while compiling and
+linking substantially faster, at execution speed close to `tcc`. See
 [README.md#key-features](../README.md#key-features) for the codegen
 and register-allocator design and benchmark numbers.
 
