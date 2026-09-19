@@ -4,6 +4,8 @@
   already .o/.a, nothing freshly compiled this run) now take the native
   path too (fixed 2026-09-19, see test/third_party/TODO.md).
 
+- -fsanitize=adress,undefined
+
 - interchange and extended float types (just aliased, no __STDC_IEC_60559_TYPES__)
 
 - -O2 miscompile: test/test_csmith_ternary_spill.c gets the wrong checksum
