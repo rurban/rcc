@@ -45,6 +45,12 @@
 // Section flags
 #define S_REGULAR                   0x0
 #define S_ZEROFILL                  0x1
+// Section type (low byte of flags): a __DATA,__mod_init_func section must
+// carry this so dyld recognizes and actually runs the function pointers
+// stored there as constructors (LC_ROUTINES-less modern equivalent of
+// __attribute__((constructor))) -- plain S_REGULAR leaves them silently
+// unrun, matching -init_array on ELF needing SHT_INIT_ARRAY, not SHT_PROGBITS.
+#define S_MOD_INIT_FUNC_POINTERS    0x9
 #define S_ATTR_PURE_INSTRUCTIONS    0x80000000
 #define S_ATTR_SOME_INSTRUCTIONS    0x400
 // __DWARF segment debug sections (-g): macho_write.c marks these
@@ -83,6 +89,7 @@
 
 // n_desc flags
 #define N_WEAK_DEF 0x0080 // defined symbol is a weak (coalesced) definition
+#define N_WEAK_REF 0x0040 // undefined symbol is a weak reference (may be missing)
 
 // PLATFORM_MACOS = 1
 #define PLATFORM_MACOS 1
@@ -695,7 +702,18 @@ int link_load_object(LinkState *s, const char *path) {
                                 strcmp(sectname, "__text") == 0);
                 bool exec = is_text; // only __text is executable
                 bool write = (strcmp(segname_s, "__DATA") == 0);
-                bool is_bss = (flags & S_ZEROFILL) != 0;
+                // section_64.flags packs an 8-bit section *type* enum in
+                // its low byte (S_REGULAR/S_ZEROFILL/S_MOD_INIT_FUNC_POINTERS/...,
+                // mutually exclusive values) plus attribute bits above it
+                // (S_ATTR_PURE_INSTRUCTIONS, S_ATTR_DEBUG, ...) -- a plain
+                // `flags & S_ZEROFILL` bitwise test, not a masked equality
+                // check, spuriously matched S_MOD_INIT_FUNC_POINTERS (0x9)
+                // too (0x9 & 0x1 == 1, same low bit as S_ZEROFILL's 0x1),
+                // misclassifying every __mod_init_func section as BSS: its
+                // bytes/relocations were silently skipped below instead of
+                // copied, so no __attribute__((constructor)) function ever
+                // actually got linked into the output, only zero-filled space.
+                bool is_bss = (flags & 0xff) == S_ZEROFILL;
 
                 // Map section name to output section. A section whose
                 // *sectname* half doesn't start with "__" is never one of
@@ -726,6 +744,22 @@ int link_load_object(LinkState *s, const char *path) {
                 // non-allocated instead, matching PE's/ELF's now-
                 // consistent handling.
                 bool is_debug = (flags & S_ATTR_DEBUG) != 0;
+                // __LD,__compact_unwind: linker-synthesized compact-unwind
+                // input that real ld64 consumes to build __TEXT,__unwind_info
+                // -- never copied into the output verbatim. Its own
+                // relocations reference the owning function via a raw
+                // SECTION index (r_extern == 0, unlike every ordinary
+                // reloc this reader handles, which assumes r_symbolnum is
+                // always a symbol-table index); misinterpreting that index
+                // as a symbol index corrupts an unrelated symbol's
+                // resolved address. rcc emits no unwind info and doesn't
+                // support C++ exceptions, so the safe, correct handling is
+                // to drop every `__LD` segment's sections wholesale rather
+                // than mis-link them into a real segment (they previously
+                // fell through to the generic ".rdata" bucket, silently
+                // concatenating unwind-info bytes into real rodata content
+                // and mis-resolving the reloc above it into the bargain).
+                bool is_linker_meta = strcmp(segname_s, "__LD") == 0;
                 char out_name[34];
                 if (is_text) snprintf(out_name, sizeof(out_name), ".text");
                 else if (is_debug)
@@ -744,8 +778,10 @@ int link_load_object(LinkState *s, const char *path) {
                     snprintf(out_name, sizeof(out_name), ".rdata");
 
                 size_t sec_align = 1u << (align_p2 > 0 ? align_p2 : 4);
-                int out_idx = link_find_or_create_sec(s, out_name, !is_debug, write, exec,
-                                                      is_bss, false, sec_align);
+                int out_idx = is_linker_meta
+                    ? -1
+                    : link_find_or_create_sec(s, out_name, !is_debug, write, exec, is_bss,
+                                              false, sec_align);
                 {
                     int *tmp = realloc(sec_map, (size_t)(n_sections + 1) * sizeof(int));
                     if (!tmp) {
@@ -766,7 +802,9 @@ int link_load_object(LinkState *s, const char *path) {
                     sec_base_off = tmp;
                 }
 
-                if (!is_bss && size > 0 && offset > 0) {
+                if (is_linker_meta) {
+                    sec_base_off[n_sections] = 0;
+                } else if (!is_bss && size > 0 && offset > 0) {
                     uint64_t base_off = link_sec_append(s, out_idx,
                                                         image + offset, (size_t)size, 16);
                     sec_base_off[n_sections] = base_off;
@@ -791,7 +829,7 @@ int link_load_object(LinkState *s, const char *path) {
                     sec_base_off[n_sections] = s->secs[out_idx].len;
                     s->secs[out_idx].len += (size_t)size;
                 } else {
-                    sec_base_off[n_sections] = s->secs[out_idx].len;
+                    sec_base_off[n_sections] = out_idx >= 0 ? s->secs[out_idx].len : 0;
                 }
                 n_sections++;
                 sc += 80;
@@ -831,7 +869,16 @@ int link_load_object(LinkState *s, const char *path) {
                 int bind, type, out_sec;
                 uint8_t nt = n_type & N_TYPE;
                 if (nt == N_UNDF) {
-                    bind = (n_type & N_EXT) ? 1 : 0;
+                    // N_WEAK_REF (n_desc bit 0x40): a weak *reference* --
+                    // macho_write.c emits it for `__attribute__((weak))`
+                    // declared-but-never-called symbols (see e.g.
+                    // 104+_inline.c's GOT() macro, which takes such a
+                    // symbol's address and expects NULL when it's missing
+                    // from every TU). Map to bind 2 so an external bind
+                    // opcode built for it later carries
+                    // BIND_SYMBOL_FLAGS_WEAK_IMPORT instead of hard-failing
+                    // at load time when dyld can't find it in libSystem.
+                    bind = (n_type & N_EXT) ? ((n_desc & N_WEAK_REF) ? 2 : 1) : 0;
                     type = 0;
                     out_sec = -1;
                 } else if (nt == N_SECT && n_sect > 0 && n_sect <= n_sections) {
@@ -889,6 +936,120 @@ static uint64_t mo_symbol_address(LinkState *s, int idx) {
     return sym->value;
 }
 
+// True if `libs` (the driver's collected -l/-L/-Wl,.../.a/.so link-line
+// text, see LinkState.libs's own comment) names anything beyond a plain
+// `-L<dir>` search-path flag -- an explicit `-l<name>` (e.g. `-lcurl`), a
+// bare archive/dylib path (e.g. a positional `libfoo.dylib` or the bundled
+// `libdfp.a`), or any other linker option.  Mach-O has no
+// resolve_archives()-equivalent for bare `libs` positionals yet (see
+// link_load_object()'s own comment), so none of those are ever actually
+// loaded/searched here -- binding an undefined reference to dylib ordinal 1
+// (libSystem) below is only trustworthy when libSystem is the sole implied
+// external dependency, i.e. when `libs` carries nothing but `-L` entries.
+static bool mo_libs_has_explicit_lib(const char *libs) {
+    if (!libs) return false;
+    const char *p = libs;
+    while (*p) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        const char *end = strchr(p, ' ');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        if (!(len >= 2 && p[0] == '-' && p[1] == 'L')) return true;
+        p += len;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// rcc_darwin.dylib: a handful of symbols codegen.c emits direct calls to
+// (_Complex division/multiply) or that user code can reference (glibc
+// extensions absent from Darwin libc) live in neither the user's own
+// objects nor /usr/lib/libSystem.B.dylib -- e.g. `___divdc3` (verified
+// empirically: `nm -g /usr/lib/libSystem.B.dylib | grep divdc3` is empty).
+// The GCC-fallback link path already covers this by additionally linking
+// lib/rcc_darwin.dylib (see main.c's own "Try absolute path first"
+// comment), a small hand-written dylib providing exactly these names.
+// Mirror that here: resolve its path the same way, and route any
+// undefined symbol it exports to dylib ordinal 2 (LC_LOAD_DYLIB #2, added
+// below only when actually needed) instead of ordinal 1 (libSystem).
+// ---------------------------------------------------------------------------
+
+#ifndef RCC_LIBDIR
+#define RCC_LIBDIR "lib"
+#endif
+
+// Resolve lib/rcc_darwin.dylib's real path once per process, mirroring
+// main.c's own RCC_LIBDIR-then-relative-fallback resolution. Returns NULL
+// if it can't be found (e.g. running rcc directly from an uninstalled
+// build tree with a different cwd) -- callers must tolerate that by
+// leaving those symbols bound to ordinal 1 as before, which then fails at
+// dyld load time exactly like it always did pre-this-feature.
+static const char *mo_darwin_shim_path(void) {
+    static const char *path;
+    static bool tried;
+    if (tried) return path;
+    tried = true;
+    static char buf[4096];
+    const char *candidates[2] = {RCC_LIBDIR "/rcc_darwin.dylib", "lib/rcc_darwin.dylib"};
+    for (int i = 0; i < 2; i++) {
+        struct stat st;
+        if (stat(candidates[i], &st) != 0) continue;
+        // Canonicalize: the resolved path is embedded verbatim as this
+        // link's LC_LOAD_DYLIB name below, which dyld resolves relative to
+        // the *running process's* cwd at load time, not the linker's --
+        // a relative path here would only work if the compiled program
+        // happens to be run from this exact directory.
+        if (realpath(candidates[i], buf)) {
+            path = buf;
+            break;
+        }
+    }
+    return path;
+}
+
+// name -> is-exported-by-rcc_darwin.dylib, built lazily via one `nm -gU`
+// invocation (rcc_darwin.dylib is already a plain thin arm64 dylib, no
+// FAT/archive unwrapping needed).
+static struct {
+    char **names;
+    int n;
+    bool ready;
+} g_mo_darwin_shim_syms;
+
+static void mo_darwin_shim_index_build(void) {
+    g_mo_darwin_shim_syms.ready = true;
+    const char *path = mo_darwin_shim_path();
+    if (!path) return;
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd), "nm -gU '%s' 2>/dev/null", path);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return;
+    char line[1024];
+    int cap = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        size_t len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = '\0';
+        // "<16-hex-digit addr> T _symbol"
+        char *sp = strrchr(line, ' ');
+        if (!sp || !sp[1]) continue;
+        if (g_mo_darwin_shim_syms.n >= cap) {
+            cap = cap ? cap * 2 : 16;
+            g_mo_darwin_shim_syms.names =
+                realloc(g_mo_darwin_shim_syms.names, (size_t)cap * sizeof(char *));
+        }
+        g_mo_darwin_shim_syms.names[g_mo_darwin_shim_syms.n++] = strdup(sp + 1);
+    }
+    pclose(fp);
+}
+
+static bool mo_darwin_shim_provides(const char *name) {
+    if (!name) return false;
+    if (!g_mo_darwin_shim_syms.ready) mo_darwin_shim_index_build();
+    for (int i = 0; i < g_mo_darwin_shim_syms.n; i++)
+        if (!strcmp(g_mo_darwin_shim_syms.names[i], name)) return true;
+    return false;
+}
+
 // ---------------------------------------------------------------------------
 // Mach-O executable writer
 // ---------------------------------------------------------------------------
@@ -942,22 +1103,39 @@ int link_macho(LinkState *s) {
     //     built below -- this is the path the -shared benchmark (sqlite) and
     //     dylib exports need, and it works because such libraries import only
     //     libSystem (ordinal 1, what the bind opcodes assume).
-    //   * executables still defer to the external linker whenever a genuinely
-    //     external symbol is referenced: binding every undefined symbol to
+    //   * executables use the identical GOT/bind-opcode strategy, but only
+    //     for the reloc kinds that strategy actually builds bind entries
+    //     for (GOT loads and PLT-stubbed calls, below): an external symbol
+    //     referenced any other way -- e.g. `T x = &extern_fn;`/`T x =
+    //     &extern_var;` in initialized __DATA, RL_ABS64 with no GOT
+    //     indirection -- has no bind entry emitted for it at all (the
+    //     rebase-opcode builder above explicitly skips external targets),
+    //     so the stored value would silently stay zero.  Unconditionally
+    //     defer those to the external linker.
+    //   * even for the GOT/PLT kinds, binding every undefined symbol to
     //     libSystem ordinal 1 is only correct when the symbol truly lives
-    //     there, which cannot be verified here (e.g. on_exit, or a symbol
-    //     that another linked dylib provides).  The external linker resolves
-    //     those robustly and reports real errors.
+    //     there. For a plain link (no extra libraries -- `libs` names
+    //     nothing beyond `-L<dir>` search paths -- the overwhelmingly
+    //     common case, since libc/libm/pthread/etc. are all subsumed into
+    //     libSystem.B.dylib on macOS) that always holds; once another
+    //     library is named (e.g. `-lcurl`, or a positional libgreet.dylib),
+    //     Mach-O has no resolve_archives()-equivalent search here (see
+    //     link_load_object()'s own comment) to verify which dylib a given
+    //     undefined symbol (e.g. on_exit, or a symbol only that library
+    //     provides) really belongs to, so defer to the external linker,
+    //     which resolves those robustly and reports real errors.
     if (!is_dylib) {
+        bool extra_libs = mo_libs_has_explicit_lib(s->libs);
         for (int si = 0; si < s->n_secs; si++) {
             LinkSec *sec = &s->secs[si];
             for (int rj = 0; rj < sec->n_relocs; rj++) {
                 LinkReloc *r = &sec->relocs[rj];
                 if (r->sym < 0 || s->syms[r->sym].sec >= 0) continue;
-                if (r->type == RL_ARM64_B26 || r->type == RL_PC32_PLT ||
+                bool got_or_plt = r->type == RL_ARM64_B26 || r->type == RL_PC32_PLT ||
                     r->type == RL_ARM64_GOT_PG || r->type == RL_ARM64_GOT_LO ||
-                    r->type == RL_GOTPCREL)
-                    return -1;
+                    r->type == RL_GOTPCREL;
+                if (!got_or_plt) return -1;
+                if (extra_libs && !mo_darwin_shim_provides(s->syms[r->sym].name)) return -1;
             }
         }
     }
@@ -1147,6 +1325,21 @@ int link_macho(LinkState *s) {
         else if (sym->bind == 1)
             n_defsym++;
     }
+    // Whether any still-external symbol resolves through rcc_darwin.dylib
+    // (ordinal 2) rather than libSystem (ordinal 1, see got_off[]'s build
+    // loop above and mo_darwin_shim_provides()'s own comment) -- decides
+    // whether a second LC_LOAD_DYLIB is emitted at all.
+    bool need_darwin_shim = false;
+    const char *darwin_shim_path = NULL;
+    for (int i = 0; i < s->n_syms; i++) {
+        if (got_off[i] < 0 || s->syms[i].sec >= 0) continue;
+        if (!mo_darwin_shim_provides(s->syms[i].name)) continue;
+        darwin_shim_path = mo_darwin_shim_path();
+        if (darwin_shim_path) {
+            need_darwin_shim = true;
+            break;
+        }
+    }
 
     // Header size computation
     uint32_t nsects_text = 0, nsects_data = 0;
@@ -1172,6 +1365,8 @@ int link_macho(LinkState *s) {
     // plus the padded string "/usr/lib/dyld".
     uint32_t lc_dylinker = (uint32_t)mo_align(12 + strlen("/usr/lib/dyld") + 1, 8);
     uint32_t lc_dylib = (uint32_t)mo_align(24 + strlen("/usr/lib/libSystem.B.dylib") + 1, 8);
+    uint32_t lc_dylib2 =
+        need_darwin_shim ? (uint32_t)mo_align(24 + strlen(darwin_shim_path) + 1, 8) : 0;
     uint32_t lc_dyld_info = 48; // dyld_info_command
     // LC_DYLD_EXPORTS_TRIE: a tiny export trie with a single terminal node
     // (two zero bytes: \0 terminal-info-size \0).  dyld expects this.
@@ -1184,6 +1379,7 @@ int link_macho(LinkState *s) {
     ncmds += 1; // LC_SYMTAB
     ncmds += 1; // LC_DYSYMTAB
     ncmds += 1; // LC_LOAD_DYLIB
+    if (need_darwin_shim) ncmds += 1; // LC_LOAD_DYLIB (rcc_darwin.dylib)
     if (!is_dylib) ncmds += 1; // LC_LOAD_DYLINKER
     if (is_dylib) ncmds += 1; // LC_ID_DYLIB
     ncmds += 1; // LC_UUID
@@ -1204,7 +1400,7 @@ int link_macho(LinkState *s) {
     uint32_t header_size = 32;
     uint32_t total_lc = lc_pagezero + lc_linkedit + text_lc_size;
     if (has_data) total_lc += data_lc_size;
-    total_lc += lc_build_version + (is_dylib ? 0 : lc_main) + lc_dylib;
+    total_lc += lc_build_version + (is_dylib ? 0 : lc_main) + lc_dylib + lc_dylib2;
     total_lc += lc_symtab + lc_dysymtab + lc_codesig_cmd;
     total_lc += (is_dylib ? 0 : lc_dylinker) + lc_export_trie + lc_uuid + lc_id_dylib;
     total_lc += lc_dyld_info;
@@ -1333,8 +1529,20 @@ int link_macho(LinkState *s) {
             for (int i = 0; i < s->n_syms; i++) {
                 if (got_off[i] < 0 || s->syms[i].sec >= 0) continue;
                 LinkSym *sym = &s->syms[i];
-                *w++ = 0x11; // SET_DYLIB_ORDINAL_IMM | 1
-                *w++ = 0x40; // SET_SYMBOL_TRAILING_FLAGS_IMM | flags(0)
+                // ord 1 = libSystem, ord 2 = rcc_darwin.dylib (only ever
+                // emitted -- and only referenced here -- when
+                // need_darwin_shim is true; see its own comment).
+                uint8_t ord = (uint8_t)(mo_darwin_shim_provides(sym->name) ? 2 : 1);
+                *w++ = (uint8_t)(0x10 | ord); // SET_DYLIB_ORDINAL_IMM
+                // BIND_SYMBOL_FLAGS_WEAK_IMPORT (0x1): a weak reference
+                // (sym->bind == 2, see link_load_object()'s N_WEAK_REF
+                // handling) that dyld can't find in libSystem must not
+                // abort the load -- it stays unbound (NULL, since the GOT
+                // slot was zero-filled above), matching a plain undefined
+                // weak symbol's address-taken-as-0 semantics. A non-weak
+                // (bind == 1) external symbol keeps flags 0: genuinely
+                // missing there is a real error dyld should still report.
+                *w++ = (uint8_t)(0x40 | (sym->bind == 2 ? 0x1 : 0)); // SET_SYMBOL_TRAILING_FLAGS_IMM | flags
                 size_t nl = strlen(sym->name) + 1;
                 memcpy(w, sym->name, nl);
                 w += nl;
@@ -1510,6 +1718,7 @@ int link_macho(LinkState *s) {
     }
     const char *dylib_path = "/usr/lib/libSystem.B.dylib";
     strtab_size += strlen(dylib_path) + 1;
+    if (need_darwin_shim) strtab_size += strlen(darwin_shim_path) + 1;
     strtab_size = mo_align(strtab_size, 8);
     uint64_t linkedit_end = strtab_off + strtab_size;
 
@@ -1737,7 +1946,8 @@ int link_macho(LinkState *s) {
             mo_w32(f, 3); // offset, align=8
             mo_w32(f, 0);
             mo_w32(f, 0);
-            mo_w32(f, sec->is_bss ? S_ZEROFILL : S_REGULAR);
+            mo_w32(f, sec->is_bss ? S_ZEROFILL : strcmp(mo_secs[i].sectname, "__mod_init_func") == 0 ? S_MOD_INIT_FUNC_POINTERS
+                                                                                                     : S_REGULAR);
             mo_w32(f, 0);
             mo_w32(f, 0);
             mo_w32(f, 0);
@@ -1841,6 +2051,24 @@ int link_macho(LinkState *s) {
     mo_wbuf(f, dylib_path, strlen(dylib_path) + 1);
     for (uint32_t p = (uint32_t)strlen(dylib_path) + 1; p < dylib_padded - 24; p++)
         fputc(0, f);
+
+    // --- LC_LOAD_DYLIB (rcc_darwin.dylib, ordinal 2) ---
+    // Must come immediately after libSystem's LC_LOAD_DYLIB above: dyld
+    // assigns bind ordinals by the position of each LC_LOAD_DYLIB command
+    // among the load commands, 1-based -- this is what makes it ordinal 2,
+    // matching the bind-opcode writer's own `ord` selection above.
+    if (need_darwin_shim) {
+        uint32_t dylib2_padded = lc_dylib2;
+        mo_w32(f, LC_LOAD_DYLIB);
+        mo_w32(f, dylib2_padded);
+        mo_w32(f, 24); // offset to string
+        mo_w32(f, 0);
+        mo_w32(f, 0);
+        mo_w32(f, 0); // timestamp, version, compat version
+        mo_wbuf(f, darwin_shim_path, strlen(darwin_shim_path) + 1);
+        for (uint32_t p = (uint32_t)strlen(darwin_shim_path) + 1; p < dylib2_padded - 24; p++)
+            fputc(0, f);
+    }
 
     // --- LC_LOAD_DYLINKER (executables only) ---
     if (!is_dylib) {
@@ -2024,6 +2252,7 @@ int link_macho(LinkState *s) {
         mo_wbuf(f, sym->name, strlen(sym->name) + 1);
     }
     mo_wbuf(f, dylib_path, strlen(dylib_path) + 1);
+    if (need_darwin_shim) mo_wbuf(f, darwin_shim_path, strlen(darwin_shim_path) + 1);
     // Pad to next 8-byte boundary as computed above.
     cur = ftell(f);
     if (mo_align((uint64_t)cur, 8) > (uint64_t)cur)
