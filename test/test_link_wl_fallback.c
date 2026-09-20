@@ -1,23 +1,26 @@
-/* Internal-linker capability fallback (src/main.c).
+/* Native-linker -Wl, option handling (src/link_elf.c, src/main.c).
  *
- * rcc's own native ELF/PE/Mach-O linker only understands -l/-L/-static
- * inputs plus bare .a/.so positionals and the -pie/-pic/-shared/-static/
- * -export-dynamic mode flags. Linker commands it cannot honor used to be
- * silently dropped - every -Wl, option (rpath, soname, --start-group/
- * --end-group, --as-needed, --no-undefined, -v, -z, ...) produced a link
- * that "succeeded" with the wrong semantics (no DT_RUNPATH/DT_SONAME, or
- * an archive whose --start-group closure never resolved) - and a bare
- * `rcc -Wl,-v` with no input files died at "no input files" instead of
- * running the linker-version probe that build tools like muon use to
- * detect the linker type. Both are now routed straight to the external
- * (gcc) linker.
+ * rcc's native ELF linker (link_elf.c, shared by the Linux/x86_64 and
+ * arm64-cross builds) used to only understand -l/-L/-static inputs plus
+ * bare .a/.so positionals and the -pie/-pic/-shared/-static/
+ * -export-dynamic mode flags: every -Wl, option (rpath, soname,
+ * --start-group/--end-group, --as-needed, --no-undefined, -v, -z, ...)
+ * forced a fall back to the external (gcc) linker, whether or not the
+ * option actually needed one. Both scenarios below -- a -Wl,-soname +
+ * -Wl,-rpath shared-lib/executable pair, and a bare version-probe -Wl,-v
+ * -- are now handled natively (see link_parse_opts() in link.c and its
+ * call sites in link_elf.c): the probe prints rcc's own "GNU ld (rcc)
+ * ..." banner (see main.c), and DT_SONAME/DT_RUNPATH are written
+ * directly by link_elf() instead of only ever coming from a spawned
+ * `cc`/`ld` subprocess.
  *
- * The observable contracts here are ELF-specific: the "GNU ld version"
- * banner only exists on GNU-ld platforms, and the runtime-finds-the-
- * library check relies on DT_RUNPATH (there is no equivalent on PE/COFF,
- * where DLL lookup is PATH-based, or on Mach-O's @rpath/install_name
- * scheme). So the test is Linux/ELF-only; on other platforms it is a
- * clean skip.
+ * The observable contracts here are ELF-specific: the "GNU ld (" banner
+ * only exists on GNU-ld-alike platforms (this native one included), and
+ * the runtime-finds-the-library check relies on DT_RUNPATH (there is no
+ * equivalent on PE/COFF, where DLL lookup is PATH-based, or on Mach-O's
+ * @rpath/install_name scheme -- and both of those native backends still
+ * fall back to the external linker for every -Wl, option, unchanged).
+ * So the test is Linux/ELF-only; on other platforms it is a clean skip.
  */
 #define _DEFAULT_SOURCE
 #include <stdio.h>
@@ -43,14 +46,21 @@ int main(void) {
         return 5;
     }
 
-    /* 1. A bare -Wl,-v with no inputs is a link-only probe: it must run
-     * the external linker (collect2/ld print their version banners),
-     * not die with "no input files". Checked loosely: "collect2" (GCC's
-     * own wrapper) or "GNU ld version" (older Binutils) are compiler-
-     * specific tells; "GNU ld (" (current Binutils' actual banner, e.g.
-     * "GNU ld (GNU Binutils for Ubuntu) 2.42") appears whether GCC's
-     * collect2 or clang invoked ld directly, so it's the one that must
-     * always be present for this to count as a real probe response. */
+    /* 1. A bare -Wl,-v with no inputs is a link-only probe: it must
+     * produce a "linker version" style banner, not die with "no input
+     * files". rcc itself now prints one directly (main.c's
+     * link_opts.version_probe check, "GNU ld (rcc) <version>") the
+     * moment it recognizes -Wl,-v -- before it even attempts a link.
+     * This exact invocation (no real object/source inputs at all) still
+     * goes on to fall back to the external linker afterward (crt1.o's
+     * `main` reference can never resolve with nothing else to link), so
+     * collect2/ld's own banner ends up in the captured output too;
+     * checked loosely for either: "collect2" (GCC's own wrapper) or
+     * "GNU ld version" (older Binutils) are compiler-specific tells;
+     * "GNU ld (" (both current Binutils' actual banner, e.g. "GNU ld
+     * (GNU Binutils for Ubuntu) 2.42", and rcc's own) is the one that
+     * must always be present for this to count as a real probe
+     * response. */
     {
         char cmd[800];
         snprintf(cmd, sizeof(cmd), "%s -Wl,-v " NULL_REDIRECT " 2>&1", rcc);
@@ -66,10 +76,10 @@ int main(void) {
         }
     }
 
-    /* 2. A -Wl,-rpath link must reach the external linker and record
-     * DT_RUNPATH, or the produced binary cannot find its shared library
-     * at runtime. Build librcc_rt.so into a non-standard dir and link
-     * prog against it with -Wl,-rpath,<that dir>. */
+    /* 2. A -Wl,-rpath link must record DT_RUNPATH -- now written
+     * directly by link_elf() -- or the produced binary cannot find its
+     * shared library at runtime. Build librcc_rt.so into a non-standard
+     * dir and link prog against it with -Wl,-rpath,<that dir>. */
     {
         char sub[700];
         snprintf(sub, sizeof(sub), "%s/rcc_rpath_%d", td, (int)getpid());

@@ -25,6 +25,144 @@ static uint64_t r64le(const uint8_t *p) {
 }
 
 // ---------------------------------------------------------------------------
+// Linker-option classification (see link.h's own doc comment).
+// ---------------------------------------------------------------------------
+
+static void opts_append_rpath(LinkOpts *out, const char *val, size_t len) {
+    if (len == 0) return;
+    size_t cur = out->have_rpath ? strlen(out->rpath) : 0;
+    size_t sep = out->have_rpath ? 1 : 0; // ':' between repeated -rpath values
+    if (cur + sep + len >= sizeof(out->rpath)) return; // silently truncate absurd input
+    if (sep) out->rpath[cur++] = ':';
+    memcpy(out->rpath + cur, val, len);
+    out->rpath[cur + len] = '\0';
+    out->have_rpath = true;
+}
+
+static void opts_set_soname(LinkOpts *out, const char *val, size_t len) {
+    if (len == 0 || len >= sizeof(out->soname)) return;
+    memcpy(out->soname, val, len);
+    out->soname[len] = '\0';
+    out->have_soname = true;
+}
+
+bool link_parse_opts(const char *libs, LinkOpts *out) {
+    memset(out, 0, sizeof(*out));
+    bool capable = true;
+    const char *lp = libs;
+    while (lp && *lp) {
+        while (*lp == ' ') lp++;
+        if (!*lp) break;
+        const char *end = lp;
+        while (*end && *end != ' ') end++;
+        size_t len = (size_t)(end - lp);
+        if (len == 14 && !strncmp(lp, "-nodefaultlibs", 14)) {
+            out->nodefaultlibs = true;
+        } else if (len == 9 && !strncmp(lp, "-nostdlib", 9)) {
+            out->nostdlib = true;
+        } else if (len == 2 && !strncmp(lp, "-r", 2)) {
+            out->relocatable = true;
+        } else if (len >= 4 && !strncmp(lp, "-Wl,", 4)) {
+            // Split this -Wl, token's comma-separated sub-options into a
+            // bounded array so a value-taking option (e.g. "-rpath","DIR")
+            // can look at its own next element without re-scanning commas.
+            const char *subs[64];
+            size_t sublens[64];
+            int nsub = 0;
+            const char *p = lp + 4;
+            while (p < end && nsub < 64) {
+                const char *comma = memchr(p, ',', (size_t)(end - p));
+                const char *se = comma ? comma : end;
+                subs[nsub] = p;
+                sublens[nsub] = (size_t)(se - p);
+                nsub++;
+                if (!comma) break;
+                p = comma + 1;
+            }
+            for (int i = 0; i < nsub; i++) {
+                const char *s = subs[i];
+                size_t sl = sublens[i];
+#define SEQ(lit) (sl == (sizeof(lit) - 1) && !strncmp(s, lit, sl))
+#define SPFX(lit) (sl > (sizeof(lit) - 1) && !strncmp(s, lit, sizeof(lit) - 1))
+                if (SEQ("--out-implib")) {
+                    if (i + 1 < nsub) i++; // path consumed by main.c's own wl_get_value()
+                } else if (SEQ("-E") || SEQ("--export-dynamic") ||
+                           SEQ("--start-group") || SEQ("--end-group") ||
+                           SEQ("--as-needed") || SEQ("--no-as-needed") ||
+                           SEQ("--enable-new-dtags") || SEQ("--disable-new-dtags") ||
+                           SEQ("--allow-shlib-undefined") || SEQ("--eh-frame-hdr") ||
+                           SEQ("--hash-style=gnu") || SEQ("--hash-style=both") ||
+                           SEQ("--hash-style=sysv") || SEQ("--build-id") ||
+                           SPFX("--build-id=")) {
+                    // Recognized: either a no-op for this linker, or
+                    // (-E/--export-dynamic, --as-needed/--no-as-needed)
+                    // applied elsewhere (opt_export_dynamic / the -l scan
+                    // in link_elf.c respectively).
+                } else if (SEQ("--no-undefined")) {
+                    out->no_undefined = true;
+                } else if (SEQ("--allow-multiple-definition")) {
+                    out->muldefs = true;
+                } else if (SEQ("-v") || SEQ("--version")) {
+                    out->version_probe = true;
+                } else if ((SEQ("-rpath") || SEQ("--rpath")) && i + 1 < nsub) {
+                    opts_append_rpath(out, subs[i + 1], sublens[i + 1]);
+                    i++;
+                } else if (SPFX("-rpath=")) {
+                    opts_append_rpath(out, s + 7, sl - 7);
+                } else if (SPFX("--rpath=")) {
+                    opts_append_rpath(out, s + 8, sl - 8);
+                } else if ((SEQ("-soname") || SEQ("--soname") || SEQ("-h")) && i + 1 < nsub) {
+                    opts_set_soname(out, subs[i + 1], sublens[i + 1]);
+                    i++;
+                } else if (SPFX("-soname=")) {
+                    opts_set_soname(out, s + 8, sl - 8);
+                } else if (SPFX("--soname=")) {
+                    opts_set_soname(out, s + 9, sl - 9);
+                } else if (SEQ("-z") && i + 1 < nsub) {
+                    const char *zs = subs[i + 1];
+                    size_t zl = sublens[i + 1];
+                    i++;
+#define ZEQ(lit) (zl == (sizeof(lit) - 1) && !strncmp(zs, lit, zl))
+#define ZPFX(lit) (zl > (sizeof(lit) - 1) && !strncmp(zs, lit, sizeof(lit) - 1))
+                    if (ZEQ("now")) out->bind_now = true;
+                    else if (ZEQ("origin"))
+                        out->z_origin = true;
+                    else if (ZEQ("noexecstack"))
+                        out->noexecstack = true;
+                    else if (ZEQ("execstack"))
+                        out->execstack = true;
+                    else if (ZEQ("defs"))
+                        out->no_undefined = true;
+                    else if (ZEQ("muldefs"))
+                        out->muldefs = true;
+                    else if (ZEQ("lazy") || ZEQ("relro") || ZEQ("norelro") ||
+                             ZEQ("nodelete") || ZEQ("nodlopen") || ZEQ("initfirst") ||
+                             ZEQ("interpose") || ZEQ("separate-code") ||
+                             ZEQ("noseparate-code") || ZEQ("nocopyreloc") ||
+                             ZPFX("common-page-size=") || ZPFX("max-page-size=") ||
+                             ZPFX("stack-size=")) {
+                        // Accepted no-ops: hardening/perf hints this
+                        // linker's fixed layout doesn't need to act on
+                        // (their absence weakens hardening, never
+                        // correctness -- unlike rpath/soname/defs above).
+                    } else {
+                        capable = false;
+                    }
+#undef ZEQ
+#undef ZPFX
+                } else {
+                    capable = false;
+                }
+#undef SEQ
+#undef SPFX
+            }
+        }
+        lp = end;
+    }
+    return capable;
+}
+
+// ---------------------------------------------------------------------------
 // State management
 // ---------------------------------------------------------------------------
 
@@ -39,6 +177,16 @@ void link_state_init(LinkState *s, LinkArch arch, const char *out_path,
     s->opt_shared = opt_shared;
     s->opt_export_dynamic = opt_export_dynamic;
     s->opt_pie = opt_pie;
+    // Needed before any object is loaded: opt_relocatable changes how
+    // elf_load_object() records relocations, opt_muldefs how
+    // link_add_sym() treats a second strong definition. The caller
+    // (main.c) already re-derives the same LinkOpts to decide whether to
+    // attempt a native link at all -- this is just the copy link_elf.c's
+    // object-loading path needs early.
+    LinkOpts opts;
+    link_parse_opts(libs, &opts);
+    s->opt_relocatable = opts.relocatable;
+    s->opt_muldefs = opts.muldefs;
 }
 
 void link_state_free(LinkState *s) {
@@ -215,6 +363,11 @@ int link_add_sym(LinkState *s, const char *name, int sec, uint64_t value,
                 } else if (sym->bind == 2 && bind == 2) {
                     // both weak: bodies must be identical (ODR); keep
                     // whichever was seen first
+                    return idx;
+                } else if (s->opt_muldefs) {
+                    // -Wl,--allow-multiple-definition / -z muldefs: keep
+                    // whichever strong definition was seen first instead
+                    // of failing the link (matches real ld's -z muldefs).
                     return idx;
                 } else {
                     fprintf(stderr, "rcc: link error: duplicate definition of '%s'\n", name);

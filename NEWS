@@ -4,9 +4,14 @@ complete list of changes see the git log.
 
 * Changes in v1.2.3 (????-??-??) (Reini Urban)
 
+  Better linkers:
   - Security: non-`-shared` links no longer get an unconditionally
     executable stack (PT_GNU_STACK RWE); only requested when a
     linked-in object actually needs one (nested-fn trampoline) (GH #63).
+  - Implemented native ELF-linker support for -Wl,<opt> (rpath/soname/--start-group/
+    --as-needed/--no-undefined/-v/-z), -nodefaultlibs, -nostdlib, and -r, and for
+    linking only objects and libs instead of falling back to the external linker.
+  - Implemented native macho linker for executables with external symbols.
 
 * Changes in v1.2.2 (2026-09-19) (Reini Urban)
 

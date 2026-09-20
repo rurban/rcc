@@ -1566,17 +1566,21 @@ int main(int argc, char **argv) {
         }
 #endif
         // Try the native linker first.
-        // The native ELF/PE/Mach-O linker understands only -l/-L/-static
-        // inputs (plus bare .a/.so positionals) and the -pie/-pic/-shared/
-        // -static/-export-dynamic mode flags. It cannot honor -Wl, options
-        // (rpath, soname, --start-group/--end-group, --as-needed,
-        // --no-undefined, -v, -z, ...) or -nodefaultlibs; silently dropping
-        // them would "link" with the wrong semantics (e.g. a shared lib
-        // whose DT_RUNPATH/DT_SONAME never got written, or an archive
-        // whose --start-group dependency closure was never resolved) — or,
-        // for -Wl,-v, produce no output at all, breaking tools like muon
-        // that probe the linker version through it. Detect these up front
-        // and go straight to the external linker instead.
+        // The native ELF linker (Linux/x86_64 and the arm64-cross build,
+        // both compiled from link_elf.c) additionally understands the
+        // linker options link_parse_opts() recognizes: -Wl,-rpath/-soname,
+        // --start-group/--end-group, --as-needed/--no-as-needed,
+        // --no-undefined, -v, most -z suboptions, -nodefaultlibs,
+        // -nostdlib, and -r (see link_elf.c's own handling of each). The
+        // PE and Mach-O native linkers (link_pe.c/link_macho.c) don't
+        // implement any of that yet, so keep them on the old, narrower
+        // gate: only -Wl,--out-implib (PE import-library generation) is
+        // recognized there, everything else -- and -nodefaultlibs/
+        // -nostdlib/-r -- still falls back to the external linker, which
+        // silently dropping them would otherwise "link" with the wrong
+        // semantics (e.g. a shared lib whose DT_RUNPATH/DT_SONAME never
+        // got written) instead of producing correct output.
+#if defined(_WIN32) || defined(__MINGW32__) || defined(__APPLE__)
         bool native_link_capable = true;
         {
             const char *lp = libs;
@@ -1603,6 +1607,25 @@ int main(int argc, char **argv) {
                 lp = end;
             }
         }
+#else
+        LinkOpts link_opts;
+        bool native_link_capable = link_parse_opts(libs, &link_opts);
+        if (link_opts.version_probe) {
+            // -Wl,-v: a real ld prints its version banner (to stdout)
+            // whether or not the rest of the link goes on to succeed --
+            // e.g. build-system probes (muon/meson) that grep for "GNU
+            // ld (" to detect the linker in use. Match that here instead
+            // of silently staying quiet just because this link no longer
+            // needs the external linker to produce correct output. Flush
+            // immediately: stdout is fully buffered once redirected/
+            // piped, and a later external-linker fallback's own (directly
+            // unbuffered, separate-process) output would otherwise appear
+            // before this line in the captured stream despite running
+            // after it.
+            printf("GNU ld (rcc) %s\n", VERSION);
+            fflush(stdout);
+        }
+#endif
         // Decimal (_Decimal32/64/128) codegen emits __bid_*3/__bid_*2
         // runtime calls; those live in the bundled libdfp.a (lib/libdfp.a,
         // built from the vendored libbid core + rcc's wrapper layer). Link

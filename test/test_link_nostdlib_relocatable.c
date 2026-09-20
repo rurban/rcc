@@ -9,20 +9,24 @@
  * provides, and failing "undefined reference to `main'" instead of
  * producing the intended relocatable .o. Blocks test/third_party's
  * test_busybox (`applets/built-in.o`, `archival/built-in.o`, ...).
- * Fixed by recognizing both flags, forwarding them to the (always-used-
- * here, since rcc's own internal linker cannot do partial linking)
- * external gcc/ld fallback, and skipping the automatic `-lm` rcc adds to
- * every other link (verified directly against real gcc: `-r` disables
- * shared linking, so `ld` then demands a *static* libm.a that may not
- * even be installed, breaking a plain `-r` link that never wanted -lm
- * in the first place). Body guarded out on Darwin: AGENTS.md scopes
- * this sandbox's cross-platform verification to mingw and ARM64
- * (Linux); macOS/ld64's own `-r` semantics were confirmed still broken
- * via this repo's real CI (no local Darwin toolchain here to debug
- * against) after two attempted fixes -- not resolved this session,
- * genuinely different from the Linux/mingw two-stage build this fix
- * targets in the first place (Kbuild-style relocatable builds are not
- * a Darwin convention).
+ * Fixed by recognizing both flags and, on the native ELF linker (Linux/
+ * x86_64 and the arm64-cross build), actually honoring them: -r takes
+ * link_elf_relocatable()'s own ET_REL writer (merges sections/symbols,
+ * copies relocations through unresolved, no crt/libc/entry point) and
+ * -nostdlib skips load_crt_files() and every default-lib DT_NEEDED
+ * entry (see link_parse_opts()/link_elf.c). PE (mingw) still forwards
+ * both flags to the external gcc/ld fallback -- along with skipping the
+ * automatic `-lm` rcc adds to every other link, verified directly
+ * against real gcc: `-r` disables shared linking, so `ld` then demands
+ * a *static* libm.a that may not even be installed, breaking a plain
+ * `-r` link that never wanted -lm in the first place. Body guarded out
+ * on Darwin: AGENTS.md scopes this sandbox's cross-platform
+ * verification to mingw and ARM64 (Linux); macOS/ld64's own `-r`
+ * semantics were confirmed still broken via this repo's real CI (no
+ * local Darwin toolchain here to debug against) after two attempted
+ * fixes -- not resolved this session, genuinely different from the
+ * Linux/mingw two-stage build this fix targets in the first place
+ * (Kbuild-style relocatable builds are not a Darwin convention).
  */
 #include <stdio.h>
 #include <stdlib.h>

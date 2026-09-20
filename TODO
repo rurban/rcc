@@ -1,9 +1,3 @@
-- Native linker: still falls back to the external linker for -Wl,<opt>
-  (rpath/soname/--start-group/--as-needed/--no-undefined/-v/-z/...),
-  -nodefaultlibs, -nostdlib, and -r; link-only invocations (all inputs
-  already .o/.a, nothing freshly compiled this run) now take the native
-  path too (fixed 2026-09-19, see test/third_party/TODO.md).
-
 - -fsanitize=adress,undefined
 
 - interchange and extended float types (just aliased, no __STDC_IEC_60559_TYPES__)
@@ -15,14 +9,8 @@
   at all). Not yet isolated to inlining vs unrolling vs their interaction;
   csmith-generated, 1450 lines, needs delta-reduction to a minimal repro.
 
-- -O2 Tail calls — return f(args) → jmp f. Non-SSA but ABI-sensitive (frame layout, varargs callee).
-  Single-scalar-arg/scalar-return case implemented (codegen.c's ND_RETURN tail-jmp fast path,
-  x86-64 only); found and fixed two soundness bugs in it: (1) frame-escape aliasing -- a tail-jmp
-  reuses the caller's frame before the callee's own prologue runs, unsound whenever a local
-  array/struct/VLA or an explicit `&local` could still be read through by the callee (pr36339,
-  pr38048-2, vect/pr44507); (2) __builtin_* names have no real linkable symbol to jmp to, only an
-  inline expansion the ordinary call path provides (bswap-1). See test_opt_tail_call_safety.c.
-  Still open: multiple arguments (needs the same argument-overlap care GCC's sibcall pass takes --
+- -O2 Tail calls — return f(args) → jmp f. Still open for multiple arguments
+  (needs the same argument-overlap care GCC's sibcall pass takes --
   see torture/20050713-1.c's own comment).
 
 - SSA conversion for -O2, and the usual optimizations with SSA, as in xcc, antcc or ccc.

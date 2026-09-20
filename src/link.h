@@ -26,6 +26,42 @@ int rcc_link(const char *out_path, char **obj_paths, int n_objs,
              bool opt_static, bool opt_export_dynamic);
 
 // ---------------------------------------------------------------------------
+// Linker-option classification, shared between main.c's native-vs-
+// external-linker gate and link_elf.c's actual option handling so the
+// two can never disagree about what the native ELF linker understands.
+// ---------------------------------------------------------------------------
+
+// Every -Wl,<opt>/-nodefaultlibs/-nostdlib/-r option this driver forwards
+// to the linker, classified by link_parse_opts(). Fixed-size buffers so
+// callers never need to free anything.
+typedef struct {
+    bool nodefaultlibs; // -nodefaultlibs
+    bool nostdlib; // -nostdlib
+    bool relocatable; // -r
+    bool no_undefined; // -Wl,--no-undefined or -Wl,-z,defs
+    bool muldefs; // -Wl,--allow-multiple-definition or -Wl,-z,muldefs
+    bool bind_now; // -Wl,-z,now
+    bool z_origin; // -Wl,-z,origin
+    bool noexecstack; // -Wl,-z,noexecstack
+    bool execstack; // -Wl,-z,execstack
+    bool version_probe; // -Wl,-v: print a linker-version banner (muon/meson probe)
+    bool have_soname;
+    char soname[256]; // -Wl,-soname,<name> / -Wl,-h,<name> (last one wins)
+    bool have_rpath;
+    char rpath[1024]; // -Wl,-rpath,<dir> / -Wl,--rpath,<dir> (colon-joined, repeatable)
+} LinkOpts;
+
+// Scan every linker option in `libs` (bare -nodefaultlibs/-nostdlib/-r,
+// and every comma sub-option of each -Wl,<a,b,c> group) and classify them
+// into `*out`. `*out` is always fully populated. Returns true when every
+// option found is one link_elf.c's native ELF linker knows how to honor;
+// false when `libs` contains something outside that vocabulary (an
+// unrecognized -Wl, sub-option, -Wl,-rpath with no value, ...), in which
+// case main.c's driver must fall back to the external linker instead of
+// attempting a native link -- `*out` must not be acted on in that case.
+bool link_parse_opts(const char *libs, LinkOpts *out);
+
+// ---------------------------------------------------------------------------
 // Shared relocation kinds used by all backends internally.
 // Each backend converts its native relocation type to one of these.
 // ---------------------------------------------------------------------------
@@ -116,6 +152,16 @@ struct LinkState {
     bool opt_pie;
     bool opt_shared;
     bool opt_export_dynamic;
+    // -r: produce a partial-linked ET_REL object (link_elf_relocatable()
+    // in link_elf.c) instead of an executable/shared object. Set from
+    // `libs` by link_state_init() via link_parse_opts() -- needed before
+    // any object is loaded, since it changes how elf_load_object()
+    // records relocations (see its own comment).
+    bool opt_relocatable;
+    // -Wl,--allow-multiple-definition / -Wl,-z,muldefs: a second STRONG
+    // definition of a global symbol keeps the first instead of failing
+    // the link (see link_add_sym()).
+    bool opt_muldefs;
     // ELF only: whether any loaded object requested (SHF_EXECINSTR on its
     // .note.GNU-stack section) or implicitly requires (section absent) an
     // executable stack.  Drives the output PT_GNU_STACK flags in link_elf.c.

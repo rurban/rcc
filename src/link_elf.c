@@ -48,6 +48,7 @@
 #define SHF_ALLOC 0x2
 #define SHF_EXECINSTR 0x4
 #define SHF_TLS 0x400
+#define SHF_INFO_LINK 0x40
 
 #define STB_LOCAL 0
 #define STB_GLOBAL 1
@@ -133,6 +134,10 @@
 #define DT_FLAGS_1 0x6ffffffb
 #define DF_BIND_NOW 0x8
 #define DF_1_NOW 1
+#define DF_ORIGIN 0x1
+#define DF_1_ORIGIN 0x80
+#define DT_RPATH 15
+#define DT_RUNPATH 0x1d
 #define DT_VERSYM 0x6ffffff0
 #define DT_VERNEED 0x6ffffffe
 #define DT_VERNEEDNUM 0x6fffffff
@@ -599,22 +604,38 @@ static int elf_load_object(LinkState *s, const char *path) {
             if (sym_idx == 0) continue;
             int mapped_sym = sym_map[sym_idx];
             if (mapped_sym < 0) continue;
-            int rl_type = map_reloc_type(r_type, s->arch);
-            if (rl_type == 0) {
-                // An unhandled relocation means the native linker cannot
-                // produce a correct binary for this object. Fail the
-                // native link so the driver falls back to the real
-                // system linker (which handles every relocation type)
-                // instead of silently emitting a broken output with the
-                // relocation left unresolved (e.g. R_AARCH64_LDST128 on
-                // the bundled libdfp.a's exception-flag globals produced
-                // a binary that read garbage data and segfaulted).
-                if (getenv("RCC_LINK_DEBUG"))
-                    fprintf(stderr, "rcc: link: %s: unhandled reloc type %u\n", path, r_type);
-                free(sec_map);
-                free(sym_map);
-                elf_close(&ef);
-                return -1;
+            int rl_type;
+            if (s->opt_relocatable) {
+                // `-r`: the output is another ELF object, not something
+                // this linker ever applies -- write r_type straight back
+                // out unmapped (see link_elf_relocatable()) instead of
+                // going through the lossy, apply-time-only RL_* taxonomy
+                // (e.g. it collapses AArch64's ADD_ABS_LO12_NC and every
+                // LDST*_ABS_LO12_NC width into one RL_ARM64_ADD_LO --
+                // fine for link_reloc_apply(), which decodes the real
+                // immediate width from the instruction bits already in
+                // the section data, but wrong to re-emit as a *relocation
+                // type* for a later linker to reinterpret). Every type is
+                // "supported" here since nothing tries to interpret it.
+                rl_type = (int)r_type;
+            } else {
+                rl_type = map_reloc_type(r_type, s->arch);
+                if (rl_type == 0) {
+                    // An unhandled relocation means the native linker cannot
+                    // produce a correct binary for this object. Fail the
+                    // native link so the driver falls back to the real
+                    // system linker (which handles every relocation type)
+                    // instead of silently emitting a broken output with the
+                    // relocation left unresolved (e.g. R_AARCH64_LDST128 on
+                    // the bundled libdfp.a's exception-flag globals produced
+                    // a binary that read garbage data and segfaulted).
+                    if (getenv("RCC_LINK_DEBUG"))
+                        fprintf(stderr, "rcc: link: %s: unhandled reloc type %u\n", path, r_type);
+                    free(sec_map);
+                    free(sym_map);
+                    elf_close(&ef);
+                    return -1;
+                }
             }
             link_add_reloc(s, out_idx, r_offset, rl_type, mapped_sym, addend);
         }
@@ -816,89 +837,106 @@ static int find_shared_lib(const char *libname, char *out_path, size_t out_sz,
 // DT_NEEDED entry later in link_elf() itself, once .dynstr exists to
 // hold the name.
 static int resolve_archives(LinkState *s) {
-    const char *lp = s->libs;
-    while (lp && *lp) {
-        while (*lp == ' ') lp++;
-        if (!*lp) break;
-        if (!strncmp(lp, "-l", 2) && lp[2] && lp[2] != ' ') {
-            lp += 2;
-            const char *end = lp;
-            while (*end && *end != ' ') end++;
-            size_t len = (size_t)(end - lp);
-            if (len > 0 && len < 60) {
-                char aname[64], soname[64];
-                snprintf(aname, sizeof(aname), "lib%.*s.a", (int)len, lp);
-                snprintf(soname, sizeof(soname), "lib%.*s.so", (int)len, lp);
-                char apath[600], sopath[600];
-                bool found_a = false, found_so = false;
-                const char *dp = s->libs;
-                while (dp && *dp && !(found_a && found_so)) {
-                    while (*dp == ' ') dp++;
-                    if (!*dp) break;
-                    if (!strncmp(dp, "-L", 2) && dp[2] && dp[2] != ' ') {
-                        dp += 2;
-                        const char *dend = dp;
-                        while (*dend && *dend != ' ') dend++;
-                        if (!found_a) {
-                            snprintf(apath, sizeof(apath), "%.*s/%s", (int)(dend - dp), dp, aname);
-                            struct stat ast;
-                            if (stat(apath, &ast) == 0) found_a = true;
+    // Real ld only re-scans an archive for a newly-satisfiable member
+    // within an explicit -Wl,--start-group/--end-group bracket; this
+    // linker doesn't track where those brackets fall within `s->libs`
+    // (see link_parse_opts(), which accepts and ignores them) and
+    // instead always keeps re-scanning every -l/.a archive until a full
+    // pass pulls in nothing new -- a strict superset of --start-group's
+    // effect (never resolves less, may resolve a circular dependency
+    // between archives the user never bracketed at all), so treating the
+    // flag as a no-op here is safe. Bare *.o positionals are loaded
+    // exactly once, on round 0 below: loading one twice would redefine
+    // every symbol it exports as a "duplicate definition".
+    int prev_n_objs = -1;
+    for (int round = 0; round == 0 || s->n_objs != prev_n_objs; round++) {
+        if (round >= 32) break; // matches load_archive()'s own per-archive round cap
+        prev_n_objs = s->n_objs;
+        const char *lp = s->libs;
+        while (lp && *lp) {
+            while (*lp == ' ') lp++;
+            if (!*lp) break;
+            if (!strncmp(lp, "-l", 2) && lp[2] && lp[2] != ' ') {
+                lp += 2;
+                const char *end = lp;
+                while (*end && *end != ' ') end++;
+                size_t len = (size_t)(end - lp);
+                if (len > 0 && len < 60) {
+                    char aname[64], soname[64];
+                    snprintf(aname, sizeof(aname), "lib%.*s.a", (int)len, lp);
+                    snprintf(soname, sizeof(soname), "lib%.*s.so", (int)len, lp);
+                    char apath[600], sopath[600];
+                    bool found_a = false, found_so = false;
+                    const char *dp = s->libs;
+                    while (dp && *dp && !(found_a && found_so)) {
+                        while (*dp == ' ') dp++;
+                        if (!*dp) break;
+                        if (!strncmp(dp, "-L", 2) && dp[2] && dp[2] != ' ') {
+                            dp += 2;
+                            const char *dend = dp;
+                            while (*dend && *dend != ' ') dend++;
+                            if (!found_a) {
+                                snprintf(apath, sizeof(apath), "%.*s/%s", (int)(dend - dp), dp, aname);
+                                struct stat ast;
+                                if (stat(apath, &ast) == 0) found_a = true;
+                            }
+                            if (!found_so) {
+                                snprintf(sopath, sizeof(sopath), "%.*s/%s", (int)(dend - dp), dp, soname);
+                                if (is_real_elf_so(sopath)) found_so = true;
+                            }
+                            dp = dend;
+                        } else {
+                            while (*dp && *dp != ' ') dp++;
                         }
-                        if (!found_so) {
-                            snprintf(sopath, sizeof(sopath), "%.*s/%s", (int)(dend - dp), dp, soname);
-                            if (is_real_elf_so(sopath)) found_so = true;
-                        }
-                        dp = dend;
-                    } else {
-                        while (*dp && *dp != ' ') dp++;
+                    }
+                    if (!found_so) {
+                        char stdpath[600];
+                        if (find_shared_lib(soname, stdpath, sizeof(stdpath), NULL, 0) == 0)
+                            found_so = true;
+                    }
+                    // Only pull the archive in when there's no .so for this
+                    // exact name to prefer instead (or we're statically
+                    // linking, where a .so wouldn't be usable anyway).
+                    if (found_a && (s->opt_static || !found_so)) {
+                        if (load_archive(s, apath) != 0) return -1;
                     }
                 }
-                if (!found_so) {
-                    char stdpath[600];
-                    if (find_shared_lib(soname, stdpath, sizeof(stdpath), NULL, 0) == 0)
-                        found_so = true;
-                }
-                // Only pull the archive in when there's no .so for this
-                // exact name to prefer instead (or we're statically
-                // linking, where a .so wouldn't be usable anyway).
-                if (found_a && (s->opt_static || !found_so)) {
-                    if (load_archive(s, apath) != 0) return -1;
-                }
+                lp = end;
+            } else {
+                while (*lp && *lp != ' ') lp++;
             }
-            lp = end;
-        } else {
-            while (*lp && *lp != ' ') lp++;
         }
-    }
 
-    // Positional link inputs (.a archives and .o object files) given
-    // directly by path -- e.g. `rcc main.c libmath.a foo.o -o prog` --
-    // are placed in s->libs by the driver but previously only .a files
-    // were routed through load_archive(): bare .o paths sat unread and
-    // the symbols they define stayed permanently undefined (the native
-    // link silently succeeded but the resulting binary resolved those
-    // symbols to libc or emitted a DT_NEEDED-style import). Load every
-    // bare *.a and *.o positional token here by its exact path.
-    {
-        const char *ap = s->libs;
-        while (ap && *ap) {
-            while (*ap == ' ') ap++;
-            if (!*ap) break;
-            const char *aend = ap;
-            while (*aend && *aend != ' ') aend++;
-            size_t alen = (size_t)(aend - ap);
-            if (ap[0] != '-' && alen > 2 && alen < 600) {
-                char fpath[600];
-                memcpy(fpath, ap, alen);
-                fpath[alen] = '\0';
-                if (strncmp(aend - 2, ".a", 2) == 0) {
-                    if (load_archive(s, fpath) != 0) return -1;
-                } else if (strncmp(aend - 2, ".o", 2) == 0 ||
-                           (alen > 3 && (strncmp(aend - 3, ".lo", 3) == 0 || strncmp(aend - 3, ".os", 3) == 0 || strncmp(aend - 3, ".od", 3) == 0))) {
-                    if (link_load_object(s, fpath) != 0) return -1;
+        // Positional link inputs (.a archives and .o object files) given
+        // directly by path -- e.g. `rcc main.c libmath.a foo.o -o prog` --
+        // are placed in s->libs by the driver but previously only .a files
+        // were routed through load_archive(): bare .o paths sat unread and
+        // the symbols they define stayed permanently undefined (the native
+        // link silently succeeded but the resulting binary resolved those
+        // symbols to libc or emitted a DT_NEEDED-style import). Load every
+        // bare *.a and *.o positional token here by its exact path.
+        {
+            const char *ap = s->libs;
+            while (ap && *ap) {
+                while (*ap == ' ') ap++;
+                if (!*ap) break;
+                const char *aend = ap;
+                while (*aend && *aend != ' ') aend++;
+                size_t alen = (size_t)(aend - ap);
+                if (ap[0] != '-' && alen > 2 && alen < 600) {
+                    char fpath[600];
+                    memcpy(fpath, ap, alen);
+                    fpath[alen] = '\0';
+                    if (strncmp(aend - 2, ".a", 2) == 0) {
+                        if (load_archive(s, fpath) != 0) return -1;
+                    } else if (round == 0 &&
+                               (strncmp(aend - 2, ".o", 2) == 0 ||
+                                (alen > 3 && (strncmp(aend - 3, ".lo", 3) == 0 || strncmp(aend - 3, ".os", 3) == 0 || strncmp(aend - 3, ".od", 3) == 0)))) {
+                        if (link_load_object(s, fpath) != 0) return -1;
+                    }
                 }
+                ap = aend;
             }
-            ap = aend;
         }
     }
     return 0;
@@ -1827,7 +1865,347 @@ static bool sec_wants_shdr(const LinkSec *sec, int n_verneed_versions) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// `-r` / partial link: merge every input .o (and any archive member
+// needed to satisfy a reference within that same input set) into a
+// single ET_REL object instead of an executable or shared object.
+// ---------------------------------------------------------------------------
+//
+// Section contents are concatenated exactly as the full executable/
+// shared-object writer below would (elf_load_object() already merges
+// same-named sections across every input, and leaves each symbol's
+// value as an offset within its output section -- link_layout()'s job
+// of turning that into a real virtual address never runs here). What
+// changes for `-r` is everything downstream of that merge: no crt
+// startup files, no libc/libm/libgcc_s DT_NEEDED, no entry point, no
+// program headers, and relocations are written straight back out
+// (original ELF r_type preserved verbatim by elf_load_object() when
+// s->opt_relocatable is set) instead of being applied -- the output is
+// meant to be fed into a *later* link (ld or rcc itself), exactly like
+// `ld -r a.o b.o -o combined.o` or Kbuild's own `$(LD) -r` two-stage
+// `built-in.o` step, never run directly.
+static int link_elf_relocatable(LinkState *s) {
+    if (resolve_archives(s) != 0) return -1;
+
+    int n = s->n_syms;
+    int *order = malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
+    int *new_idx = malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
+    // ELF requires every STB_LOCAL symtab entry to precede every non-local
+    // one (sh_info on .symtab records the boundary) -- s->syms[] itself
+    // interleaves them in load order, so build a locals-first permutation
+    // and a map from the original LinkState index (what every LinkReloc.sym
+    // still references) to the final symtab index (+1: slot 0 is the
+    // mandatory null entry).
+    int m = 0;
+    for (int i = 0; i < n; i++)
+        if (s->syms[i].bind == STB_LOCAL) order[m++] = i;
+    int nlocal = m;
+    for (int i = 0; i < n; i++)
+        if (s->syms[i].bind != STB_LOCAL) order[m++] = i;
+    for (int i = 0; i < n; i++) new_idx[order[i]] = i + 1;
+
+    // .strtab: index 0 is the shared empty string every unnamed local
+    // (elf_load_object()'s per-input STT_SECTION placeholder symbols) uses.
+    size_t strtab_cap = 256, strtab_len = 1;
+    char *strtab = malloc(strtab_cap);
+    strtab[0] = '\0';
+    uint32_t *name_off = malloc((size_t)(n > 0 ? n : 1) * sizeof(uint32_t));
+    for (int k = 0; k < n; k++) {
+        LinkSym *sym = &s->syms[order[k]];
+        if (!sym->name || !sym->name[0]) {
+            name_off[k] = 0;
+            continue;
+        }
+        size_t nl = strlen(sym->name) + 1;
+        if (strtab_len + nl > strtab_cap) {
+            while (strtab_len + nl > strtab_cap) strtab_cap *= 2;
+            strtab = realloc(strtab, strtab_cap);
+        }
+        name_off[k] = (uint32_t)strtab_len;
+        memcpy(strtab + strtab_len, sym->name, nl);
+        strtab_len += nl;
+    }
+
+    // .shstrtab + section bookkeeping. Unlike the executable/shared-object
+    // writer below, every merged section gets a real header here -- even
+    // non-alloc ones like .comment or .note.GNU-stack -- matching real
+    // `ld -r`'s "keep everything, resolve nothing" contract, plus one
+    // ".relaX" header for each section that still carries relocations.
+    int n_in_secs = s->n_secs;
+    int n_rela = 0;
+    for (int i = 0; i < n_in_secs; i++)
+        if (s->secs[i].n_relocs > 0) n_rela++;
+    uint16_t shnum = (uint16_t)(1 /* NULL */ + n_in_secs + n_rela + 3 /* symtab,strtab,shstrtab */);
+
+    size_t shstr_cap = 256, shstr_len = 1;
+    char *shstr = malloc(shstr_cap);
+    shstr[0] = '\0';
+    uint32_t *sec_name_off = malloc((size_t)(n_in_secs > 0 ? n_in_secs : 1) * sizeof(uint32_t));
+    uint32_t *rela_name_off = malloc((size_t)(n_rela > 0 ? n_rela : 1) * sizeof(uint32_t));
+#define SHSTR_APPEND(str, outoff) do { \
+        size_t _nl = strlen(str) + 1; \
+        if (shstr_len + _nl > shstr_cap) { \
+            while (shstr_len + _nl > shstr_cap) shstr_cap *= 2; \
+            shstr = realloc(shstr, shstr_cap); \
+        } \
+        (outoff) = (uint32_t)shstr_len; \
+        memcpy(shstr + shstr_len, str, _nl); \
+        shstr_len += _nl; \
+    } while (0)
+    for (int i = 0; i < n_in_secs; i++) SHSTR_APPEND(s->secs[i].name, sec_name_off[i]);
+    {
+        int r = 0;
+        for (int i = 0; i < n_in_secs; i++) {
+            if (s->secs[i].n_relocs == 0) continue;
+            char relaname[300];
+            snprintf(relaname, sizeof(relaname), ".rela%s", s->secs[i].name);
+            SHSTR_APPEND(relaname, rela_name_off[r]);
+            r++;
+        }
+    }
+    uint32_t symtab_name_off, strtab_name_off, shstrtab_name_off;
+    SHSTR_APPEND(".symtab", symtab_name_off);
+    SHSTR_APPEND(".strtab", strtab_name_off);
+    SHSTR_APPEND(".shstrtab", shstrtab_name_off);
+#undef SHSTR_APPEND
+
+    int symtab_shidx = 1 + n_in_secs;
+    int strtab_shidx = symtab_shidx + 1;
+    int shstrtab_shidx = (int)shnum - 1;
+
+    // .symtab content: null entry, then every symbol in locals-first
+    // order. section indices are 1-based header indices (SHN_UNDEF for
+    // an unresolved reference); values are already section-relative.
+    size_t symtab_sz = (size_t)(n + 1) * 24;
+    uint8_t *symtab_buf = calloc(1, symtab_sz);
+    for (int k = 0; k < n; k++) {
+        LinkSym *sym = &s->syms[order[k]];
+        uint8_t *e = symtab_buf + (size_t)(k + 1) * 24;
+        uint16_t shndx = SHN_UNDEF;
+        if (sym->sec >= 0) shndx = (uint16_t)(sym->sec + 1);
+        // elf_load_object() stores its synthetic per-(input,section)
+        // anchor symbols as STB_LOCAL with an empty name and type
+        // NOTYPE (nothing before this write path cared about the exact
+        // type). A later rcc link reading *this* file back in only
+        // recognizes such a symbol as a relocatable section anchor via
+        // its own `bind==STB_LOCAL && stype==STT_SECTION` check -- write
+        // the correct type here so relocations against it still resolve
+        // after a chained `-r` (or the eventual real link).
+        bool is_sec_anchor = sym->bind == STB_LOCAL && (!sym->name || !sym->name[0]) && sym->sec >= 0;
+        uint8_t sttype = is_sec_anchor ? STT_SECTION : (uint8_t)sym->type;
+        w32le_m(e + 0, name_off[k]);
+        e[4] = (uint8_t)(((uint8_t)sym->bind << 4) | sttype);
+        e[5] = (uint8_t)sym->visibility;
+        w16le_m(e + 6, shndx);
+        w64le_m(e + 8, sym->sec >= 0 ? sym->value : 0);
+        w64le_m(e + 16, sym->size);
+    }
+
+    // .relaX content: entries in original order, symbol index remapped
+    // via new_idx[], r_type copied through verbatim.
+    uint8_t **rela_bufs = calloc((size_t)(n_rela > 0 ? n_rela : 1), sizeof(uint8_t *));
+    size_t *rela_szs = calloc((size_t)(n_rela > 0 ? n_rela : 1), sizeof(size_t));
+    int *rela_target = calloc((size_t)(n_rela > 0 ? n_rela : 1), sizeof(int));
+    {
+        int r = 0;
+        for (int i = 0; i < n_in_secs; i++) {
+            LinkSec *sec = &s->secs[i];
+            if (sec->n_relocs == 0) continue;
+            size_t sz = (size_t)sec->n_relocs * 24;
+            uint8_t *buf = malloc(sz);
+            for (int j = 0; j < sec->n_relocs; j++) {
+                LinkReloc *rl = &sec->relocs[j];
+                uint8_t *e = buf + (size_t)j * 24;
+                w64le_m(e + 0, rl->offset);
+                w64le_m(e + 8, ((uint64_t)(uint32_t)new_idx[rl->sym] << 32) | (uint32_t)rl->type);
+                w64le_m(e + 16, (uint64_t)rl->addend);
+            }
+            rela_bufs[r] = buf;
+            rela_szs[r] = sz;
+            rela_target[r] = i;
+            r++;
+        }
+    }
+
+    // Layout: ELF header, every section's real bytes (each aligned to
+    // its own sh_addralign), .symtab, .strtab, each .relaX, .shstrtab,
+    // then the header table (8-aligned). No program headers -- an
+    // ET_REL object is never loaded/executed directly.
+    uint64_t off = 64;
+    uint64_t *sec_off = malloc((size_t)(n_in_secs > 0 ? n_in_secs : 1) * sizeof(uint64_t));
+    for (int i = 0; i < n_in_secs; i++) {
+        LinkSec *sec = &s->secs[i];
+        if (sec->is_bss || sec->len == 0) {
+            sec_off[i] = off;
+            continue;
+        }
+        off = align_up(off, sec->align ? sec->align : 1);
+        sec_off[i] = off;
+        off += sec->len;
+    }
+    off = align_up(off, 8);
+    uint64_t symtab_off = off;
+    off += symtab_sz;
+    uint64_t strtab_off = off;
+    off += strtab_len;
+    uint64_t *rela_off = malloc((size_t)(n_rela > 0 ? n_rela : 1) * sizeof(uint64_t));
+    for (int r = 0; r < n_rela; r++) {
+        off = align_up(off, 8);
+        rela_off[r] = off;
+        off += rela_szs[r];
+    }
+    uint64_t shstr_off = off;
+    off += shstr_len;
+    uint64_t shoff = align_up(off, 8);
+
+    FILE *f = fopen(s->out_path, "wb");
+    if (!f) {
+        fprintf(stderr, "rcc: link: cannot create %s: %s\n", s->out_path, strerror(errno));
+        free(order);
+        free(new_idx);
+        free(strtab);
+        free(name_off);
+        free(shstr);
+        free(sec_name_off);
+        free(rela_name_off);
+        free(symtab_buf);
+        for (int r = 0; r < n_rela; r++) free(rela_bufs[r]);
+        free(rela_bufs);
+        free(rela_szs);
+        free(rela_target);
+        free(sec_off);
+        free(rela_off);
+        return -1;
+    }
+
+    uint16_t machine = (s->arch == ARCH_AARCH64) ? EM_AARCH64 : EM_X86_64;
+    write_ehdr(f, ET_REL, machine, 0, 0, 0, shoff, shnum, (uint16_t)shstrtab_shidx);
+
+    uint64_t written = 64;
+    for (int i = 0; i < n_in_secs; i++) {
+        LinkSec *sec = &s->secs[i];
+        if (sec->is_bss || sec->len == 0) continue;
+        if (sec_off[i] > written) wzeros(f, sec_off[i] - written);
+        wbuf(f, sec->data, sec->len);
+        written = sec_off[i] + sec->len;
+    }
+    if (symtab_off > written) wzeros(f, symtab_off - written);
+    wbuf(f, symtab_buf, symtab_sz);
+    written = symtab_off + symtab_sz;
+    if (strtab_off > written) wzeros(f, strtab_off - written);
+    wbuf(f, strtab, strtab_len);
+    written = strtab_off + strtab_len;
+    for (int r = 0; r < n_rela; r++) {
+        if (rela_off[r] > written) wzeros(f, rela_off[r] - written);
+        wbuf(f, rela_bufs[r], rela_szs[r]);
+        written = rela_off[r] + rela_szs[r];
+    }
+    if (shstr_off > written) wzeros(f, shstr_off - written);
+    wbuf(f, shstr, shstr_len);
+    written = shstr_off + shstr_len;
+    if (shoff > written) wzeros(f, shoff - written);
+
+    // Section header table: NULL, then every input section, then
+    // .symtab/.strtab, then each .relaX, then .shstrtab last.
+    {
+        uint8_t z[64] = {0};
+        wbuf(f, z, 64);
+    }
+    for (int i = 0; i < n_in_secs; i++) {
+        LinkSec *sec = &s->secs[i];
+        uint32_t sh_type = sec->is_bss ? SHT_NOBITS : SHT_PROGBITS;
+        if (!strcmp(sec->name, ".init_array")) sh_type = SHT_INIT_ARRAY;
+        else if (!strcmp(sec->name, ".fini_array"))
+            sh_type = SHT_FINI_ARRAY;
+        uint32_t sh_flags = 0;
+        if (sec->alloc) sh_flags |= SHF_ALLOC;
+        if (sec->write) sh_flags |= SHF_WRITE;
+        if (sec->exec) sh_flags |= SHF_EXECINSTR;
+        if (sec->is_tls) sh_flags |= SHF_TLS;
+        uint8_t sh[64];
+        memset(sh, 0, sizeof(sh));
+        w32le_m(sh + 0, sec_name_off[i]);
+        w32le_m(sh + 4, sh_type);
+        w64le_m(sh + 8, sh_flags);
+        w64le_m(sh + 24, sec_off[i]);
+        w64le_m(sh + 32, sec->len);
+        w64le_m(sh + 48, (uint64_t)(sec->align ? sec->align : 1));
+        wbuf(f, sh, 64);
+    }
+    {
+        uint8_t sh[64];
+        memset(sh, 0, sizeof(sh));
+        w32le_m(sh + 0, symtab_name_off);
+        w32le_m(sh + 4, SHT_SYMTAB);
+        w64le_m(sh + 24, symtab_off);
+        w64le_m(sh + 32, symtab_sz);
+        w32le_m(sh + 40, (uint32_t)strtab_shidx);
+        w32le_m(sh + 44, (uint32_t)(nlocal + 1));
+        w64le_m(sh + 48, 8);
+        w64le_m(sh + 56, 24);
+        wbuf(f, sh, 64);
+    }
+    {
+        uint8_t sh[64];
+        memset(sh, 0, sizeof(sh));
+        w32le_m(sh + 0, strtab_name_off);
+        w32le_m(sh + 4, SHT_STRTAB);
+        w64le_m(sh + 24, strtab_off);
+        w64le_m(sh + 32, strtab_len);
+        w64le_m(sh + 48, 1);
+        wbuf(f, sh, 64);
+    }
+    for (int r = 0; r < n_rela; r++) {
+        uint8_t sh[64];
+        memset(sh, 0, sizeof(sh));
+        w32le_m(sh + 0, rela_name_off[r]);
+        w32le_m(sh + 4, SHT_RELA);
+        w64le_m(sh + 8, SHF_INFO_LINK);
+        w64le_m(sh + 24, rela_off[r]);
+        w64le_m(sh + 32, rela_szs[r]);
+        w32le_m(sh + 40, (uint32_t)symtab_shidx);
+        w32le_m(sh + 44, (uint32_t)(rela_target[r] + 1));
+        w64le_m(sh + 48, 8);
+        w64le_m(sh + 56, 24);
+        wbuf(f, sh, 64);
+    }
+    {
+        uint8_t sh[64];
+        memset(sh, 0, sizeof(sh));
+        w32le_m(sh + 0, shstrtab_name_off);
+        w32le_m(sh + 4, SHT_STRTAB);
+        w64le_m(sh + 24, shstr_off);
+        w64le_m(sh + 32, shstr_len);
+        w64le_m(sh + 48, 1);
+        wbuf(f, sh, 64);
+    }
+
+    fclose(f);
+    chmod(s->out_path, 0644); // a partial-link object is never executed directly
+
+    free(order);
+    free(new_idx);
+    free(strtab);
+    free(name_off);
+    free(shstr);
+    free(sec_name_off);
+    free(rela_name_off);
+    free(symtab_buf);
+    for (int r = 0; r < n_rela; r++) free(rela_bufs[r]);
+    free(rela_bufs);
+    free(rela_szs);
+    free(rela_target);
+    free(sec_off);
+    free(rela_off);
+    return 0;
+}
+
 int link_elf(LinkState *s) {
+    // -r: partial link, not an executable/shared object -- entirely
+    // different output shape (ET_REL, no program headers, no crt/libc),
+    // handled by its own writer. Ignores -static/-shared/-pie, matching
+    // real ld's own "-r wins" precedence.
+    if (s->opt_relocatable) return link_elf_relocatable(s);
     // Static + shared is nonsensical (there's no "statically linked
     // shared object" concept); refuse rather than guess which one wins.
     if (s->opt_static && s->opt_shared) return -1;
@@ -1846,6 +2224,14 @@ int link_elf(LinkState *s) {
 #endif
     if (resolve_archives(s) != 0) return -1;
 
+    // -Wl, options this function itself must act on (rpath/soname/
+    // -z suboptions/--no-undefined/--as-needed/muldefs handling below);
+    // -nodefaultlibs/-nostdlib/-r/muldefs were already consulted earlier
+    // (main.c's gate, elf_load_object(), link_add_sym()) but are cheap
+    // to re-derive here rather than plumbed all the way through.
+    LinkOpts lopts;
+    link_parse_opts(s->libs, &lopts);
+
     // Ensure required sections exist.
     link_find_or_create_sec(s, ".text", true, false, true, false, false, 16);
     link_find_or_create_sec(s, ".rodata", true, false, false, false, false, 1);
@@ -1857,8 +2243,10 @@ int link_elf(LinkState *s) {
     // none of this: it has no entry point of its own, and DT_INIT_ARRAY
     // (set up below from any .init_array this link produced) is how its
     // constructors run, the same way crt1.o would have wired them for an
-    // executable via .init_array too.
-    if (!s->opt_static && !s->opt_shared) {
+    // executable via .init_array too. -nostdlib also skips it: the user
+    // is expected to supply their own _start (freestanding/kernel-style
+    // code), matching real gcc's "-nostdlib implies -nostartfiles" rule.
+    if (!s->opt_static && !s->opt_shared && !lopts.nostdlib) {
         if (load_crt_files(s) != 0) return -1;
     }
 
@@ -2049,6 +2437,7 @@ int link_elf(LinkState *s) {
     int n_relative = 0;
     int n_absdyn = 0;
     int soname_off = 0;
+    int rpath_off = 0;
     int libc_off = 0;
     int n_needed = 1;
     int needed_offs[16];
@@ -2106,39 +2495,72 @@ int link_elf(LinkState *s) {
         // .dynstr: start with a null byte, then needed library names.
         uint8_t nul = 0;
         link_sec_append(s, dynstr_sec, &nul, 1, 1);
-        libc_off = (int)link_sec_append(s, dynstr_sec,
-                                        (const uint8_t *)"libc.so.6", 10, 1);
 
-        // Add libgcc_s.so.1 for compiler-rt functions (__udivti3, etc.)
-        int libgcc_off = (int)link_sec_append(s, dynstr_sec,
+        // -nodefaultlibs / -nostdlib: the user takes over responsibility
+        // for every library this program needs (freestanding/custom-libc
+        // builds) -- don't record a DT_NEEDED promise for libraries never
+        // asked for, and don't scan them for "genuine undefined symbol"
+        // evidence below (a symbol only libc happens to define would
+        // otherwise "resolve" against a library this binary never
+        // actually loads).
+        bool skip_default_libs = lopts.nodefaultlibs || lopts.nostdlib;
+        int libgcc_off = 0, libm_off = 0;
+        if (!skip_default_libs) {
+            libc_off = (int)link_sec_append(s, dynstr_sec,
+                                            (const uint8_t *)"libc.so.6", 10, 1);
+
+            // Add libgcc_s.so.1 for compiler-rt functions (__udivti3, etc.)
+            libgcc_off = (int)link_sec_append(s, dynstr_sec,
                                               (const uint8_t *)"libgcc_s.so.1", 14, 1);
 
-        // Add libm.so.6 unconditionally, matching libgcc_s above: RCC's
-        // codegen emits a genuine external call for math.h functions
-        // (fabs/sqrt/pow/...) rather than inlining them to native FP
-        // instructions the way GCC/Clang do for the simple ones -- so a
-        // program merely #including <math.h> and calling e.g. fabs()
-        // needs a real libm symbol at load time even though an
-        // equivalent GCC-compiled binary wouldn't reference libm at all
-        // (its fabs() call never survives past codegen). glibc >= 2.34
-        // ships libm.so.6 as an empty compatibility stub -- loading it
-        // when unused costs nothing beyond one extra DT_NEEDED entry.
-        int libm_off = (int)link_sec_append(s, dynstr_sec,
+            // Add libm.so.6 unconditionally, matching libgcc_s above: RCC's
+            // codegen emits a genuine external call for math.h functions
+            // (fabs/sqrt/pow/...) rather than inlining them to native FP
+            // instructions the way GCC/Clang do for the simple ones -- so a
+            // program merely #including <math.h> and calling e.g. fabs()
+            // needs a real libm symbol at load time even though an
+            // equivalent GCC-compiled binary wouldn't reference libm at all
+            // (its fabs() call never survives past codegen). glibc >= 2.34
+            // ships libm.so.6 as an empty compatibility stub -- loading it
+            // when unused costs nothing beyond one extra DT_NEEDED entry.
+            libm_off = (int)link_sec_append(s, dynstr_sec,
                                             (const uint8_t *)"libm.so.6", 10, 1);
+        }
 
         // DT_SONAME: the name other objects' DT_NEEDED entries record
         // when they link against this library -- what the runtime loader
         // actually looks up at their load time, taking precedence over
-        // whatever path this file happened to be found at. Real linkers
-        // only emit one when passed -soname explicitly; lacking that
-        // flag here, fall back to this output file's own basename (e.g.
-        // "libfoo.so"), which is what every DT_NEEDED consumer will look
-        // for anyway since that's the name they pass to -l.
+        // whatever path this file happened to be found at. -Wl,-soname
+        // (or -h) sets it explicitly; lacking that flag, fall back to
+        // this output file's own basename (e.g. "libfoo.so"), which is
+        // what every DT_NEEDED consumer will look for anyway since
+        // that's the name they pass to -l.
         if (s->opt_shared) {
-            const char *base = strrchr(s->out_path, '/');
-            base = base ? base + 1 : s->out_path;
+            const char *son;
+            char basebuf[512];
+            if (lopts.have_soname) {
+                son = lopts.soname;
+            } else {
+                const char *base = strrchr(s->out_path, '/');
+                base = base ? base + 1 : s->out_path;
+                snprintf(basebuf, sizeof(basebuf), "%s", base);
+                son = basebuf;
+            }
             soname_off = (int)link_sec_append(s, dynstr_sec,
-                                              (const uint8_t *)base, strlen(base) + 1, 1);
+                                              (const uint8_t *)son, strlen(son) + 1, 1);
+        }
+
+        // DT_RUNPATH: -Wl,-rpath/--rpath directories (repeatable,
+        // colon-joined by link_parse_opts()), searched by ld.so before
+        // the standard system dirs when resolving this binary's own
+        // DT_NEEDED entries. Modern GNU ld's default ("new dtags")
+        // records DT_RUNPATH rather than the older DT_RPATH; do the same
+        // here unconditionally rather than tracking
+        // --enable-new-dtags/--disable-new-dtags (link_parse_opts()
+        // accepts and ignores both).
+        if (lopts.have_rpath) {
+            rpath_off = (int)link_sec_append(s, dynstr_sec,
+                                             (const uint8_t *)lopts.rpath, strlen(lopts.rpath) + 1, 1);
         }
 
         // Parse -l flags for additional DT_NEEDED entries.  Collect -L
@@ -2170,20 +2592,34 @@ int link_elf(LinkState *s) {
             }
         }
 
-        n_needed = 3;
-        needed_offs[0] = libc_off;
-        needed_offs[1] = libgcc_off;
-        needed_offs[2] = libm_off;
         char needed_names[16][64] = {0};
-        snprintf(needed_names[0], sizeof(needed_names[0]), "libc.so.6");
-        snprintf(needed_names[1], sizeof(needed_names[1]), "libgcc_s.so.1");
-        snprintf(needed_names[2], sizeof(needed_names[2]), "libm.so.6");
+        if (skip_default_libs) {
+            n_needed = 0;
+        } else {
+            n_needed = 3;
+            needed_offs[0] = libc_off;
+            needed_offs[1] = libgcc_off;
+            needed_offs[2] = libm_off;
+            snprintf(needed_names[0], sizeof(needed_names[0]), "libc.so.6");
+            snprintf(needed_names[1], sizeof(needed_names[1]), "libgcc_s.so.1");
+            snprintf(needed_names[2], sizeof(needed_names[2]), "libm.so.6");
+        }
         bool lib_lookup_failed = false;
+        bool as_needed = false;
         const char *lp = s->libs;
         while (lp && *lp) {
             while (*lp == ' ') lp++;
             if (!*lp) break;
-            if (!strncmp(lp, "-l", 2) && lp[2] && lp[2] != ' ') {
+            const char *tok_end = lp;
+            while (*tok_end && *tok_end != ' ') tok_end++;
+            size_t tok_len = (size_t)(tok_end - lp);
+            if (tok_len == 15 && !strncmp(lp, "-Wl,--as-needed", 15)) {
+                as_needed = true;
+                lp = tok_end;
+            } else if (tok_len == 18 && !strncmp(lp, "-Wl,--no-as-needed", 18)) {
+                as_needed = false;
+                lp = tok_end;
+            } else if (!strncmp(lp, "-l", 2) && lp[2] && lp[2] != ' ') {
                 lp += 2;
                 const char *end = lp;
                 while (*end && *end != ' ') end++;
@@ -2266,6 +2702,36 @@ int link_elf(LinkState *s) {
                     if (seen) {
                         lp = end;
                         continue;
+                    }
+                    if (as_needed) {
+                        // --as-needed: only record a DT_NEEDED promise for
+                        // this library if it actually defines one of the
+                        // symbols still outstanding at this point in the
+                        // link (real ld's own semantics: skip a linked-
+                        // but-unreferenced library's dependency entry).
+                        // Unscannable -> conservative, keep it.
+                        bool any = false;
+                        if (n_dyn > 0) {
+                            const char **dnames = malloc((size_t)n_dyn * sizeof(char *));
+                            bool *dfound = calloc((size_t)n_dyn, sizeof(bool));
+                            for (int k = 0; k < n_dyn; k++) dnames[k] = s->syms[dyn_syms[k]].name;
+                            bool scanned = so_mark_defined(found_path, dnames, dfound, n_dyn);
+                            if (scanned) {
+                                for (int k = 0; k < n_dyn; k++)
+                                    if (dfound[k]) {
+                                        any = true;
+                                        break;
+                                    }
+                            } else {
+                                any = true;
+                            }
+                            free(dnames);
+                            free(dfound);
+                        }
+                        if (!any) {
+                            lp = end;
+                            continue;
+                        }
                     }
                     if (n_scan < 32) {
                         snprintf(scan_paths[n_scan], sizeof(scan_paths[0]), "%s", found_path);
@@ -2355,9 +2821,10 @@ int link_elf(LinkState *s) {
         // the lib's implicit-init constructor runs anyway).
         if (!s->opt_shared && !s->opt_static) {
             const char *core_names[3] = {"libc.so.6", "libgcc_s.so.1", "libm.so.6"};
+            int n_core = skip_default_libs ? 0 : 3;
             char lib_paths[64][600];
             int n_lib_paths = 0;
-            for (int c = 0; c < 3 && n_lib_paths < 64; c++) {
+            for (int c = 0; c < n_core && n_lib_paths < 64; c++) {
                 char cpath[600];
                 if (find_shared_lib(core_names[c], cpath, sizeof(cpath), NULL, 0) == 0)
                     snprintf(lib_paths[n_lib_paths++], sizeof(lib_paths[0]), "%s", cpath);
@@ -2426,19 +2893,24 @@ int link_elf(LinkState *s) {
         // "undefined reference" diagnostic. Only libraries we successfully
         // open count as evidence, so an unreadable or unresolved library
         // never fabricates a false error -- that case still defers exactly
-        // as before. Shared objects (-shared) are exempt: unresolved
-        // imports are legal and bound when the .so is loaded into a process.
-        if (!s->opt_shared && n_dyn > 0) {
+        // as before.
+        // Shared objects (-shared) are exempt by default: unresolved
+        // imports are legal and bound when the .so is loaded into a
+        // process -- unless -Wl,--no-undefined / -Wl,-z,defs asked for
+        // the stricter, executable-style check anyway.
+        if ((!s->opt_shared || lopts.no_undefined) && n_dyn > 0) {
             const char **names = malloc((size_t)n_dyn * sizeof(char *));
             bool *found = calloc((size_t)n_dyn, sizeof(bool));
             if (names && found) {
                 for (int k = 0; k < n_dyn; k++)
                     names[k] = s->syms[dyn_syms[k]].name;
                 bool scanned_any = false;
-                // The three libraries this linker adds to DT_NEEDED
-                // unconditionally (see above); resolve their real paths.
+                // The three libraries this linker adds to DT_NEEDED by
+                // default (see above, skipped under -nodefaultlibs/
+                // -nostdlib); resolve their real paths.
                 const char *core[3] = {"libc.so.6", "libgcc_s.so.1", "libm.so.6"};
-                for (int c = 0; c < 3; c++) {
+                int n_core = skip_default_libs ? 0 : 3;
+                for (int c = 0; c < n_core; c++) {
                     char cpath[600];
                     if (find_shared_lib(core[c], cpath, sizeof(cpath), NULL, 0) == 0)
                         scanned_any |= so_mark_defined(cpath, names, found, n_dyn);
@@ -2524,7 +2996,7 @@ int link_elf(LinkState *s) {
         // resolve to an old ABI-incompatible compat symbol (e.g.
         // pthread_cond_init@GLIBC_2.2.5 instead of @GLIBC_2.3.2) --
         // functions succeed individually but disagree on internal layout.
-        char **dyn_versions = calloc((size_t)n_dyn, sizeof(char *));
+        char **dyn_versions = calloc((size_t)(n_dyn > 0 ? n_dyn : 1), sizeof(char *));
         if (n_dyn > 0) {
             const char **names = malloc((size_t)n_dyn * sizeof(char *));
             for (int k = 0; k < n_dyn; k++)
@@ -2583,7 +3055,22 @@ int link_elf(LinkState *s) {
                 link_sec_append(s, versym_sec, vb, 2, 2);
             }
             // .gnu.version_r: one Verneed record for libc.so.6 with one
-            // Vernaux entry per distinct required version.
+            // Vernaux entry per distinct required version. vn_file must
+            // name whichever linked library actually provides these
+            // GLIBC_x.y.z versions (always libc.so.6): libc_off is only
+            // ever set when the default libc was pre-seeded above
+            // (skipped under -nodefaultlibs/-nostdlib) -- resolve it from
+            // the -l scan's own bookkeeping instead when an explicit
+            // -lc supplied it, so vn_file doesn't fall back to dynstr
+            // offset 0 (the empty string), which glibc's ld.so rejects
+            // at load time with "no version information available".
+            if (libc_off == 0) {
+                for (int k = 0; k < n_needed; k++)
+                    if (!strncmp(needed_names[k], "libc.so", 7)) {
+                        libc_off = needed_offs[k];
+                        break;
+                    }
+            }
             uint8_t vnbuf[16];
             w16le_m(vnbuf, 1); // vn_version
             w16le_m(vnbuf + 2, (uint16_t)n_verneed_versions); // vn_cnt
@@ -2812,7 +3299,7 @@ int link_elf(LinkState *s) {
         }
 
         // Pre-allocate .dynamic entries so layout reserves the correct size.
-        int n_dynent = 5 + (n_reladyn > 0 ? 3 : 0) + (n_func_dyn > 0 ? 3 : 0) + n_needed + 3 + 4 + 3 + (s->opt_shared ? 1 : 0);
+        int n_dynent = 5 + (n_reladyn > 0 ? 3 : 0) + (n_func_dyn > 0 ? 3 : 0) + n_needed + 3 + 4 + 3 + (s->opt_shared ? 1 : 0) + (lopts.have_rpath ? 1 : 0);
         uint8_t *dyn_placeholder = calloc((size_t)n_dynent * 16, 1);
         link_sec_append(s, dynamic_sec, dyn_placeholder, (size_t)n_dynent * 16, 8);
         free(dyn_placeholder);
@@ -3101,6 +3588,8 @@ int link_elf(LinkState *s) {
         auto_dyn_ent(dyn, &dpos, DT_SYMENT, 24);
         if (s->opt_shared)
             auto_dyn_ent(dyn, &dpos, DT_SONAME, (uint64_t)soname_off);
+        if (lopts.have_rpath)
+            auto_dyn_ent(dyn, &dpos, DT_RUNPATH, (uint64_t)rpath_off);
         if (n_reladyn > 0) {
             auto_dyn_ent(dyn, &dpos, DT_RELA, s->secs[reladyn_sec].addr);
             auto_dyn_ent(dyn, &dpos, DT_RELASZ, (uint64_t)n_reladyn * 24);
@@ -3131,8 +3620,11 @@ int link_elf(LinkState *s) {
             auto_dyn_ent(dyn, &dpos, DT_VERNEED, s->secs[verneed_sec].addr);
             auto_dyn_ent(dyn, &dpos, DT_VERNEEDNUM, 1);
         }
-        auto_dyn_ent(dyn, &dpos, DT_FLAGS, DF_BIND_NOW);
-        auto_dyn_ent(dyn, &dpos, DT_FLAGS_1, DF_1_NOW);
+        // -Wl,-z,origin: DF_ORIGIN/DF_1_ORIGIN tell ld.so this object's
+        // DT_NEEDED/DT_RUNPATH may contain a literal "$ORIGIN" token to
+        // expand -- most useful paired with an $ORIGIN-relative rpath.
+        auto_dyn_ent(dyn, &dpos, DT_FLAGS, DF_BIND_NOW | (lopts.z_origin ? DF_ORIGIN : 0));
+        auto_dyn_ent(dyn, &dpos, DT_FLAGS_1, DF_1_NOW | (lopts.z_origin ? DF_1_ORIGIN : 0));
         auto_dyn_ent(dyn, &dpos, DT_NULL, 0);
     } else {
         // Static link: apply relocations normally.
@@ -3393,6 +3885,12 @@ int link_elf(LinkState *s) {
     // NOT unconditionally for every non-shared link.
     bool need_exec_stack = !s->opt_shared &&
         (s->stack_note_exec || s->stack_note_missing);
+    // -Wl,-z,noexecstack / -Wl,-z,execstack: an explicit request
+    // overrides whatever the linked objects' own .note.GNU-stack
+    // sections asked for, matching real ld.
+    if (lopts.noexecstack) need_exec_stack = false;
+    else if (lopts.execstack)
+        need_exec_stack = true;
     write_phdr(f, PT_GNU_STACK, PF_R | PF_W | (need_exec_stack ? PF_X : 0), 0, 0, 0, 0, 0, 0x10);
     cur += 56;
     wzeros(f, file_off - cur);
