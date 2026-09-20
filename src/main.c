@@ -1568,19 +1568,32 @@ int main(int argc, char **argv) {
         // Try the native linker first.
         // The native ELF linker (Linux/x86_64 and the arm64-cross build,
         // both compiled from link_elf.c) additionally understands the
-        // linker options link_parse_opts() recognizes: -Wl,-rpath/-soname,
-        // --start-group/--end-group, --as-needed/--no-as-needed,
-        // --no-undefined, -v, most -z suboptions, -nodefaultlibs,
-        // -nostdlib, and -r (see link_elf.c's own handling of each). The
-        // PE and Mach-O native linkers (link_pe.c/link_macho.c) don't
-        // implement any of that yet, so keep them on the old, narrower
-        // gate: only -Wl,--out-implib (PE import-library generation) is
-        // recognized there, everything else -- and -nodefaultlibs/
-        // -nostdlib/-r -- still falls back to the external linker, which
-        // silently dropping them would otherwise "link" with the wrong
-        // semantics (e.g. a shared lib whose DT_RUNPATH/DT_SONAME never
-        // got written) instead of producing correct output.
-#if defined(_WIN32) || defined(__MINGW32__) || defined(__APPLE__)
+        // linker options link_parse_opts() recognizes on Linux specifically:
+        // -Wl,-rpath/-soname, --start-group/--end-group, --as-needed/
+        // --no-as-needed, --no-undefined, -v, most -z suboptions,
+        // -nodefaultlibs, -nostdlib, and -r (see link_elf.c's own handling
+        // of each). Every one of those is built around glibc conventions
+        // (SONAME scanning by exact "libc.so.6"/"libgcc_s.so.1"/"libm.so.6"
+        // names, load_crt_files()'s Linux-only crt1.o search paths, ...) --
+        // the *same* reason link_elf.c's own FreeBSD/NetBSD/OpenBSD carve-
+        // out already bails out of -shared entirely. -r's own writer
+        // (link_elf_relocatable()) doesn't touch any of that, but was
+        // still verified only against this glibc/Linux toolchain, not
+        // BSD's; enabling it there regressed test_link_nostdlib_relocatable
+        // in CI (a BSD system `cc`/`ld` rejected the partial-linked object,
+        // or a chained link against it produced the wrong result) --
+        // keep every BSD on the narrower gate below until each capability
+        // is verified against a real BSD toolchain, not just assumed
+        // portable because it's "plain ELF". The PE and Mach-O native
+        // linkers (link_pe.c/link_macho.c) don't implement any of this
+        // either, so they share the same narrower gate: only
+        // -Wl,--out-implib (PE import-library generation) is recognized,
+        // everything else -- and -nodefaultlibs/-nostdlib/-r -- still
+        // falls back to the external linker, which silently dropping them
+        // would otherwise "link" with the wrong semantics (e.g. a shared
+        // lib whose DT_RUNPATH/DT_SONAME never got written) instead of
+        // producing correct output.
+#if !defined(__linux__)
         bool native_link_capable = true;
         {
             const char *lp = libs;
