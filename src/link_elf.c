@@ -280,6 +280,26 @@ static int map_reloc_type(uint32_t elf_type, LinkArch arch) {
 static int map_input_sec_to_output(const char *name, bool *alloc, bool *write,
                                    bool *exec, bool *bss, bool *tls) {
     *alloc = *write = *exec = *bss = *tls = false;
+    // Per-file ELF metadata (this input's own symbol table, string
+    // table, section-name string table, and relocation sections),
+    // never a real "content" section to merge by name into the output
+    // -- elf_load_object() already parses these via their SHT_SYMTAB/
+    // SHT_STRTAB/SHT_RELA/SHT_REL *type*, in its own dedicated passes
+    // below. Falling through to the generic "keep unknown sections"
+    // path created a same-named, wrongly-typed (PROGBITS) merged copy
+    // of each input file's own .symtab/.strtab/.shstrtab/.rela.* --
+    // harmless for a normal executable/shared-object link (only
+    // SHF_ALLOC sections ever get a section-header entry there, and
+    // these never carry SHF_ALLOC), but link_elf_relocatable()'s ET_REL
+    // writer emits a header for every merged section, so it wrote out
+    // BOTH that garbage copy and its own real, correctly-typed
+    // .symtab/.strtab/.shstrtab/.relaX under the identical names --
+    // which a real linker (verified with LLD, FreeBSD/OpenBSD's base
+    // one) rejects outright: "section type mismatch for .symtab".
+    if (strcmp(name, ".symtab") == 0 || strcmp(name, ".strtab") == 0 ||
+        strcmp(name, ".shstrtab") == 0 || !strncmp(name, ".rela.", 6) ||
+        !strncmp(name, ".rel.", 5))
+        return -1;
     if (strcmp(name, ".text") == 0 || strcmp(name, ".init") == 0 ||
         strcmp(name, ".fini") == 0) {
         *alloc = true;
