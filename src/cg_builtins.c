@@ -18,7 +18,7 @@ char *bi_popcount, *bi_popcountl, *bi_popcountll;
 char *bi_parity, *bi_parityl, *bi_parityll;
 char *bi_clrsb, *bi_clrsbl, *bi_clrsbll;
 char *bi_ffs, *bi_ffsl, *bi_ffsll;
-char *bi_prefetch, *bi_frame_address, *bi_return_address, *bi_thread_pointer;
+char *bi_unwind_init, *bi_prefetch, *bi_frame_address, *bi_return_address, *bi_thread_pointer;
 char *bi_setjmp, *bi_longjmp;
 char *bi_signbit, *bi_signbitf, *bi_signbitl;
 char *bi_isinf, *bi_isinff, *bi_isinfl;
@@ -79,6 +79,7 @@ void init_builtin_names(void) {
     bi_ffs = _BI("__builtin_ffs");
     bi_ffsl = _BI("__builtin_ffsl");
     bi_ffsll = _BI("__builtin_ffsll");
+    bi_unwind_init = str_intern("__builtin_unwind_init", 21); // not in keywords.gperf
     bi_prefetch = _BI("__builtin_prefetch");
     bi_frame_address = _BI("__builtin_frame_address");
     bi_return_address = _BI("__builtin_return_address");
@@ -459,6 +460,13 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
             free_reg(r);
             return r2;
         }
+    }
+
+    // __builtin_unwind_init(): the callee-saved registers are saved into this frame by the
+    // prologue (for conservative stack scanners), as gcc does.
+    if (call_target == bi_unwind_init) {
+        cg_force_callee_saved();
+        return 0;
     }
 
     if (is_prefetch) {

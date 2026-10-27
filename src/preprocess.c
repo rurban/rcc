@@ -2475,6 +2475,7 @@ static int64_t has_builtin_val(const char *name) {
         "__builtin_pow",
         "__builtin_powf",
         "__builtin_prefetch",
+        "__builtin_unwind_init",
         "__builtin_printf",
         "__builtin_puts",
         "__builtin_realloc",

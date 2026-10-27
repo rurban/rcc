@@ -769,6 +769,16 @@ static char *reg8[] = {"%r10b", "%r11b", "%bl", "%r12b", "%r13b", "%r14b", "%r15
 
 static int used_regs = 0;
 static int ever_used_regs = 0;
+// __builtin_unwind_init(): the prologue saves every callee-saved register into the frame
+void cg_force_callee_saved(void) {
+#ifdef ARCH_ARM64
+    ever_used_regs |= 63 << 6;
+#elif defined(_WIN32)
+    ever_used_regs |= 63 << 2;
+#else
+    ever_used_regs |= 31 << 2;
+#endif
+}
 #ifdef ARCH_ARM64
 static int tail_frame_size;
 static int tail_callee_mask;
