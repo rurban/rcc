@@ -96,7 +96,6 @@ static int assemble_and_link(const char *asm_path, const char *out_path,
 #ifdef __APPLE__
     snprintf(cmd, sizeof(cmd),
              "cc -shared -o %s -arch arm64 "
-             "-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk "
              "-Wl,-undefined,dynamic_lookup %s",
              out_path, asm_path);
 #elif defined(_WIN32)

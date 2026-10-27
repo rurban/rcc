@@ -1786,7 +1786,7 @@ int main(int argc, char **argv) {
         if (opt_relocatable) {
             // `-r` produces a relocatable object, not an executable or
             // shared library -- the flags below are meaningless (or
-            // actively rejected by ld64) in that mode: `-arch`/`-isysroot`
+            // actively rejected by ld64) in that mode: `-arch`
             // only matter for resolving/linking against real system
             // frameworks, and `-Wl,-undefined,dynamic_lookup` (defer
             // undefined-symbol resolution to runtime dyld) makes no sense
@@ -1795,7 +1795,6 @@ int main(int argc, char **argv) {
         } else
             xappendf(&cmd, &cmd_len, &cmd_cap,
                      GCC " -o \"%s\" -arch arm64"
-                         " -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
                          " -Wl,-undefined,dynamic_lookup",
                      backend_out);
 #else
