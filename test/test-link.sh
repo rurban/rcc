@@ -757,6 +757,16 @@ else
     fail "link-only .o inputs use the native linker" "$(tr '\n' ' ' < "$TMP/e18")"
 fi
 
+# object files with a non-standard suffix (.o2, .opic2) are linker input, not C source
+if "$RCC" -c "$TMP/lo_a.c" -o "$TMP/lo_a.opic2" 2>"$TMP/e19" \
+    && "$RCC" -c "$TMP/lo_main.c" -o "$TMP/lo_main.o2" 2>>"$TMP/e19" \
+    && "$RCC" "$TMP/lo_main.o2" "$TMP/lo_a.opic2" -o "$TMP/lo_prog2" 2>>"$TMP/e19" \
+    && "$(winprog "$TMP/lo_prog2")"; then
+    pass "link inputs with .o2/.opic2 suffixes"
+else
+    fail "link inputs with .o2/.opic2 suffixes" "$(tr '\n' ' ' < "$TMP/e19")"
+fi
+
 echo ""
 echo "Link tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
