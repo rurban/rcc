@@ -45,7 +45,7 @@ jobs:
 
       - name: Install dependencies (Windows)
         if: matrix.os == 'windows-latest'
-        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
         with:
           msystem: MINGW64
           update: true
@@ -176,7 +176,7 @@ jobs:
 
       - name: Upload Windows reports
         if: ${{ matrix.os == 'windows-latest' && steps.changed.outputs.sources == 'true' && (success() || failure()) }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-reports
           path: |
@@ -187,7 +187,7 @@ jobs:
 
       - name: Upload macOS reports
         if: ${{ matrix.os == 'macos-latest' && steps.changed.outputs.sources == 'true' && (success() || failure()) }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-reports
           path: |
@@ -198,7 +198,7 @@ jobs:
 
       - name: Upload Linux reports
         if: ${{ matrix.os == 'ubuntu-latest' && steps.changed.outputs.sources == 'true' && (success() || failure()) }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-reports-${{ matrix.cc || 'gcc' }}
           path: |
@@ -221,7 +221,7 @@ jobs:
 
       - name: Upload Windows dist
         if: matrix.os == 'windows-latest' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dist')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rcc-windows
           path: |
@@ -249,7 +249,7 @@ jobs:
           fetch-tags: true
 
       - name: Build and test (FreeBSD)
-        uses: vmactions/freebsd-vm@4469451fe39bee80be4066836c5170362e9349f3 # v1.5.7
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
         with:
           cache-after-prepare: true
           prepare: |
@@ -272,7 +272,7 @@ jobs:
 
       - name: Upload FreeBSD reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: freebsd-reports
           path: |
@@ -292,7 +292,7 @@ jobs:
           fetch-tags: true
 
       - name: Build and test (NetBSD)
-        uses: vmactions/netbsd-vm@20ee93a005c9fc78743e6e05269f4cb023b87413 # v1.5.0
+        uses: vmactions/netbsd-vm@c8a0d7ddb84619a7a8cc4e652efa7950b3fd9f92 # v1.5.2
         with:
           cache-after-prepare: true
           prepare: |
@@ -315,7 +315,7 @@ jobs:
 
       - name: Upload NetBSD reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: netbsd-reports
           path: |
@@ -335,7 +335,7 @@ jobs:
           fetch-tags: true
 
       - name: Build and test (OpenBSD)
-        uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1.4.7
+        uses: vmactions/openbsd-vm@f1ca8bc8ecc5b6ef7218e5b914836e067e1546d3 # v1.4.9
         with:
           cache-after-prepare: true
           prepare: |
@@ -358,7 +358,7 @@ jobs:
 
       - name: Upload OpenBSD reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: openbsd-reports
           path: |
