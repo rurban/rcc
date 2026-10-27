@@ -532,6 +532,30 @@ static char *wl_get_value(const char *arg, const char *tok) {
     return NULL;
 }
 
+// An input with an unusual suffix (.o2, .opic, .opic2, ...) that starts with an
+// ELF, ar, Mach-O (thin/fat), .tbd stub or COFF (x64/arm64/x86) magic is an object/archive for the linker, not C source.
+static bool has_object_magic(const char *path) {
+    unsigned char m[16];
+    FILE *f = fopen(path, "rb");
+    size_t n;
+    if (!f)
+        return false;
+    n = fread(m, 1, sizeof m, f);
+    fclose(f);
+    if (n < 4)
+        return false;
+    return !memcmp(m, "\x7f"
+                      "ELF",
+                   4) ||
+        (n >= 7 && !memcmp(m, "!<arch>", 7)) ||
+        !memcmp(m, "\xfe\xed\xfa\xce", 4) || !memcmp(m, "\xfe\xed\xfa\xcf", 4) ||
+        !memcmp(m, "\xce\xfa\xed\xfe", 4) || !memcmp(m, "\xcf\xfa\xed\xfe", 4) ||
+        !memcmp(m, "\xca\xfe\xba\xbe", 4) || !memcmp(m, "\xca\xfe\xba\xbf", 4) ||
+        !memcmp(m, "\xbe\xba\xfe\xca", 4) || !memcmp(m, "\xbf\xba\xfe\xca", 4) ||
+        (n >= 8 && !memcmp(m, "--- !tapi", 8)) || (n >= 8 && !memcmp(m, "--- !tbd", 8)) ||
+        !memcmp(m, "\x64\x86", 2) || !memcmp(m, "\x64\xaa", 2) || !memcmp(m, "\x4c\x01", 2);
+}
+
 int main(int argc, char **argv) {
 #ifdef __x86_64__
     // SSE4.2 runtime detection (x86_64 only)
@@ -1134,7 +1158,7 @@ int main(int argc, char **argv) {
                          || !strcmp(ext, ".obj") || !strcmp(ext, ".dll") || !strcmp(ext, ".lib")
 #endif
                              )) ||
-                is_shared_lib_path(argv[i])) {
+                is_shared_lib_path(argv[i]) || has_object_magic(argv[i])) {
                 xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
                 have_link_inputs = true;
             } else {
