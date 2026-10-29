@@ -473,6 +473,14 @@ extern bool opt_g;
 extern bool opt_pie;
 extern bool opt_pic;
 extern bool opt_time;
+// -fsanitize=<list> / -fsanitizer=<list> (GCC/Clang spelling; rcc accepts
+// both so build systems emitting either work). address/asan -> opt_asan,
+// undefined/ubsan -> opt_ubsan. opt_sanitize_list is the recognized subset
+// re-passed to the backend link so the gcc sanitizer runtime (libasan /
+// libubsan) is wired in; NULL when no active sanitizer.
+extern bool opt_asan;
+extern bool opt_ubsan;
+extern char *opt_sanitize_list;
 // -fdefer-ts (WG14 N3199 / TS 25755 experimental `defer` statement,
 // matching clang's own flag name): gates `defer` keyword recognition
 // in stmt() so ordinary code using `defer` as an identifier elsewhere

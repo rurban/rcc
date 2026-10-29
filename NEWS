@@ -12,6 +12,12 @@ complete list of changes see the git log.
     --as-needed/--no-undefined/-v/-z), -nodefaultlibs, -nostdlib, and -r, and for
     linking only objects and libs instead of falling back to the external linker.
   - Implemented native macho linker for executables with external symbols.
+  - New -fsanitize=<list> / -fsanitizer=<list>: links the gcc sanitizer
+    runtime (libasan/libubsan) via the gcc fallback linker. `undefined`
+    instruments integer divide-by-zero (emits gcc's OverflowData/
+    TypeDescriptor and calls __ubsan_handle_divrem_overflow, then traps
+    exactly like gcc); `address` links+initializes the ASan runtime (no
+    per-access shadow instrumentation).
 
 * Changes in v1.2.2 (2026-09-19) (Reini Urban)
 

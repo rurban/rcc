@@ -10159,6 +10159,85 @@ static bool tail_call_frame_may_escape(Function *fn) {
 }
 
 
+// ---------------------------------------------------------------------------
+// -fsanitize=undefined: integer divide-by-zero (divrem) check
+// ---------------------------------------------------------------------------
+// Monotonic per-TU counter naming the per-site static descriptors and the
+// skip-over branch label (all .L-local, so only in-.o uniqueness is needed).
+static int ubsan_ctr = 0;
+
+// Emit the static UBSan divrem-overflow (divide-by-zero) descriptor for one
+// division site and return the label whose address the caller loads into the
+// handler's Data argument. Returns NULL when UBSan is off or during the dry
+// run (nothing is emitted then).
+//
+// Layout matches libsanitizer ubsan_handlers.h's OverflowData + ubsan_value.h's
+// TypeDescriptor (verified byte-for-byte against the gcc runtime):
+//   TypeDescriptor (read-only): { u16 kind; u16 info; char name[]; }
+//     kind = 0 (TK_Integer); info = (log2(bit width) << 1) | is_signed
+//   OverflowData (writable -- the runtime's SourceLocation.acquire()
+//     atomically overwrites Column, so it must not be in .rodata):
+//     { const char *filename; u32 line; u32 col; const TypeDescriptor *type; }
+static char *cg_emit_ubsan_divrem_data(Type *ty, const char *filename, int line, int n) {
+    if (!opt_ubsan || cg_dry_run) return NULL;
+    int bits = ty->size * 8;
+    int log2bits = 0;
+    while ((1 << log2bits) < bits) log2bits++; // 16/32/64 -> 4/5/6
+    uint16_t info = (uint16_t)((log2bits << 1) | (ty->is_unsigned ? 0 : 1));
+    // Diagnostic-suitable type name. Not printed by the divide-by-zero message
+    // (which reports no operand), kept only for a well-formed descriptor.
+    const char *tname;
+    if (ty->size == 8)
+        tname = ty->is_unsigned ? "unsigned long" : "long";
+    else if (ty->size == 2)
+        tname = ty->is_unsigned ? "unsigned short" : "short";
+    else
+        tname = ty->is_unsigned ? "unsigned int" : "int";
+    const char *fn = filename ? filename : "";
+    char *data_label = format(".L.ubsan_data.%d", n);
+    char *type_label = format(".L.ubsan_type.%d", n);
+    char *str_label = format(".L.ubsan_str.%d", n);
+
+    // TypeDescriptor in .rodata (never modified by the runtime).
+    cg_set_section(SEC_RODATA);
+    secbuf_align(cg_sec, 4);
+    cg_def_label_sec(type_label, SEC_RODATA);
+    int type_sym = objfile_find_sym(cg_obj, type_label);
+    secbuf_emit16le(cg_sec, 0); // kind = TK_Integer
+    secbuf_emit16le(cg_sec, info);
+    secbuf_emitbuf(cg_sec, tname, strlen(tname));
+    secbuf_emit8(cg_sec, 0);
+
+    // Filename string in .rodata.
+    size_t str_off = cg_sec->len;
+    cg_def_label_sec(str_label, SEC_RODATA);
+    int str_sym = objfile_find_sym(cg_obj, str_label);
+    (void)str_off;
+    secbuf_emitbuf(cg_sec, fn, strlen(fn));
+    secbuf_emit8(cg_sec, 0);
+
+    // OverflowData in .data (writable: Column is atomically clobbered).
+    cg_set_section(SEC_DATA);
+    secbuf_align(cg_sec, 8);
+    size_t data_off = cg_sec->len;
+    cg_def_label_sec(data_label, SEC_DATA);
+    size_t fn_off = data_off; // +0: Filename ptr (reloc)
+    size_t type_ptr_off = data_off + 16; // +16: Type ptr (reloc)
+    secbuf_emit64le(cg_sec, 0); // Filename
+    secbuf_emit32le(cg_sec, (uint32_t)line); // Line
+    secbuf_emit32le(cg_sec, 0); // Column (rcc tracks line only)
+    secbuf_emit64le(cg_sec, 0); // Type
+#ifdef ARCH_ARM64
+    objfile_add_reloc(cg_obj, SEC_DATA, fn_off, str_sym, R_AARCH64_ABS64, 0);
+    objfile_add_reloc(cg_obj, SEC_DATA, type_ptr_off, type_sym, R_AARCH64_ABS64, 0);
+#else
+    objfile_add_reloc(cg_obj, SEC_DATA, fn_off, str_sym, R_X86_64_64, 0);
+    objfile_add_reloc(cg_obj, SEC_DATA, type_ptr_off, type_sym, R_X86_64_64, 0);
+#endif
+    cg_set_section(SEC_TEXT);
+    return data_label;
+}
+
 // Generate code for a given node.
 VReg gen(Node *node) {
     if (!node) return R_NONE;
@@ -17076,6 +17155,53 @@ VReg gen(Node *node) {
                 return cgopt_div_mod_const(r_lhs, d, sz, is_unsigned, node->kind == ND_MOD);
         }
         VReg r_rhs = gen(node->rhs);
+        // -fsanitize=undefined: integer divide-by-zero. When the divisor is
+        // zero, call the gcc libubsan handler (Data, dividend, divisor) which
+        // reports "division by zero", then fall through to the idiv/div below
+        // which traps (SIGFPE) -- gcc's own report-then-trap behavior. A
+        // constant nonzero divisor already returned above; a constant zero
+        // still reaches here and is caught.
+        if (opt_ubsan && !cg_dry_run) {
+            int n = ubsan_ctr++;
+            char *data_label = cg_emit_ubsan_divrem_data(node->ty,
+                                                         node->tok ? node->tok->filename : NULL,
+                                                         node->tok ? node->tok->lineno : 0, n);
+            if (data_label) {
+                char *div_label = format(".L.ubsan_div.%d", n);
+                asm_test_reg_reg(cg_sec, r_rhs, r_rhs, sz); // test divisor, divisor
+#ifdef ARCH_ARM64
+                emit_jcc_fixup(cg_sec, ARM64_NE, div_label); // divisor != 0 -> div
+                // AAPCS64 args x0=&Data, x1=dividend, x2=divisor(0). x0/x1/x2
+                // are not VReg registers, so no allocator aliasing to worry about.
+                VReg d = alloc_reg();
+                emit_adrp_add(d, data_label); // REG(d) = &OverflowData
+                arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, REG(d), ARM64_LSL, 0); // x0 = &Data
+                free_reg(d);
+                arm64_orr_reg(cg_sec, sz == 8 ? 1 : 0, ARM64_X1, ARM64_XZR, REG(r_lhs), ARM64_LSL, 0); // x1 = dividend
+                arm64_orr_reg(cg_sec, sz == 8 ? 1 : 0, ARM64_X2, ARM64_XZR, REG(r_rhs), ARM64_LSL, 0); // x2 = divisor (0)
+                emit_direct_call("__ubsan_handle_divrem_overflow", false);
+                // handler returned (non-halt): re-zero the divisor so the
+                // fall-through sdiv/udiv traps (SIGFPE) exactly like gcc.
+                arm64_eor_reg(cg_sec, sz == 8 ? 1 : 0, REG(r_rhs), REG(r_rhs), REG(r_rhs), ARM64_LSL, 0);
+#else
+                emit_jcc_fixup(cg_sec, X86_NE, div_label); // divisor != 0 -> div
+                VReg d = alloc_reg();
+                asm_lea_rip_reg(cg_sec, d, data_label); // REG(d) = &OverflowData
+                x86_mov_rr(cg_sec, 8, X86_RDI, REG(d)); // rdi = &Data (arg1)
+                free_reg(d);
+                x86_mov_rr(cg_sec, sz, X86_RSI, REG(r_lhs)); // rsi = dividend (arg2)
+                x86_xor_rr(cg_sec, 4, X86_RCX, X86_RCX); // rcx = divisor = 0 (arg3)
+                emit_direct_call("__ubsan_handle_divrem_overflow", false);
+                // handler returned (non-halt): re-zero the divisor so the
+                // fall-through idiv/div traps (SIGFPE) exactly like gcc.
+                if (sz == 4)
+                    x86_xor_rr(cg_sec, 4, REG(r_rhs), REG(r_rhs));
+                else
+                    x86_xor_rr(cg_sec, 8, REG(r_rhs), REG(r_rhs));
+#endif
+                cg_def_label(div_label);
+            }
+        }
 #ifdef ARCH_ARM64
         if (node->kind == ND_DIV) {
             if (is_unsigned)

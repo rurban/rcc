@@ -1654,6 +1654,21 @@ static ProcResult run_exe_with_cmdline(const char *exe_path, const char *args,
     return proc_run(argv, timeout_sec, 2);
 }
 
+/* Run a compiled test executable. When env is non-NULL (see test_unit_env),
+ * it is exported via a /bin/sh wrapper -- thread-safe, since setenv() is not
+ * safe in parallel workers; exec preserves the child's exit code. */
+static ProcResult run_unit_exe(const char *exe, const char *env,
+                               int timeout_sec, char **cmdline_out) {
+    if (cmdline_out) *cmdline_out = NULL;
+    if (!env)
+        return run_exe_with_cmdline(exe, "", timeout_sec, cmdline_out);
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "%s exec \"$1\" 2>&1", env);
+    char *ca[] = {(char *)"/bin/sh", "-c", cmd, "sh", (char *)exe, NULL};
+    if (cmdline_out) *cmdline_out = strdup(cmd);
+    return proc_run(ca, timeout_sec, 2);
+}
+
 static char **list_c_files_sorted(const char *dir) {
     struct dirent **nl;
     int n = scandir(dir, &nl, NULL, versionsort);
@@ -1744,6 +1759,7 @@ static int test_expected_exit(const char *base) {
     return 0;
 }
 static int test_unit_expected_exit(const char *base) {
+    if (streq(base, "test_ubsan_divzero")) return 1; // UBSan halt_on_error
     if (streq(base, "test_include")) return 42;
     if (streq(base, "test_include2")) return 10;
     if (streq(base, "test_self_include2")) return 1;
@@ -1751,7 +1767,19 @@ static int test_unit_expected_exit(const char *base) {
     if (streq(base, "test_simple2")) return 1;
     return 0;
 }
+// Per-test environment exported for the exec (applied by a shell wrapper in
+// unit_compile_exec; avoids setenv, which is not thread-safe in workers).
+// The UBSan divzero test uses halt_on_error so the handler reports and halts
+// with a deterministic exit (1) instead of trapping: the UBSan FPE signal
+// handler would otherwise intercept the SIGFPE with a build-dependent exit.
+static const char *test_unit_env(const char *base) {
+    if (streq(base, "test_ubsan_divzero"))
+        return "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=0";
+    return NULL;
+}
 static const char *extra_ldflags(const char *base, const char *srcfile) {
+    // -fsanitize=undefined unit test: compile+link with the gcc UBSan runtime.
+    if (streq(base, "test_ubsan_divzero")) return " -fsanitize=undefined";
     bool lm = streq(base, "22_floating_point") || streq(base, "24_math_library");
     bool pt = false;
     if (srcfile) {
@@ -3594,7 +3622,8 @@ static void unit_compile_exec(const char *src_path, const char *base,
         return;
     }
 
-    ProcResult rr = run_exe_with_cmdline(r->tmp_exe, "", unit_run_timeout(), &r->run_cmdline);
+    ProcResult rr = run_unit_exe(r->tmp_exe, test_unit_env(base),
+                                 unit_run_timeout(), &r->run_cmdline);
     r->exec_exit = rr.exit_code;
     r->exec_timed_out = rr.timed_out;
     r->exec_out = rr.out;
@@ -3818,6 +3847,15 @@ static int run_unit_tests(void) {
                 add_row(base, "SKIP", "Skipped");
                 continue;
             }
+            /* test_ubsan_divzero links the gcc libubsan runtime and relies on
+             * SIGFPE (128+8) for the divide-by-zero trap; verified on native
+             * Linux only (Windows/macOS/BSD fault semantics + runtime paths
+             * differ, and qemu arm64_cross is not covered). */
+            if (!streq(platform, "linux") && streq(base, "test_ubsan_divzero")) {
+                print_result(base, COL_YELLOW, "SKIP");
+                add_row(base, "SKIP", "Skipped");
+                continue;
+            }
             /* GNU nested-function trampolines need an executable stack slot;
              * only proven reliable on Linux and qemu-emulated arm64_cross
              * (see torture_should_skip's SKIP_TRAMPOLINES). OpenBSD W^X,
@@ -3912,6 +3950,14 @@ static int run_unit_tests(void) {
              * executable stack slot, only proven reliable on Linux/arm64_cross. */
             if (!streq(platform, "linux") && !streq(platform, "arm64_cross") &&
                 streq(base, "test_nested_chain_localopt")) {
+                print_result(base, COL_YELLOW, "SKIP");
+                add_row(base, "SKIP", "Skipped");
+                free(nl[i]);
+                continue;
+            }
+            /* See the parallel path's matching skip: UBSan divzero relies on
+             * SIGFPE (128+8), verified on native Linux only. */
+            if (!streq(platform, "linux") && streq(base, "test_ubsan_divzero")) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
                 free(nl[i]);
@@ -4037,7 +4083,8 @@ static int run_unit_tests(void) {
                 continue;
             }
 
-            ProcResult rr = run_exe_with_cmdline(tmp, "", unit_run_timeout(), &run_cmdline);
+            ProcResult rr = run_unit_exe(tmp, test_unit_env(base),
+                                         unit_run_timeout(), &run_cmdline);
             int ae = rr.exit_code;
             run_out = rr.out;
             if (ae != expected_exit) {

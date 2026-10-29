@@ -356,6 +356,9 @@ void help(void) {
            "-mno-ms-bitfields   use GCC bitfield layout by default\n"
            "-pie|-fPIE|-fpie    generate position-independent executable\n"
            "-fPIC|-fpic         generate position-independent code\n"
+           "-fsanitize=<list>   enable sanitizers (comma list): address, undefined. "
+           "undefined instruments integer divide-by-zero; both link the gcc runtime "
+           "(-fsanitizer= is an alias)\n"
            "-time               print timing for each compilation substep\n"
            "-v                  be more verbose\n"
            "-xc                 treat next input as C\n"
@@ -430,6 +433,12 @@ bool opt_g = false;
 bool opt_pie = false;
 bool opt_pic = false;
 bool opt_shared = false;
+// -fsanitize=<list> / -fsanitizer=<list>: see rcc.h. opt_sanitize_list is
+// rebuilt (free/realloc) as flags are parsed so a later -fsanitize=none
+// clears an earlier request.
+bool opt_asan = false;
+bool opt_ubsan = false;
+char *opt_sanitize_list = NULL;
 bool opt_static = false;
 bool opt_export_dynamic = false;
 // -r: produce a relocatable/partial-linked object (multiple .o merged,
@@ -530,6 +539,42 @@ static char *wl_get_value(const char *arg, const char *tok) {
         p = comma + 1;
     }
     return NULL;
+}
+
+// Rebuild opt_sanitize_list from opt_asan/opt_ubsan (canonical
+// "address"/"undefined" order), or NULL when neither is active.
+static void sanitize_list_rebuild(void) {
+    free(opt_sanitize_list);
+    opt_sanitize_list = NULL;
+    if (opt_asan && opt_ubsan)
+        opt_sanitize_list = format("address,undefined");
+    else if (opt_asan)
+        opt_sanitize_list = format("address");
+    else if (opt_ubsan)
+        opt_sanitize_list = format("undefined");
+}
+
+// Parse a "-fsanitize=<list>" / "-fsanitizer=<list>" value: a comma
+// separated list of sanitizer names. rcc instruments "undefined" (integer
+// divide-by-zero, calling the gcc libubsan handler) and links the gcc
+// runtime for "address"; other names are accepted but not acted on (same
+// tolerance rcc gives -fno-asm etc.). A later -fsanitize=none clears any
+// earlier request because this resets both flags before scanning.
+static void parse_sanitize_list(const char *list) {
+    opt_asan = false;
+    opt_ubsan = false;
+    const char *p = list;
+    while (*p) {
+        const char *comma = strchr(p, ',');
+        size_t len = comma ? (size_t)(comma - p) : strlen(p);
+        if ((len == 7 && !strncmp(p, "address", 7)) || (len == 4 && !strncmp(p, "asan", 4)))
+            opt_asan = true;
+        else if ((len == 9 && !strncmp(p, "undefined", 9)) || (len == 5 && !strncmp(p, "ubsan", 5)))
+            opt_ubsan = true;
+        // "none" and unrecognized names: accepted, no effect.
+        p = comma ? comma + 1 : p + len;
+    }
+    sanitize_list_rebuild();
 }
 
 // An input with an unusual suffix (.o2, .opic, .opic2, ...) that starts with an
@@ -776,6 +821,12 @@ int main(int argc, char **argv) {
             opt_pie = true;
         } else if (!strcmp(argv[i], "-fPIC") || !strcmp(argv[i], "-fpic")) {
             opt_pic = true;
+        } else if (!strncmp(argv[i], "-fsanitizer=", 12)) {
+            // -fsanitizer=<list> (alias of the canonical -fsanitize=<list>);
+            // the 'r' at offset 10 keeps this distinct from "-fsanitize=".
+            parse_sanitize_list(argv[i] + 12);
+        } else if (!strncmp(argv[i], "-fsanitize=", 11)) {
+            parse_sanitize_list(argv[i] + 11);
         } else if (!strcmp(argv[i], "-time")) {
             opt_time = true;
         } else if (!strcmp(argv[i], "-v")) {
@@ -1690,6 +1741,14 @@ int main(int argc, char **argv) {
             xappendf(&libs, &libs_len, &libs_cap, " %s/libdfp.a", RCC_LIBDIR);
 #endif
         }
+        // Sanitizer runtime: the gcc sanitizer runtimes (libasan / libubsan)
+        // need the gcc driver's own link-time wiring (ASan's preinit object,
+        // the UBSan handler library, DT_NEEDED ordering, ...) that rcc's
+        // native linkers don't implement. Force the external gcc fallback
+        // below whenever any sanitizer is active so the runtime is actually
+        // pulled in (and re-pass -fsanitize so gcc adds the right libs).
+        if (opt_asan || opt_ubsan)
+            native_link_capable = false;
         if (native_link_capable) {
             int n_link_objs = 0;
             for (OutPath *p = out_paths; p; p = p->next) n_link_objs++;
@@ -1843,6 +1902,14 @@ int main(int argc, char **argv) {
         xappendf(&cmd, &cmd_len, &cmd_cap, " -Wno-unused-command-line-argument -Wl,-w");
 #endif
 #endif
+
+        // Sanitizer runtime (opt_asan/opt_ubsan set by -fsanitize/-fsanitizer):
+        // re-pass the recognized list to the gcc driver so it links the
+        // matching runtime (libasan / libubsan). No source is compiled here
+        // (the objects already exist), so gcc only does the link-time wiring
+        // -- it does not re-instrument the code rcc already generated.
+        if (opt_sanitize_list)
+            xappendf(&cmd, &cmd_len, &cmd_cap, " -fsanitize=%s", opt_sanitize_list);
 
         // Codegen already produced .o files; add them directly to linker command
         for (OutPath *p = out_paths; p; p = p->next)
