@@ -10177,15 +10177,16 @@ static int ubsan_ctr = 0;
 //     kind = 0 (TK_Integer); info = (log2(bit width) << 1) | is_signed
 //   OverflowData (writable -- the runtime's SourceLocation.acquire()
 //     atomically overwrites Column, so it must not be in .rodata):
-//     { const char *filename; u32 line; u32 col; const TypeDescriptor *type; }
-static char *cg_emit_ubsan_divrem_data(Type *ty, const char *filename, int line, int n) {
-    if (!opt_ubsan || cg_dry_run) return NULL;
+// Emit a libubsan TypeDescriptor for `ty` at `label` in .rodata, returning its
+// symbol index. The runtime layout is { u16 TypeKind; u16 TypeInfo; char
+// TypeName[1] } -- the type name is an EMBEDDED null-terminated string, not a
+// pointer (see ubsan_value.h). Used for both the LHS and RHS type of a check
+// (the shift handler dereferences both).
+static int cg_emit_ubsan_type_descriptor(Type *ty, const char *label) {
     int bits = ty->size * 8;
     int log2bits = 0;
     while ((1 << log2bits) < bits) log2bits++; // 16/32/64 -> 4/5/6
     uint16_t info = (uint16_t)((log2bits << 1) | (ty->is_unsigned ? 0 : 1));
-    // Diagnostic-suitable type name. Not printed by the divide-by-zero message
-    // (which reports no operand), kept only for a well-formed descriptor.
     const char *tname;
     if (ty->size == 8)
         tname = ty->is_unsigned ? "unsigned long" : "long";
@@ -10193,46 +10194,66 @@ static char *cg_emit_ubsan_divrem_data(Type *ty, const char *filename, int line,
         tname = ty->is_unsigned ? "unsigned short" : "short";
     else
         tname = ty->is_unsigned ? "unsigned int" : "int";
+    cg_set_section(SEC_RODATA);
+    secbuf_align(cg_sec, 8); // 8-byte align the descriptor (gcc does this)
+    cg_def_label_sec(label, SEC_RODATA);
+    int type_sym = objfile_find_sym(cg_obj, label);
+    secbuf_emit16le(cg_sec, 0); // TypeKind = TK_Integer
+    secbuf_emit16le(cg_sec, info); // TypeInfo
+    secbuf_emitbuf(cg_sec, tname, strlen(tname)); // TypeName (embedded string)
+    secbuf_emit8(cg_sec, 0); // NUL
+    return type_sym;
+}
+
+//     { const char *filename; u32 line; u32 col; const TypeDescriptor *type; }
+// Shifts need a second RHSType ptr (ShiftOutOfBoundsData), so `rhs_ty` extends
+// the descriptor to +24 when non-NULL; divrem/overflow leave it 24 bytes.
+static char *cg_emit_ubsan_divrem_data(Type *ty, Type *rhs_ty, const char *filename, int line, int n) {
+    if (!opt_ubsan || cg_dry_run) return NULL;
     const char *fn = filename ? filename : "";
     char *data_label = format(".L.ubsan_data.%d", n);
     char *type_label = format(".L.ubsan_type.%d", n);
     char *str_label = format(".L.ubsan_str.%d", n);
 
-    // TypeDescriptor in .rodata (never modified by the runtime).
+    // LHS TypeDescriptor in .rodata.
     cg_set_section(SEC_RODATA);
-    secbuf_align(cg_sec, 4);
-    cg_def_label_sec(type_label, SEC_RODATA);
-    int type_sym = objfile_find_sym(cg_obj, type_label);
-    secbuf_emit16le(cg_sec, 0); // kind = TK_Integer
-    secbuf_emit16le(cg_sec, info);
-    secbuf_emitbuf(cg_sec, tname, strlen(tname));
-    secbuf_emit8(cg_sec, 0);
+    int type_sym = cg_emit_ubsan_type_descriptor(ty, type_label);
+    // RHS TypeDescriptor (shift only: ShiftOutOfBoundsData has a second one).
+    int rt_type_sym = -1;
+    if (rhs_ty) {
+        char *rt_label = format(".L.ubsan_rhtype.%d", n);
+        rt_type_sym = cg_emit_ubsan_type_descriptor(rhs_ty, rt_label);
+    }
 
     // Filename string in .rodata.
-    size_t str_off = cg_sec->len;
+    cg_set_section(SEC_RODATA);
     cg_def_label_sec(str_label, SEC_RODATA);
     int str_sym = objfile_find_sym(cg_obj, str_label);
-    (void)str_off;
     secbuf_emitbuf(cg_sec, fn, strlen(fn));
     secbuf_emit8(cg_sec, 0);
 
-    // OverflowData in .data (writable: Column is atomically clobbered).
+    // Data descriptor in .data (writable: Column is atomically clobbered):
+    //   +0 Filename ptr, +8 Line, +12 Column, +16 LHSType ptr, +24 RHSType ptr.
     cg_set_section(SEC_DATA);
     secbuf_align(cg_sec, 8);
     size_t data_off = cg_sec->len;
     cg_def_label_sec(data_label, SEC_DATA);
-    size_t fn_off = data_off; // +0: Filename ptr (reloc)
-    size_t type_ptr_off = data_off + 16; // +16: Type ptr (reloc)
+    size_t fn_off = data_off; // +0: Filename ptr
+    size_t type_ptr_off = data_off + 16; // +16: LHSType ptr
+    size_t rt_type_ptr_off = data_off + 24; // +24: RHSType ptr (shift only)
     secbuf_emit64le(cg_sec, 0); // Filename
     secbuf_emit32le(cg_sec, (uint32_t)line); // Line
     secbuf_emit32le(cg_sec, 0); // Column (rcc tracks line only)
-    secbuf_emit64le(cg_sec, 0); // Type
+    secbuf_emit64le(cg_sec, 0); // LHSType
+    if (rhs_ty) secbuf_emit64le(cg_sec, 0); // RHSType
 #ifdef ARCH_ARM64
     objfile_add_reloc(cg_obj, SEC_DATA, fn_off, str_sym, R_AARCH64_ABS64, 0);
     objfile_add_reloc(cg_obj, SEC_DATA, type_ptr_off, type_sym, R_AARCH64_ABS64, 0);
+    if (rhs_ty) objfile_add_reloc(cg_obj, SEC_DATA, rt_type_ptr_off, rt_type_sym, R_AARCH64_ABS64, 0);
 #else
     objfile_add_reloc(cg_obj, SEC_DATA, fn_off, str_sym, R_X86_64_64, 0);
     objfile_add_reloc(cg_obj, SEC_DATA, type_ptr_off, type_sym, R_X86_64_64, 0);
+    if (rhs_ty) objfile_add_reloc(cg_obj, SEC_DATA, rt_type_ptr_off, rt_type_sym, R_X86_64_64, 0);
 #endif
     cg_set_section(SEC_TEXT);
     return data_label;
@@ -17353,7 +17374,7 @@ VReg gen(Node *node) {
         // still reaches here and is caught.
         if (opt_ubsan && !cg_dry_run) {
             int n = ubsan_ctr++;
-            char *data_label = cg_emit_ubsan_divrem_data(node->ty,
+            char *data_label = cg_emit_ubsan_divrem_data(node->ty, NULL,
                                                          node->tok ? node->tok->filename : NULL,
                                                          node->tok ? node->tok->lineno : 0, n);
             if (data_label) {
@@ -17469,6 +17490,54 @@ VReg gen(Node *node) {
                 asm_sar_imm(cg_sec, r_lhs, sz, (uint8_t)(imm)); // sar $(uint8_t)(imm), rr_lhs
         } else {
             VReg r_rhs = gen(node->rhs);
+            // -fsanitize=undefined: shift out-of-range (runtime shift count).
+            // Call the gcc libubsan handler when the count exceeds the type
+            // width (sh >= bits) -- gcc's __ubsan_handle_shift_out_of_bounds
+            // (rdi=&Data, rsi=value, rdx=count, sign-extended). Subset of
+            // gcc's full condition (which also handles neg-value arithmetic
+            // right shift); the common sh>=bits case is complete.
+            if (opt_ubsan && !cg_dry_run && sz <= 8 && !use_unsigned(node->ty)) {
+                int n = ubsan_ctr++;
+                char *data_label = cg_emit_ubsan_divrem_data(node->ty, node->rhs->ty,
+                                                             node->tok ? node->tok->filename : NULL,
+                                                             node->tok ? node->tok->lineno : 0, n);
+                if (data_label) {
+                    char *skip = format(".L.ubsan_sh.%d", n);
+                    int v_slot = current_fn_stack_size + fn_struct_ret_off + 8;
+                    int s_slot = v_slot + 8;
+                    fn_struct_ret_off += 16;
+                    if (fn_struct_ret_off > fn_struct_ret_total)
+                        fn_struct_ret_total = fn_struct_ret_off;
+                    x86_cmp_ri(cg_sec, sz, REG(r_rhs), sz * 8); // cmp count, bits
+                    emit_jcc_fixup(cg_sec, X86_B, skip); // count < bits (in-range) -> skip
+                    // stash value + count (the raw call clobbers regs)
+                    x86_mov_mr(cg_sec, sz, x86_mem(X86_RBP, -v_slot), REG(r_lhs));
+                    x86_mov_mr(cg_sec, sz, x86_mem(X86_RBP, -s_slot), REG(r_rhs));
+                    VReg d = alloc_reg_avoid2(r_rhs, -1);
+                    asm_lea_rip_reg(cg_sec, d, data_label); // d = &Data
+                    x86_mov_rr(cg_sec, 8, X86_RDI, REG(d)); // rdi = &Data
+                    free_reg(d);
+                    if (sz == 4) {
+                        VReg t = alloc_reg_avoid2(r_rhs, -1);
+                        asm_movsx(cg_sec, t, r_lhs, 8, 4); // t = (int64)value
+                        x86_mov_rr(cg_sec, 8, X86_RSI, REG(t)); // rsi = value
+                        free_reg(t);
+                    } else
+                        x86_mov_rr(cg_sec, 8, X86_RSI, REG(r_lhs)); // rsi = value
+                    if (sz == 4) {
+                        VReg u = alloc_reg_avoid2(r_rhs, -1);
+                        asm_movsx(cg_sec, u, r_rhs, 8, 4); // u = (int64)count
+                        x86_mov_rr(cg_sec, 8, X86_RDX, REG(u)); // rdx = count
+                        free_reg(u);
+                    } else
+                        x86_mov_rr(cg_sec, 8, X86_RDX, REG(r_rhs)); // rdx = count
+                    emit_direct_call("__ubsan_handle_shift_out_of_bounds", false);
+                    // reload value + count for the shift
+                    x86_mov_rm(cg_sec, sz, REG(r_lhs), x86_mem(X86_RBP, -v_slot));
+                    x86_mov_rm(cg_sec, sz, REG(r_rhs), x86_mem(X86_RBP, -s_slot));
+                    cg_def_label(skip);
+                }
+            }
             // Save the shift count into CL before restoring a spilled lhs.
             // If r_rhs landed on the same VReg as r_lhs (register pressure
             // spilled r_lhs during gen(rhs) and alloc_reg returned it), the
@@ -17755,6 +17824,80 @@ VReg gen(Node *node) {
             // int would be treated as a large positive offset.
             if (sz == 8 && op_size(node->rhs->ty) == 4 && !use_unsigned(node->rhs->ty))
                 asm_movsx(cg_sec, r_rhs, r_rhs, 8, 4);
+            // -fsanitize=undefined: signed integer overflow (add/sub/mul).
+            // Compute the op, test the CPU overflow flag, and on overflow call
+            // the gcc report stub (rdi=&Data, rsi=lhs, rdx=rhs, all sign-
+            // extended). The stub returns without altering the result, so the
+            // wrapped value is kept -- gcc's report-then-continue behavior.
+            // Only fully-signed ops are checked (unsigned wraps, no overflow).
+            if (opt_ubsan && !cg_dry_run && sz <= 8 &&
+                (node->kind == ND_ADD || node->kind == ND_SUB || node->kind == ND_MUL) &&
+                !use_unsigned(node->ty) && !use_unsigned(node->lhs->ty) &&
+                !use_unsigned(node->rhs->ty) &&
+                !(node->kind == ND_SUB && node->lhs->ty->base && node->rhs->ty->base)) {
+                int n = ubsan_ctr++;
+                char *data_label = cg_emit_ubsan_divrem_data(node->ty, NULL,
+                                                             node->tok ? node->tok->filename : NULL,
+                                                             node->tok ? node->tok->lineno : 0, n);
+                if (data_label) {
+                    const char *handler = node->kind == ND_ADD ? "__ubsan_handle_add_overflow"
+                        : node->kind == ND_SUB                 ? "__ubsan_handle_sub_overflow"
+                                                               : "__ubsan_handle_mul_overflow";
+                    char *skip = format(".L.ubsan_of.%d", n);
+                    bool lhs_spilled = (r_lhs == r_rhs) && (spilled_regs & (1 << r_lhs));
+                    VReg r_a; // holds lhs (a) before the op; the result after
+                    VReg r_b; // holds rhs (b)
+                    if (lhs_spilled) {
+                        // lhs in the spill slot, rhs in r_lhs. Load lhs to a temp.
+                        r_a = alloc_reg_avoid2(r_lhs, -1);
+                        x86_mov_rm(cg_sec, sz, REG(r_a), x86_mem(X86_RBP, -spill_offset(r_lhs))); // mov -off(%rbp), r_a
+                        spilled_regs &= ~(1 << r_lhs);
+                        pop_spill_slot(r_lhs); // consumed by this op; pop the slot
+                        r_b = r_lhs; // r_lhs holds the rhs
+                    } else {
+                        r_a = r_lhs; // r_lhs holds the lhs
+                        r_b = r_rhs; // r_rhs holds the rhs
+                    }
+                    VReg r_save = alloc_reg_avoid2(r_a, r_b); // copy of a for the handler
+                    asm_mov_reg_reg(cg_sec, r_save, r_a, sz); // r_save = a
+                    if (node->kind == ND_ADD)
+                        asm_add_reg_reg(cg_sec, r_a, r_b, sz);
+                    else if (node->kind == ND_SUB)
+                        asm_sub_reg_reg(cg_sec, r_a, r_b, sz);
+                    else
+                        asm_mul_reg_reg(cg_sec, r_a, r_b, sz);
+                    emit_jcc_fixup(cg_sec, X86_NO, skip); // no overflow -> skip
+                    // The handler is a raw call (emit_direct_call doesn't tell
+                    // the allocator), so it clobbers caller-saved regs. Stash
+                    // the result (r_a) in a temp stack slot, restore after.
+                    int a_slot = current_fn_stack_size + fn_struct_ret_off + 8;
+                    fn_struct_ret_off += 8;
+                    if (fn_struct_ret_off > fn_struct_ret_total) fn_struct_ret_total = fn_struct_ret_off;
+                    x86_mov_mr(cg_sec, sz, x86_mem(X86_RBP, -a_slot), REG(r_a)); // mov r_a, -slot(%rbp)
+                    asm_push(cg_sec, X86_R10); // preserve live VRegs (see emit_dec_call)
+                    asm_push(cg_sec, X86_R11);
+                    VReg d = alloc_reg_avoid2(r_a, r_b);
+                    asm_lea_rip_reg(cg_sec, d, data_label); // d = &Data
+                    x86_mov_rr(cg_sec, 8, X86_RDI, REG(d)); // rdi = &Data
+                    free_reg(d);
+                    if (sz == 4) asm_movsx(cg_sec, r_save, r_save, 8, 4); // sign-extend a
+                    x86_mov_rr(cg_sec, 8, X86_RSI, REG(r_save)); // rsi = a
+                    if (sz == 4) asm_movsx(cg_sec, r_b, r_b, 8, 4); // sign-extend b
+                    x86_mov_rr(cg_sec, 8, X86_RDX, REG(r_b)); // rdx = b
+                    emit_direct_call(handler, false); // report stub
+                    asm_pop(cg_sec, X86_R11);
+                    asm_pop(cg_sec, X86_R10);
+                    x86_mov_rm(cg_sec, sz, REG(r_a), x86_mem(X86_RBP, -a_slot)); // mov -slot(%rbp), r_a
+                    cg_def_label(skip);
+                    free_reg(r_save);
+                    if (lhs_spilled) {
+                        r_lhs = r_a; // result in the new temp
+                        free_reg(r_b); // free the original reg that held the rhs
+                    } else if (r_rhs != r_lhs)
+                        free_reg(r_rhs); // r_lhs holds the result
+                    return r_lhs;
+                }
+            }
             if (!strcmp(inst, "add")) {
                 if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
                     asm_add_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));

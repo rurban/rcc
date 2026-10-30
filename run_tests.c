@@ -1760,6 +1760,8 @@ static int test_expected_exit(const char *base) {
 }
 static int test_unit_expected_exit(const char *base) {
     if (streq(base, "test_ubsan_divzero")) return 1; // UBSan halt_on_error
+    if (streq(base, "test_ubsan_intoverflow")) return 1; // UBSan halt_on_error
+    if (streq(base, "test_ubsan_shift")) return 1; // UBSan halt_on_error
     if (streq(base, "test_include")) return 42;
     if (streq(base, "test_include2")) return 10;
     if (streq(base, "test_self_include2")) return 1;
@@ -1773,13 +1775,16 @@ static int test_unit_expected_exit(const char *base) {
 // with a deterministic exit (1) instead of trapping: the UBSan FPE signal
 // handler would otherwise intercept the SIGFPE with a build-dependent exit.
 static const char *test_unit_env(const char *base) {
-    if (streq(base, "test_ubsan_divzero"))
+    if (streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
+        streq(base, "test_ubsan_shift"))
         return "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=0";
     return NULL;
 }
 static const char *extra_ldflags(const char *base, const char *srcfile) {
     // -fsanitize=undefined unit test: compile+link with the gcc UBSan runtime.
-    if (streq(base, "test_ubsan_divzero")) return " -fsanitize=undefined";
+    if (streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
+        streq(base, "test_ubsan_shift"))
+        return " -fsanitize=undefined";
     bool lm = streq(base, "22_floating_point") || streq(base, "24_math_library");
     bool pt = false;
     if (srcfile) {
@@ -3850,8 +3855,11 @@ static int run_unit_tests(void) {
             /* test_ubsan_divzero links the gcc libubsan runtime and relies on
              * SIGFPE (128+8) for the divide-by-zero trap; verified on native
              * Linux only (Windows/macOS/BSD fault semantics + runtime paths
-             * differ, and qemu arm64_cross is not covered). */
-            if (!streq(platform, "linux") && streq(base, "test_ubsan_divzero")) {
+             * differ, and qemu arm64_cross is not covered).
+             * test_ubsan_intoverflow uses the same libubsan link + halt. */
+            if (!streq(platform, "linux") &&
+                (streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
+                 streq(base, "test_ubsan_shift"))) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
                 continue;
@@ -3955,9 +3963,11 @@ static int run_unit_tests(void) {
                 free(nl[i]);
                 continue;
             }
-            /* See the parallel path's matching skip: UBSan divzero relies on
-             * SIGFPE (128+8), verified on native Linux only. */
-            if (!streq(platform, "linux") && streq(base, "test_ubsan_divzero")) {
+            /* See the parallel path's matching skip: UBSan divzero/intoverflow
+             * rely on the libubsan runtime, verified on native Linux only. */
+            if (!streq(platform, "linux") &&
+                (streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
+                 streq(base, "test_ubsan_shift"))) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
                 free(nl[i]);

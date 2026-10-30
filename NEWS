@@ -14,11 +14,13 @@ complete list of changes see the git log.
   - Implemented native macho linker for executables with external symbols.
   - New -fsanitize=<list> / -fsanitizer=<list>: links the gcc sanitizer
     runtime (libasan/libubsan) via the gcc fallback linker. `undefined`
-    instruments integer divide-by-zero (emits gcc's OverflowData/
-    TypeDescriptor and calls __ubsan_handle_divrem_overflow, then traps
-    exactly like gcc); `address` links+initializes the ASan runtime and,
-    on x86-64, registers globals with libasan (poisoning their redzones)
-    and instruments loads/stores with a per-access shadow check that
+    instruments integer divide-by-zero, signed integer overflow
+    (add/sub/mul), and shift out-of-range (each emits gcc's
+    OverflowData/ShiftOutOfBoundsData + TypeDescriptor and calls the
+    matching __ubsan_handle_* handler, then traps exactly like gcc);
+    `address` links+initializes the ASan runtime and, on x86-64,
+    registers globals with libasan (poisoning their redzones) and
+    instruments loads/stores with a per-access shadow check that
     aborts on an out-of-bounds global read or write, like gcc.
 
 * Changes in v1.2.2 (2026-09-19) (Reini Urban)

@@ -200,6 +200,32 @@ static void apply_cflags(const char *cflags) {
     free(copy);
 }
 
+// Scan extra_link_flags for a -fsanitize=<list> token and set opt_ubsan /
+// opt_asan so the in-process codegen instruments the same checks as the
+// external-rcc path (which parses the flag in main.c's parse_sanitize_list).
+static void apply_sanitize_from_ldflags(const char *ldflags) {
+    if (!ldflags) return;
+    char *copy = strdup(ldflags);
+    char *sv = NULL;
+    for (char *tok = strtok_r(copy, " \t", &sv); tok; tok = strtok_r(NULL, " \t", &sv)) {
+        if (!strncmp(tok, "-fsanitize=", 11) || !strncmp(tok, "-fsanitizer=", 12)) {
+            const char *list = strchr(tok, '=') + 1;
+            char *lsv = NULL;
+            for (char *lt = strtok_r((char *)list, ",", &lsv); lt;
+                 lt = strtok_r(NULL, ",", &lsv)) {
+                size_t len = strlen(lt);
+                if ((len == 9 && !strncmp(lt, "undefined", 9)) ||
+                    (len == 5 && !strncmp(lt, "ubsan", 5)))
+                    opt_ubsan = true;
+                else if ((len == 7 && !strncmp(lt, "address", 7)) ||
+                         (len == 4 && !strncmp(lt, "asan", 4)))
+                    opt_asan = true;
+            }
+        }
+    }
+    free(copy);
+}
+
 int rcc_lib_compile_file_ex(RCCLib *lib, const char *path,
                             const char *include_dir,
                             const char *extra_link_flags) {
@@ -214,6 +240,10 @@ int rcc_lib_compile_file_ex2(RCCLib *lib, const char *path,
     if (include_dir && include_dir[0])
         add_include_path(include_dir);
     apply_cflags(cflags);
+    // Honor -fsanitize=<list> in extra_link_flags so the in-process path
+    // instruments (opt_ubsan/opt_asan) exactly like the external-rcc path.
+    if (extra_link_flags)
+        apply_sanitize_from_ldflags(extra_link_flags);
 
     char *base = path_basename_noext(path);
     lib->asm_path = build_tmp_path(base, ".s");
