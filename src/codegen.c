@@ -1087,7 +1087,7 @@ static void emit_dec128_ret(VReg dst) {
 #endif
 }
 
-static void emit_direct_call(char *name, bool is_asm_label);
+static void emit_direct_call(const char *name, bool is_asm_label);
 static void emit_direct_jmp(char *name, bool is_asm_label);
 
 
@@ -1703,7 +1703,7 @@ static const char *asm_sym_name(const char *name);
 // the resolved same-TU Function* (NULL when name has no local definition,
 // e.g. an external libc call) -- callers that also need it (emit_direct_call)
 // get it from this single func_htab walk instead of a second one.
-static const char *func_label2(char *name, Function **out_fn) {
+static const char *func_label2(const char *name, Function **out_fn) {
     uint32_t h = func_hash_name(name) % FUNC_HASH_SIZE;
     for (TLItem *item = func_htab[h]; item; item = item->hash_next)
         if (item->fn->name == name) {
@@ -1729,7 +1729,7 @@ static const char *asm_sym_name(const char *name) {
     return name;
 }
 
-static void emit_direct_call(char *name, bool is_asm_label) {
+static void emit_direct_call(const char *name, bool is_asm_label) {
     if (cg_dry_run) return;
     if (is_asm_reserved(name))
         name = format(".L_rcc_%s", name);
