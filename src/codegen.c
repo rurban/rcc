@@ -10527,6 +10527,41 @@ static void cg_ubsan_unreachable(Node *node) {
 #endif
 }
 
+// -fsanitize=undefined: pointer arithmetic overflowed (base + offset wrapped
+// the 64-bit address space). gcc emits a PointerOverflowData {SourceLocation}
+// (16 bytes) and calls __ubsan_handle_pointer_overflow(data, result_ptr) when
+// the base is so high that the offset pushes it past the top. The check rides
+// on the add's carry flag (addq/adcq set CF), so the call fires exactly when
+// the unsigned sum wraps. x86-64 only.
+static char *cg_emit_ubsan_ptr_overflow_data(const char *filename, int line, int n) {
+    if (!opt_ubsan || cg_dry_run) return NULL;
+    const char *fn = filename ? filename : "";
+    char *data_label = format(".L.ubsan_po_data.%d", n);
+    char *str_label = format(".L.ubsan_po_str.%d", n);
+    cg_set_section(SEC_RODATA);
+    cg_def_label_sec(str_label, SEC_RODATA);
+    int str_sym = objfile_find_sym(cg_obj, str_label);
+    secbuf_emitbuf(cg_sec, fn, strlen(fn));
+    secbuf_emit8(cg_sec, 0);
+    // +0 Filename, +8 Line, +12 Column (16 total).
+    cg_set_section(SEC_DATA);
+    secbuf_align(cg_sec, 8);
+    size_t data_off = cg_sec->len;
+    cg_def_label_sec(data_label, SEC_DATA);
+    secbuf_emit64le(cg_sec, 0); // Filename
+    secbuf_emit32le(cg_sec, (uint32_t)line); // Line
+    secbuf_emit32le(cg_sec, 0); // Column
+    objfile_add_reloc(cg_obj, SEC_DATA, data_off, str_sym,
+#ifdef ARCH_ARM64
+                      R_AARCH64_ABS64,
+#else
+                      R_X86_64_64,
+#endif
+                      0);
+    cg_set_section(SEC_TEXT);
+    return data_label;
+}
+
 // ---------------------------------------------------------------------------
 // -fsanitize=address: global registration + per-access shadow check
 // ---------------------------------------------------------------------------
@@ -18099,19 +18134,26 @@ VReg gen(Node *node) {
             // extended). The stub returns without altering the result, so the
             // wrapped value is kept -- gcc's report-then-continue behavior.
             // Only fully-signed ops are checked (unsigned wraps, no overflow).
+            // A pointer add (lhs TY_PTR) is checked for pointer overflow via
+            // the carry flag instead of the signed-overflow flag.
             if (opt_ubsan && !cg_dry_run && sz <= 8 &&
                 (node->kind == ND_ADD || node->kind == ND_SUB || node->kind == ND_MUL) &&
                 !use_unsigned(node->ty) && !use_unsigned(node->lhs->ty) &&
                 !use_unsigned(node->rhs->ty) &&
                 !(node->kind == ND_SUB && node->lhs->ty->base && node->rhs->ty->base)) {
+                bool is_ptr = (node->kind == ND_ADD && node->lhs->ty->kind == TY_PTR);
                 int n = ubsan_ctr++;
-                char *data_label = cg_emit_ubsan_divrem_data(node->ty, NULL,
-                                                             node->tok ? node->tok->filename : NULL,
-                                                             node->tok ? node->tok->lineno : 0, n);
+                char *data_label = is_ptr
+                    ? cg_emit_ubsan_ptr_overflow_data(node->tok ? node->tok->filename : NULL,
+                                                      node->tok ? node->tok->lineno : 0, n)
+                    : cg_emit_ubsan_divrem_data(node->ty, NULL,
+                                                node->tok ? node->tok->filename : NULL,
+                                                node->tok ? node->tok->lineno : 0, n);
                 if (data_label) {
-                    const char *handler = node->kind == ND_ADD ? "__ubsan_handle_add_overflow"
-                        : node->kind == ND_SUB                 ? "__ubsan_handle_sub_overflow"
-                                                               : "__ubsan_handle_mul_overflow";
+                    const char *handler = is_ptr ? "__ubsan_handle_pointer_overflow"
+                        : node->kind == ND_ADD   ? "__ubsan_handle_add_overflow"
+                        : node->kind == ND_SUB   ? "__ubsan_handle_sub_overflow"
+                                                 : "__ubsan_handle_mul_overflow";
                     char *skip = format(".L.ubsan_of.%d", n);
                     bool lhs_spilled = (r_lhs == r_rhs) && (spilled_regs & (1 << r_lhs));
                     VReg r_a; // holds lhs (a) before the op; the result after
@@ -18135,14 +18177,23 @@ VReg gen(Node *node) {
                         asm_sub_reg_reg(cg_sec, r_a, r_b, sz);
                     else
                         asm_mul_reg_reg(cg_sec, r_a, r_b, sz);
-                    emit_jcc_fixup(cg_sec, X86_NO, skip); // no overflow -> skip
+                    // Pointer add: overflow means the unsigned sum wrapped
+                    // (carry set) -> pointer overflow; rsi = the base pointer.
+                    // Signed: overflow means the signed sum wrapped (OF set)
+                    // -> signed overflow; rsi = a, rdx = b.
+                    if (is_ptr)
+                        emit_jcc_fixup(cg_sec, X86_NC, skip); // no carry -> skip
+                    else
+                        emit_jcc_fixup(cg_sec, X86_NO, skip); // no overflow -> skip
                     // The handler is a raw call (emit_direct_call doesn't tell
                     // the allocator), so it clobbers caller-saved regs. Stash
-                    // the result (r_a) in a temp stack slot, restore after.
+                    // the value (result for signed, base for pointer) in a temp
+                    // stack slot, restore after.
                     int a_slot = current_fn_stack_size + fn_struct_ret_off + 8;
                     fn_struct_ret_off += 8;
                     if (fn_struct_ret_off > fn_struct_ret_total) fn_struct_ret_total = fn_struct_ret_off;
-                    x86_mov_mr(cg_sec, sz, x86_mem(X86_RBP, -a_slot), REG(r_a)); // mov r_a, -slot(%rbp)
+                    x86_mov_mr(cg_sec, sz, x86_mem(X86_RBP, -a_slot),
+                               REG(is_ptr ? r_save : r_a)); // stash base/result
                     asm_push(cg_sec, X86_R10); // preserve live VRegs (see emit_dec_call)
                     asm_push(cg_sec, X86_R11);
                     VReg d = alloc_reg_avoid2(r_a, r_b);
@@ -18150,13 +18201,16 @@ VReg gen(Node *node) {
                     x86_mov_rr(cg_sec, 8, X86_RDI, REG(d)); // rdi = &Data
                     free_reg(d);
                     if (sz == 4) asm_movsx(cg_sec, r_save, r_save, 8, 4); // sign-extend a
-                    x86_mov_rr(cg_sec, 8, X86_RSI, REG(r_save)); // rsi = a
-                    if (sz == 4) asm_movsx(cg_sec, r_b, r_b, 8, 4); // sign-extend b
-                    x86_mov_rr(cg_sec, 8, X86_RDX, REG(r_b)); // rdx = b
+                    x86_mov_rr(cg_sec, 8, X86_RSI, REG(r_save)); // rsi = a (base for ptr)
+                    if (!is_ptr) {
+                        if (sz == 4) asm_movsx(cg_sec, r_b, r_b, 8, 4); // sign-extend b
+                        x86_mov_rr(cg_sec, 8, X86_RDX, REG(r_b)); // rdx = b
+                    }
                     emit_direct_call(handler, false); // report stub
                     asm_pop(cg_sec, X86_R11);
                     asm_pop(cg_sec, X86_R10);
-                    x86_mov_rm(cg_sec, sz, REG(r_a), x86_mem(X86_RBP, -a_slot)); // mov -slot(%rbp), r_a
+                    x86_mov_rm(cg_sec, sz, REG(is_ptr ? r_save : r_a),
+                               x86_mem(X86_RBP, -a_slot)); // restore base/result
                     cg_def_label(skip);
                     free_reg(r_save);
                     if (lhs_spilled) {

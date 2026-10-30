@@ -14,8 +14,9 @@ complete list of changes see the git log.
   - Implemented native macho linker for executables with external symbols.
   - New -fsanitize=<list>: address, undefined. `undefined` instruments
     divide-by-zero, signed overflow, shift out-of-range, null deref, null
-    C-string argument, and reached __builtin_unreachable; `address` checks
-    global out-of-bounds on x86-64. Both link the gcc sanitizer runtime.
+    C-string argument, pointer-overflow, and reached __builtin_unreachable;
+    `address` checks global out-of-bounds on x86-64. Both link the gcc
+    sanitizer runtime.
 
 * Changes in v1.2.2 (2026-09-19) (Reini Urban)
 
