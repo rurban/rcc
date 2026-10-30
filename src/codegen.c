@@ -10958,7 +10958,11 @@ static void cg_asan_check_mem(VReg addr, int sz, bool is_write) {
     x86_mov_rr(cg_sec, 8, REG(t1), REG(addr));
     x86_shr_ri(cg_sec, 8, REG(t1), 3);
     x86_add_ri(cg_sec, 8, REG(t1), 0x7fff8000);
-    x86_movzx_rm(cg_sec, 4, 1, REG(t2), x86_mem(REG(t1), 0)); // t2 = shadow byte
+    // Sign-extend the shadow byte: libasan poison magics (0xf1..0xfd) are
+    // negative as s8, and its check is (s8)last >= (s8)s. Zero-extending
+    // made them +0xf1..+0xfd, so last(0..7) >= them was always false and
+    // no poisoning was ever detected.
+    x86_movsx_rm(cg_sec, 4, 1, REG(t2), x86_mem(REG(t1), 0)); // t2 = shadow (sign-extended)
     // t1 = (addr & 7) + (sz - 1): last granule offset the access touches
     x86_mov_rr(cg_sec, 4, REG(t1), REG(addr));
     x86_and_ri(cg_sec, 4, REG(t1), 7);
