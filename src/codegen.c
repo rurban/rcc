@@ -961,6 +961,8 @@ static int free_reg_count(void);
 VReg gen(Node *node);
 VReg gen_addr(Node *node);
 static void cg_ubsan_null_check(Node *node, VReg r); // defined below (null-deref check)
+static void cg_ubsan_align_check(Node *node, VReg r); // defined below (misalign-deref check)
+static void cg_ubsan_bounds_check(Node *node, Node *base_node, VReg idx, VReg base); // local array OOB
 static bool is_asm_reserved(const char *name);
 static void sign_extend_to(VReg r, int from_size, int to_size);
 static void zero_extend_to(VReg r, int from_size, int to_size);
@@ -10287,7 +10289,8 @@ static char *cg_emit_ubsan_divrem_data(Type *ty, Type *rhs_ty, const char *filen
 // name is the QUOTED type ('int'). The runtime check is ptr > 0 (skip on
 // non-null), else __ubsan_handle_type_mismatch_v1(data, 0) which aborts. The
 // check must run BEFORE the load/store it guards. x86-64 only (aarch64 to do).
-static char *cg_emit_ubsan_tmm_data(Type *ty, const char *filename, int line, int n) {
+static char *cg_emit_ubsan_tmm_data(Type *ty, const char *filename, int line, int n,
+                                    int check_kind) {
     if (!opt_ubsan || cg_dry_run) return NULL;
     const char *fn = filename ? filename : "";
     char *data_label = format(".L.ubsan_tmm_data.%d", n);
@@ -10324,8 +10327,8 @@ static char *cg_emit_ubsan_tmm_data(Type *ty, const char *filename, int line, in
     secbuf_emit32le(cg_sec, (uint32_t)line); // Line
     secbuf_emit32le(cg_sec, 0); // Column
     secbuf_emit64le(cg_sec, 0); // Type
-    secbuf_emit8(cg_sec, 0); // LogAlignment (0 for null checks)
-    secbuf_emit8(cg_sec, 0); // TypeCheckKind = NullCheck
+    secbuf_emit8(cg_sec, 0); // LogAlignment (0)
+    secbuf_emit8(cg_sec, (uint8_t)check_kind); // TypeCheckKind (0=Null, 2=Alignment)
     secbuf_emit32le(cg_sec, 0); // pad (8 -> 32)
     secbuf_emit32le(cg_sec, 0); // pad
 #ifdef ARCH_ARM64
@@ -10347,7 +10350,7 @@ static void cg_ubsan_null_check(Node *node, VReg r) {
     int n = ubsan_ctr++;
     char *data_label = cg_emit_ubsan_tmm_data(node->ty,
                                               node->tok ? node->tok->filename : NULL,
-                                              node->tok ? node->tok->lineno : 0, n);
+                                              node->tok ? node->tok->lineno : 0, n, 0);
     if (!data_label) return;
     char *skip = format(".L.ubsan_null.%d", n);
     x86_cmp_ri(cg_sec, 8, REG(r), 0); // cmpq $0, ptr
@@ -10365,8 +10368,148 @@ static void cg_ubsan_null_check(Node *node, VReg r) {
 #endif
 }
 
-// ---------------------------------------------------------------------------
-// -fsanitize=undefined: non-null C-string (nonnull_arg)
+// -fsanitize=undefined: misaligned pointer dereference. For an integer type of
+// size N>1 (a power of 2), a load/store at an address with (addr & (N-1)) != 0
+// is misaligned. gcc: testq $(N-1), ptr; jz skip; call
+// __ubsan_handle_type_mismatch_v1(data, ptr) with TypeCheckKind=2 (Alignment),
+// which aborts. The check runs before the load/store; `r` is preserved.
+// x86-64 only.
+static void cg_ubsan_align_check(Node *node, VReg r) {
+#ifndef ARCH_ARM64
+    if (!opt_ubsan || cg_dry_run) return;
+    int sz = node->ty->size;
+    if (sz < 2 || (sz & (sz - 1)) != 0) return; // only check N>1 power-of-2
+    int n = ubsan_ctr++;
+    char *data_label = cg_emit_ubsan_tmm_data(node->ty,
+                                              node->tok ? node->tok->filename : NULL,
+                                              node->tok ? node->tok->lineno : 0, n, 2);
+    if (!data_label) return;
+    char *skip = format(".L.ubsan_align.%d", n);
+    x86_test_ri(cg_sec, 8, REG(r), sz - 1); // testq $(sz-1), ptr
+    emit_jcc_fixup(cg_sec, X86_Z, skip); // aligned -> skip
+    VReg d = alloc_reg_avoid2(r, -1);
+    asm_lea_rip_reg(cg_sec, d, data_label);
+    x86_mov_rr(cg_sec, 8, X86_RDI, REG(d)); // arg1 = data
+    free_reg(d);
+    x86_mov_rr(cg_sec, 8, X86_RSI, REG(r)); // arg2 = the misaligned ptr
+    emit_direct_call("__ubsan_handle_type_mismatch_v1", false); // aborts
+    cg_def_label(skip);
+#else
+    (void)node;
+    (void)r;
+#endif
+}
+
+// -fsanitize=undefined: local array out-of-bounds. gcc emits an OOBData
+// {SourceLocation; TypeDescriptor *array_ty; TypeDescriptor *elem_ty} (32
+// bytes) and calls __ubsan_handle_out_of_bounds(data, index) when the index is
+// < 0 or >= array_len. The two descriptors are TK_Unknown with the quoted
+// array type name ('int [10]') and element name ('int'). x86-64 only.
+static char *cg_emit_ubsan_oob_data(const char *array_name, const char *elem_name,
+                                    const char *filename, int line, int n) {
+    if (!opt_ubsan || cg_dry_run) return NULL;
+    const char *fn = filename ? filename : "";
+    char *data_label = format(".L.ubsan_oob_data.%d", n);
+    char *atype_label = format(".L.ubsan_oob_atype.%d", n);
+    char *etype_label = format(".L.ubsan_oob_etype.%d", n);
+    char *str_label = format(".L.ubsan_oob_str.%d", n);
+    // TypeDescriptor (TK_Unknown) in .rodata: Kind, Info, embedded name, NUL.
+    cg_set_section(SEC_RODATA);
+    secbuf_align(cg_sec, 8);
+    cg_def_label_sec(atype_label, SEC_RODATA);
+    int atype_sym = objfile_find_sym(cg_obj, atype_label);
+    secbuf_emit16le(cg_sec, 0xffff); // TypeKind = TK_Unknown
+    secbuf_emit16le(cg_sec, 0); // TypeInfo
+    secbuf_emitbuf(cg_sec, array_name, strlen(array_name));
+    secbuf_emit8(cg_sec, 0);
+    secbuf_align(cg_sec, 8);
+    cg_def_label_sec(etype_label, SEC_RODATA);
+    int etype_sym = objfile_find_sym(cg_obj, etype_label);
+    secbuf_emit16le(cg_sec, 0xffff);
+    secbuf_emit16le(cg_sec, 0);
+    secbuf_emitbuf(cg_sec, elem_name, strlen(elem_name));
+    secbuf_emit8(cg_sec, 0);
+    cg_set_section(SEC_RODATA);
+    cg_def_label_sec(str_label, SEC_RODATA);
+    int str_sym = objfile_find_sym(cg_obj, str_label);
+    secbuf_emitbuf(cg_sec, fn, strlen(fn));
+    secbuf_emit8(cg_sec, 0);
+    // OOBData in .data: +0 Filename, +8 Line, +12 Col, +16 ArrayType, +24 ElemType.
+    cg_set_section(SEC_DATA);
+    secbuf_align(cg_sec, 8);
+    size_t data_off = cg_sec->len;
+    cg_def_label_sec(data_label, SEC_DATA);
+    secbuf_emit64le(cg_sec, 0); // Filename
+    secbuf_emit32le(cg_sec, (uint32_t)line); // Line
+    secbuf_emit32le(cg_sec, 0); // Column
+    secbuf_emit64le(cg_sec, 0); // ArrayType
+    secbuf_emit64le(cg_sec, 0); // ElemType
+    objfile_add_reloc(cg_obj, SEC_DATA, data_off, str_sym,
+#ifdef ARCH_ARM64
+                      R_AARCH64_ABS64,
+#else
+                      R_X86_64_64,
+#endif
+                      0);
+    objfile_add_reloc(cg_obj, SEC_DATA, data_off + 16, atype_sym,
+#ifdef ARCH_ARM64
+                      R_AARCH64_ABS64,
+#else
+                      R_X86_64_64,
+#endif
+                      0);
+    objfile_add_reloc(cg_obj, SEC_DATA, data_off + 24, etype_sym,
+#ifdef ARCH_ARM64
+                      R_AARCH64_ABS64,
+#else
+                      R_X86_64_64,
+#endif
+                      0);
+    cg_set_section(SEC_TEXT);
+    return data_label;
+}
+
+// Bounds check for a local-array element load `a[i]` (base = the array, idx =
+// the index VReg). Fires when idx < 0 or idx >= len. Skipped when idx and base
+// share a VReg (the self-add spill case). `idx` is preserved. x86-64 only.
+static void cg_ubsan_bounds_check(Node *node, Node *base_node, VReg idx, VReg base) {
+#ifndef ARCH_ARM64
+    if (!opt_ubsan || cg_dry_run) return;
+    Type *array_ty = base_node->ty;
+    if (!array_ty || array_ty->kind != TY_ARRAY) return;
+    Type *elem = array_ty->base ? array_ty->base : node->ty;
+    int64_t len = elem->size > 0 ? array_ty->size / elem->size : 0;
+    if (len <= 0 || idx == base) return; // only constant non-empty; skip self-add
+    const char *ename = elem->size == 8 ? "long int" : elem->size == 2 ? "short int"
+                                                                       : "int";
+    char array_name[64], elem_name[32];
+    snprintf(array_name, sizeof array_name, "'%s [%lld]'", ename, (long long)len);
+    snprintf(elem_name, sizeof elem_name, "'%s'", ename);
+    int n = ubsan_ctr++;
+    char *data_label = cg_emit_ubsan_oob_data(array_name, elem_name,
+                                              node->tok ? node->tok->filename : NULL,
+                                              node->tok ? node->tok->lineno : 0, n);
+    if (!data_label) return;
+    char *skip = format(".L.ubsan_oob.%d", n);
+    // The index register holds the SCALED offset (i*esz), so compare it
+    // against the scaled bound (len*esz). flags = idx - bound.
+    x86_mov_ri(cg_sec, 8, X86_RDX, (int64_t)len * elem->size); // rdx = len*esz (scaled bound)
+    x86_cmp_rr(cg_sec, 8, REG(idx), X86_RDX); // cmpq rdx, idx -> flags = idx - bound
+    emit_jcc_fixup(cg_sec, X86_L, skip); // idx < bound -> in-bounds -> skip
+    VReg d = alloc_reg_avoid2(idx, -1);
+    asm_lea_rip_reg(cg_sec, d, data_label); // d = &Data
+    x86_mov_rr(cg_sec, 8, X86_RDI, REG(d)); // rdi = &Data
+    free_reg(d);
+    x86_mov_rr(cg_sec, 8, X86_RSI, REG(idx)); // rsi = index
+    emit_direct_call("__ubsan_handle_out_of_bounds", false); // aborts
+    cg_def_label(skip);
+#else
+    (void)node;
+    (void)base_node;
+    (void)idx;
+    (void)base;
+#endif
+}
 // ---------------------------------------------------------------------------
 // gcc checks the first arg of libc string functions (strlen/strcpy/...) for
 // null before the call: cmpq $0,arg; jne skip; call
@@ -12932,6 +13075,7 @@ VReg gen(Node *node) {
             node->lhs->lhs->kind == ND_LVAR) {
             VReg idx = gen(node->lhs->rhs);
             VReg base = gen(node->lhs->lhs);
+            cg_ubsan_bounds_check(node, node->lhs->lhs, idx, base); // OOB before the add
             // When register pressure causes idx and base to share the
             // same VReg, idx's original value is in its spill slot while
             // the register now holds base.  Reload idx before the add,
@@ -12986,6 +13130,7 @@ VReg gen(Node *node) {
         }
         VReg r = gen(node->lhs);
         cg_ubsan_null_check(node, r); // null check before the load (preserves r)
+        cg_ubsan_align_check(node, r); // misalign check before the load (preserves r)
         if (is_flonum(node->ty)) {
 #ifdef ARCH_ARM64
             if (node->ty->size == 4) {
