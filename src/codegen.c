@@ -960,6 +960,7 @@ static int free_reg_count(void);
 #endif
 VReg gen(Node *node);
 VReg gen_addr(Node *node);
+static void cg_ubsan_null_check(Node *node, VReg r); // defined below (null-deref check)
 static bool is_asm_reserved(const char *name);
 static void sign_extend_to(VReg r, int from_size, int to_size);
 static void zero_extend_to(VReg r, int from_size, int to_size);
@@ -6722,8 +6723,16 @@ VReg gen_addr(Node *node) {
 #endif
         return r;
     }
-    case ND_DEREF:
-        return gen(node->lhs);
+    case ND_DEREF: {
+        VReg r = gen(node->lhs);
+        // p->x desugars to ND_MEMBER(ND_DEREF(p)); the deref yields a struct,
+        // so null-check the pointer here (the member access loads from it).
+        // Scalar *p is checked in gen()'s ND_DEREF, so guard to aggregates to
+        // avoid a double check.
+        if (node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION))
+            cg_ubsan_null_check(node, r);
+        return r;
+    }
     case ND_REAL:
     case ND_IMAG: {
         int r = gen_addr(node->lhs);
@@ -10260,6 +10269,92 @@ static char *cg_emit_ubsan_divrem_data(Type *ty, Type *rhs_ty, const char *filen
 }
 
 // ---------------------------------------------------------------------------
+// -fsanitize=undefined: null-pointer dereference (type_mismatch_v1)
+// ---------------------------------------------------------------------------
+// gcc's null check emits a TypeMismatchData {SourceLocation; TypeDescriptor*;
+// LogAlignment(u8); TypeCheckKind(u8); pad} + a TK_Unknown TypeDescriptor whose
+// name is the QUOTED type ('int'). The runtime check is ptr > 0 (skip on
+// non-null), else __ubsan_handle_type_mismatch_v1(data, 0) which aborts. The
+// check must run BEFORE the load/store it guards. x86-64 only (aarch64 to do).
+static char *cg_emit_ubsan_tmm_data(Type *ty, const char *filename, int line, int n) {
+    if (!opt_ubsan || cg_dry_run) return NULL;
+    const char *fn = filename ? filename : "";
+    char *data_label = format(".L.ubsan_tmm_data.%d", n);
+    char *type_label = format(".L.ubsan_tmm_type.%d", n);
+    char *str_label = format(".L.ubsan_tmm_str.%d", n);
+    // Quoted diagnostic type name, as gcc prints it ('int', 'long int', ...).
+    char *quoted = ty->size == 8 ? "'long int'"
+        : ty->size == 2          ? "'short int'"
+                                 : "'int'";
+    // TypeDescriptor (TK_Unknown) in .rodata.
+    cg_set_section(SEC_RODATA);
+    secbuf_align(cg_sec, 8);
+    cg_def_label_sec(type_label, SEC_RODATA);
+    int type_sym = objfile_find_sym(cg_obj, type_label);
+    secbuf_emit16le(cg_sec, 0xffff); // TypeKind = TK_Unknown
+    secbuf_emit16le(cg_sec, 0); // TypeInfo
+    secbuf_emitbuf(cg_sec, quoted, strlen(quoted)); // TypeName (embedded)
+    secbuf_emit8(cg_sec, 0); // NUL
+    // Filename string in .rodata.
+    cg_set_section(SEC_RODATA);
+    cg_def_label_sec(str_label, SEC_RODATA);
+    int str_sym = objfile_find_sym(cg_obj, str_label);
+    secbuf_emitbuf(cg_sec, fn, strlen(fn));
+    secbuf_emit8(cg_sec, 0);
+    // TypeMismatchData in .data: +0 Filename, +8 Line, +12 Column, +16 Type,
+    // +24 LogAlignment, +25 TypeCheckKind(0=NullCheck), +26..31 pad (32 total).
+    cg_set_section(SEC_DATA);
+    secbuf_align(cg_sec, 8);
+    size_t data_off = cg_sec->len;
+    cg_def_label_sec(data_label, SEC_DATA);
+    size_t fn_off = data_off;
+    size_t type_ptr_off = data_off + 16;
+    secbuf_emit64le(cg_sec, 0); // Filename
+    secbuf_emit32le(cg_sec, (uint32_t)line); // Line
+    secbuf_emit32le(cg_sec, 0); // Column
+    secbuf_emit64le(cg_sec, 0); // Type
+    secbuf_emit8(cg_sec, 0); // LogAlignment (0 for null checks)
+    secbuf_emit8(cg_sec, 0); // TypeCheckKind = NullCheck
+    secbuf_emit32le(cg_sec, 0); // pad (8 -> 32)
+    secbuf_emit32le(cg_sec, 0); // pad
+#ifdef ARCH_ARM64
+    objfile_add_reloc(cg_obj, SEC_DATA, fn_off, str_sym, R_AARCH64_ABS64, 0);
+    objfile_add_reloc(cg_obj, SEC_DATA, type_ptr_off, type_sym, R_AARCH64_ABS64, 0);
+#else
+    objfile_add_reloc(cg_obj, SEC_DATA, fn_off, str_sym, R_X86_64_64, 0);
+    objfile_add_reloc(cg_obj, SEC_DATA, type_ptr_off, type_sym, R_X86_64_64, 0);
+#endif
+    cg_set_section(SEC_TEXT);
+    return data_label;
+}
+
+// Emit a null check for a dereference whose address is in live VReg `r`.
+// Must be called before the load/store. `r` is preserved. x86-64 only.
+static void cg_ubsan_null_check(Node *node, VReg r) {
+#ifndef ARCH_ARM64
+    if (!opt_ubsan || cg_dry_run) return;
+    int n = ubsan_ctr++;
+    char *data_label = cg_emit_ubsan_tmm_data(node->ty,
+                                              node->tok ? node->tok->filename : NULL,
+                                              node->tok ? node->tok->lineno : 0, n);
+    if (!data_label) return;
+    char *skip = format(".L.ubsan_null.%d", n);
+    x86_cmp_ri(cg_sec, 8, REG(r), 0); // cmpq $0, ptr
+    emit_jcc_fixup(cg_sec, X86_NE, skip); // non-null -> skip
+    VReg d = alloc_reg_avoid2(r, -1);
+    asm_lea_rip_reg(cg_sec, d, data_label);
+    x86_mov_rr(cg_sec, 8, X86_RDI, REG(d)); // arg1 = data
+    free_reg(d);
+    x86_mov_ri(cg_sec, 8, X86_RSI, 0); // arg2 = 0 (the null value)
+    emit_direct_call("__ubsan_handle_type_mismatch_v1", false); // aborts
+    cg_def_label(skip);
+#else
+    (void)node;
+    (void)r;
+#endif
+}
+
+// ---------------------------------------------------------------------------
 // -fsanitize=address: global registration + per-access shadow check
 // ---------------------------------------------------------------------------
 // Register the TU's non-extern globals with libasan so it poisons their
@@ -12682,6 +12777,7 @@ VReg gen(Node *node) {
 #endif
         }
         VReg r = gen(node->lhs);
+        cg_ubsan_null_check(node, r); // null check before the load (preserves r)
         if (is_flonum(node->ty)) {
 #ifdef ARCH_ARM64
             if (node->ty->size == 4) {
