@@ -10,6 +10,7 @@ AsmFixupNode *asm_fixup_htab[CG_HT_SIZE];
 int asm_fixup_count = 0;
 
 #include <ctype.h>
+#include <math.h>
 #include <stdarg.h>
 #include <time.h>
 
@@ -654,6 +655,7 @@ static uint32_t func_hash_name(const char *s) {
 static char *current_fn;
 const char *cg_dbg_fn = "?";
 int cg_dbg_line = 0;
+const char *cg_dbg_file = ""; // current source file (set per-node in gen)
 int current_fn_stack_size = 0; // fn->stack_size of the function being generated
 
 // Debug info (DWARF .loc directives, enabled by -g)
@@ -963,6 +965,7 @@ VReg gen_addr(Node *node);
 static void cg_ubsan_null_check(Node *node, VReg r); // defined below (null-deref check)
 static void cg_ubsan_align_check(Node *node, VReg r); // defined below (misalign-deref check)
 static void cg_ubsan_bounds_check(Node *node, Node *base_node, VReg idx, VReg base); // local array OOB
+static void cg_ubsan_fco_check(VReg r, Type *from, Type *to, int line); // float->int cast overflow
 static bool is_asm_reserved(const char *name);
 static void sign_extend_to(VReg r, int from_size, int to_size);
 static void zero_extend_to(VReg r, int from_size, int to_size);
@@ -8840,6 +8843,7 @@ static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
         }
 #else
         asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq r, %xmm0
+        cg_ubsan_fco_check(r, from, to, cg_dbg_line); // float-cast-overflow (preserves r)
         if (to->size == 8 && to->is_unsigned) {
             asm_movabs_phy(cg_sec, X86_RAX, 0x43e0000000000000ULL); // movabs $0x43e0000000000000, %rax (2^63 as double)
             x86_movq_r_xmm(cg_sec, X86_XMM1, X86_RAX); // movq %rax, %xmm1
@@ -10510,6 +10514,154 @@ static void cg_ubsan_bounds_check(Node *node, Node *base_node, VReg idx, VReg ba
     (void)base;
 #endif
 }
+
+// -fsanitize=float-cast-overflow: gcc emits a FloatCastOverflowDataV2
+// {SourceLocation; TypeDescriptor *from; TypeDescriptor *to} (32 bytes) and
+// calls __ubsan_handle_float_cast_overflow(data, from) when a float->int cast
+// yields a value outside the integer's representable range or is NaN. The
+// FromType descriptor is TK_Float (Info=bit width) and the ToType is
+// TK_Integer (Info=(log2 bits<<1)|signed), with quoted names. x86-64 only.
+static char *cg_emit_ubsan_fco_data(Type *from, Type *to, uint64_t maxv_bits,
+                                    const char *filename, int line, int n) {
+    if (!opt_float_cast_overflow || cg_dry_run) return NULL;
+    // Empty filename crashes the libubsan report path; fall back to "?".
+    const char *fn = (filename && filename[0]) ? filename : "?";
+    // Quoted diagnostic names.
+    const char *from_name = from->kind == TY_DOUBLE ? "'double'" : from->kind == TY_LDOUBLE ? "'long double'"
+                                                                                            : "'float'";
+    const char *to_name = to->size == 8 ? (to->is_unsigned ? "'long unsigned int'" : "'long int'")
+        : to->size == 2                 ? "'short int'"
+                                        : "'int'";
+    // FromType (TK_Float): Info = bit width (getFloatBitWidth returns it raw).
+    uint16_t finfo = (uint16_t)(from->kind == TY_LDOUBLE ? 80 : from->kind == TY_DOUBLE ? 64
+                                                                                        : 32);
+    // ToType (TK_Integer): Info = (log2 bit width << 1) | is_signed.
+    int tprec = to->size == 8 ? 6 : to->size == 2 ? 4
+                                                  : 5; // log2 of 64/16/32
+    uint16_t tinfo = (uint16_t)((tprec << 1) | (to->is_unsigned ? 0 : 1));
+    char *data_label = format(".L.ubsan_fco_data.%d", n);
+    char *ftype_label = format(".L.ubsan_fco_ftype.%d", n);
+    char *ttype_label = format(".L.ubsan_fco_ttype.%d", n);
+    char *str_label = format(".L.ubsan_fco_str.%d", n);
+    char *max_label = format(".L.ubsan_fco_max.%d", n);
+    // TypeDescriptor in .rodata: Kind, Info, embedded name, NUL.
+    cg_set_section(SEC_RODATA);
+    secbuf_align(cg_sec, 8);
+    cg_def_label_sec(ftype_label, SEC_RODATA);
+    int ftype_sym = objfile_find_sym(cg_obj, ftype_label);
+    secbuf_emit16le(cg_sec, 1); // TypeKind = TK_Float
+    secbuf_emit16le(cg_sec, finfo); // TypeInfo
+    secbuf_emitbuf(cg_sec, from_name, strlen(from_name));
+    secbuf_emit8(cg_sec, 0);
+    secbuf_align(cg_sec, 8);
+    cg_def_label_sec(ttype_label, SEC_RODATA);
+    int ttype_sym = objfile_find_sym(cg_obj, ttype_label);
+    secbuf_emit16le(cg_sec, 0); // TypeKind = TK_Integer
+    secbuf_emit16le(cg_sec, tinfo); // TypeInfo
+    secbuf_emitbuf(cg_sec, to_name, strlen(to_name));
+    secbuf_emit8(cg_sec, 0);
+    cg_set_section(SEC_RODATA);
+    cg_def_label_sec(str_label, SEC_RODATA);
+    int str_sym = objfile_find_sym(cg_obj, str_label);
+    secbuf_emitbuf(cg_sec, fn, strlen(fn));
+    secbuf_emit8(cg_sec, 0);
+    // Max representable value (as a double) in .rodata, loaded by the check.
+    cg_set_section(SEC_RODATA);
+    secbuf_align(cg_sec, 8);
+    cg_def_label_sec(max_label, SEC_RODATA);
+    secbuf_emit64le(cg_sec, maxv_bits);
+    // Data in .data: +0 Filename, +8 Line, +12 Col, +16 FromType, +24 ToType.
+    cg_set_section(SEC_DATA);
+    secbuf_align(cg_sec, 8);
+    size_t data_off = cg_sec->len;
+    cg_def_label_sec(data_label, SEC_DATA);
+    secbuf_emit64le(cg_sec, 0); // Filename
+    secbuf_emit32le(cg_sec, (uint32_t)line); // Line
+    secbuf_emit32le(cg_sec, 0); // Column
+    secbuf_emit64le(cg_sec, 0); // FromType
+    secbuf_emit64le(cg_sec, 0); // ToType
+    objfile_add_reloc(cg_obj, SEC_DATA, data_off, str_sym,
+#ifdef ARCH_ARM64
+                      R_AARCH64_ABS64,
+#else
+                      R_X86_64_64,
+#endif
+                      0);
+    objfile_add_reloc(cg_obj, SEC_DATA, data_off + 16, ftype_sym,
+#ifdef ARCH_ARM64
+                      R_AARCH64_ABS64,
+#else
+                      R_X86_64_64,
+#endif
+                      0);
+    objfile_add_reloc(cg_obj, SEC_DATA, data_off + 24, ttype_sym,
+#ifdef ARCH_ARM64
+                      R_AARCH64_ABS64,
+#else
+                      R_X86_64_64,
+#endif
+                      0);
+    cg_set_section(SEC_TEXT);
+    return data_label;
+}
+
+// Float->int cast overflow check. `r` holds the float value (8 bytes, a double
+// or zero-extended float) in a GPR. Fires when the value is NaN or >= the
+// target integer's max representable value (which for a signed int also covers
+// the magnitude the cvttsd2si would trap on). The value in r is preserved.
+// x86-64 only.
+static void cg_ubsan_fco_check(VReg r, Type *from, Type *to, int line) {
+#ifndef ARCH_ARM64
+    if (!opt_float_cast_overflow || cg_dry_run) return;
+    int bits = to->size * 8;
+    // max double representable by the target int: 2^bits (or 2^(bits-1)).
+    int exp = to->is_unsigned ? bits : bits - 1;
+    if (exp >= 1024) return; // target larger than any double can express
+    union {
+        double d;
+        uint64_t b;
+    } mv;
+    mv.d = ldexp(1.0, exp); // max representable by the target int
+    uint64_t maxv_bits = mv.b;
+    int n = ubsan_ctr++;
+    // Empty filename makes the libubsan report path crash; use the source file.
+    char *data_label = cg_emit_ubsan_fco_data(from, to, maxv_bits, cg_dbg_file, line, n);
+    if (!data_label) return;
+    char *max_label = format(".L.ubsan_fco_max.%d", n);
+    char *ok = format(".L.ubsan_fco_ok.%d", n);
+    // asm_ucomisd() emits `ucomisd %xmm1, %xmm0` -> flags for (xmm0 - xmm1),
+    // i.e. (val - other). val is in xmm0.
+    x86_xorpd(cg_sec, X86_XMM1, X86_XMM1); // xmm1 = 0
+    x86_xor_rr(cg_sec, 8, X86_RDX, X86_RDX); // clear rdx (setcc only writes byte)
+    asm_ucomisd(cg_sec); // flags for val - 0 -> P if unordered (val is NaN)
+    asm_setcc(cg_sec, X86_RDX, X86_P); // rdx = is_nan
+    x86_xor_rr(cg_sec, 8, X86_RAX, X86_RAX); // clear rax (setcc only writes byte)
+    {
+        VReg mt = alloc_reg();
+        asm_lea_rip_reg(cg_sec, mt, max_label); // mt = &maxv
+        x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(mt), 0)); // xmm1 = maxv
+        free_reg(mt);
+    }
+    asm_ucomisd(cg_sec); // flags for val - maxv
+    asm_setcc(cg_sec, X86_RAX, X86_A); // rax = val > maxv (strictly greater)
+    x86_or_rr(cg_sec, 8, X86_RDX, X86_RAX); // rdx = is_nan || val > maxv
+    x86_test_rr(cg_sec, 8, X86_RDX, X86_RDX);
+    emit_jcc_fixup(cg_sec, X86_Z, ok); // clean -> skip
+    VReg d = alloc_reg_avoid2(r, -1);
+    asm_lea_rip_reg(cg_sec, d, data_label); // d = &Data
+    x86_mov_rr(cg_sec, 8, X86_RDI, REG(d)); // rdi = &Data
+    free_reg(d);
+    asm_movq_r_xmm(cg_sec, X86_XMM0, r); // reload value for the handler
+    x86_movq_xmm_r(cg_sec, X86_RSI, X86_XMM0); // rsi = from (value)
+    emit_direct_call("__ubsan_handle_float_cast_overflow", false); // aborts
+    cg_def_label(ok);
+#else
+    (void)r;
+    (void)from;
+    (void)to;
+    (void)line;
+#endif
+}
 // ---------------------------------------------------------------------------
 // gcc checks the first arg of libc string functions (strlen/strcpy/...) for
 // null before the call: cmpq $0,arg; jne skip; call
@@ -10893,6 +11045,7 @@ static void cg_emit_asan_globals(Program *prog) {
 VReg gen(Node *node) {
     if (!node) return R_NONE;
     if (node->tok && node->tok->lineno > 0) cg_dbg_line = node->tok->lineno;
+    if (node->tok && node->tok->filename) cg_dbg_file = node->tok->filename;
 
     if (opt_g)
         emit_loc(node);

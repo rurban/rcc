@@ -479,6 +479,7 @@ extern bool opt_time;
 // libubsan) is wired in; NULL when no active sanitizer.
 extern bool opt_asan;
 extern bool opt_ubsan;
+extern bool opt_float_cast_overflow; // -fsanitize=float-cast-overflow
 extern char *opt_sanitize_list;
 // -fdefer-ts (WG14 N3199 / TS 25755 experimental `defer` statement,
 // matching clang's own flag name): gates `defer` keyword recognition

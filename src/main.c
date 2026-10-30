@@ -436,6 +436,7 @@ bool opt_shared = false;
 // clears an earlier request.
 bool opt_asan = false;
 bool opt_ubsan = false;
+bool opt_float_cast_overflow = false; // -fsanitize=float-cast-overflow
 char *opt_sanitize_list = NULL;
 bool opt_static = false;
 bool opt_export_dynamic = false;
@@ -544,12 +545,13 @@ static char *wl_get_value(const char *arg, const char *tok) {
 static void sanitize_list_rebuild(void) {
     free(opt_sanitize_list);
     opt_sanitize_list = NULL;
-    if (opt_asan && opt_ubsan)
-        opt_sanitize_list = format("address,undefined");
-    else if (opt_asan)
-        opt_sanitize_list = format("address");
-    else if (opt_ubsan)
-        opt_sanitize_list = format("undefined");
+    char buf[128];
+    int n = 0;
+    if (opt_asan) n += snprintf(buf + n, sizeof buf - n, "%saddress", n ? "," : "");
+    if (opt_ubsan) n += snprintf(buf + n, sizeof buf - n, "%sundefined", n ? "," : "");
+    if (opt_float_cast_overflow)
+        n += snprintf(buf + n, sizeof buf - n, "%sfloat-cast-overflow", n ? "," : "");
+    if (n > 0) opt_sanitize_list = strdup(buf);
 }
 
 // Parse a "-fsanitize=<list>" value: a comma
@@ -561,6 +563,7 @@ static void sanitize_list_rebuild(void) {
 static void parse_sanitize_list(const char *list) {
     opt_asan = false;
     opt_ubsan = false;
+    opt_float_cast_overflow = false;
     const char *p = list;
     while (*p) {
         const char *comma = strchr(p, ',');
@@ -569,6 +572,8 @@ static void parse_sanitize_list(const char *list) {
             opt_asan = true;
         else if ((len == 9 && !strncmp(p, "undefined", 9)) || (len == 5 && !strncmp(p, "ubsan", 5)))
             opt_ubsan = true;
+        else if (len == 19 && !strncmp(p, "float-cast-overflow", 19))
+            opt_float_cast_overflow = true;
         // "none" and unrecognized names: accepted, no effect.
         p = comma ? comma + 1 : p + len;
     }
@@ -1741,7 +1746,7 @@ int main(int argc, char **argv) {
         // native linkers don't implement. Force the external gcc fallback
         // below whenever any sanitizer is active so the runtime is actually
         // pulled in (and re-pass -fsanitize so gcc adds the right libs).
-        if (opt_asan || opt_ubsan)
+        if (opt_asan || opt_ubsan || opt_float_cast_overflow)
             native_link_capable = false;
         if (native_link_capable) {
             int n_link_objs = 0;
