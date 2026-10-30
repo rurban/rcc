@@ -10238,6 +10238,190 @@ static char *cg_emit_ubsan_divrem_data(Type *ty, const char *filename, int line,
     return data_label;
 }
 
+// ---------------------------------------------------------------------------
+// -fsanitize=address: global registration + per-access shadow check
+// ---------------------------------------------------------------------------
+// Register the TU's non-extern globals with libasan so it poisons their
+// redzones, and instrument loads/stores to globals with a shadow check that
+// calls the gcc report function (which aborts) on an out-of-bounds access.
+// Mirrors GCC's -fsanitize=address. x86-64 for now: the aarch64 shadow offset
+// is dynamic (see asan_mapping.h) and is wired up separately; the libasan
+// runtime is linked on every target regardless.
+static int asan_chk_ctr = 0; // per-TU counter naming each check's skip label
+
+// Before a load/store of `sz` bytes whose address is in live VReg `addr`, read
+// the ASan shadow byte and, if the access reaches a poisoned byte, call the
+// libasan report function. `addr` is preserved for the real access that
+// follows. x86-64 Linux: shadow = (addr >> 3) + 0x7fff8000.
+static void cg_asan_check_mem(VReg addr, int sz, bool is_write) {
+#ifndef ARCH_ARM64
+    if (!opt_asan || cg_dry_run) return;
+    if (sz < 1) sz = 1;
+    else if (sz > 8)
+        sz = 8;
+    int n = asan_chk_ctr++;
+    char *ok = format(".L.asan_ok.%d", n);
+    VReg t1 = alloc_reg_avoid2(addr, -1);
+    VReg t2 = alloc_reg_avoid2(addr, t1);
+    // t1 = (addr >> 3) + 0x7fff8000
+    x86_mov_rr(cg_sec, 8, REG(t1), REG(addr));
+    x86_shr_ri(cg_sec, 8, REG(t1), 3);
+    x86_add_ri(cg_sec, 8, REG(t1), 0x7fff8000);
+    x86_movzx_rm(cg_sec, 4, 1, REG(t2), x86_mem(REG(t1), 0)); // t2 = shadow byte
+    // t1 = (addr & 7) + (sz - 1): last granule offset the access touches
+    x86_mov_rr(cg_sec, 4, REG(t1), REG(addr));
+    x86_and_ri(cg_sec, 4, REG(t1), 7);
+    x86_add_ri(cg_sec, 4, REG(t1), sz - 1);
+    // oob = (shadow != 0) && (t1 >= shadow)
+    x86_cmp_rr(cg_sec, 4, REG(t1), REG(t2));
+    x86_setcc(cg_sec, X86_GE, REG(t1)); // t1 = (t1 >= shadow)
+    x86_test_rr(cg_sec, 4, REG(t2), REG(t2));
+    x86_setcc(cg_sec, X86_NE, REG(t2)); // t2 = (shadow != 0)
+    x86_and_rr(cg_sec, 4, REG(t1), REG(t2));
+    x86_test_rr(cg_sec, 4, REG(t1), REG(t1));
+    emit_jcc_fixup(cg_sec, X86_E, ok); // clean -> skip
+    x86_mov_rr(cg_sec, 8, X86_RDI, REG(addr)); // arg1 = addr
+    x86_mov_ri(cg_sec, 8, X86_RSI, 0); // arg2 = ret
+    char *fn = format(is_write ? "__asan_report_store%d" : "__asan_report_load%d", sz);
+    emit_direct_call(fn, false); // aborts
+    free_reg(t1);
+    free_reg(t2);
+    cg_def_label(ok);
+#else
+    (void)addr;
+    (void)sz;
+    (void)is_write; // aarch64: dynamic shadow offset (separate)
+#endif
+}
+
+// Register the TU's globals with libasan so it poisons their redzones: emit a
+// __asan_global array (8 x uptr per entry), the name strings, and a ctor/fini
+// that call __asan_register_globals/__asan_unregister_globals. x86-64 for now.
+static void cg_emit_asan_globals(Program *prog) {
+#ifndef ARCH_ARM64
+    if (!opt_asan || cg_dry_run) return;
+    int count = 0;
+    for (LVar *var = prog->globals; var; var = var->next) {
+        if (var->is_global_reg || var->is_function || var->is_tls || var->alias_target)
+            continue;
+        if (var->is_extern && !var->asm_name) continue;
+        count++;
+    }
+    if (count == 0) return;
+
+    // Name strings in .rodata; remember each symbol for the array below.
+    int *name_syms = malloc(sizeof(int) * count);
+    int ni = 0;
+    cg_set_section(SEC_RODATA);
+    for (LVar *var = prog->globals; var; var = var->next) {
+        if (var->is_global_reg || var->is_function || var->is_tls || var->alias_target)
+            continue;
+        if (var->is_extern && !var->asm_name) continue;
+        const char *nm = var->asm_name ? var->asm_name : var->name;
+        char *lbl = format(".L.asan_name.%d", ni);
+        cg_def_label_sec(lbl, SEC_RODATA);
+        int ns = objfile_find_sym(cg_obj, lbl);
+        secbuf_emitbuf(cg_sec, nm, strlen(nm));
+        secbuf_emit8(cg_sec, 0);
+        name_syms[ni++] = ns;
+    }
+
+    // __asan_global array in a custom alloc section.
+    int arr_sec = objfile_find_or_add_section(cg_obj, "__asan_globals", SHF_ALLOC, 0);
+    objfile_section_align(cg_obj, arr_sec, 8); // __asan_global is 8-byte aligned
+    cg_set_section(arr_sec);
+    secbuf_align(cg_sec, 8);
+    const char *array_label = ".L.asan_globals_array";
+    cg_def_label_sec(array_label, arr_sec);
+    ni = 0;
+    for (LVar *var = prog->globals; var; var = var->next) {
+        if (var->is_global_reg || var->is_function || var->is_tls || var->alias_target)
+            continue;
+        if (var->is_extern && !var->asm_name) continue;
+        int size = var->ty->size;
+        size_t off = cg_sec->len;
+        secbuf_emit64le(cg_sec, 0); // beg
+        const char *gsym = asm_sym_name(var_sym_label(var));
+        int gs = objfile_find_sym(cg_obj, gsym);
+        if (gs < 0)
+            gs = objfile_add_sym(cg_obj, gsym, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_OBJECT);
+        objfile_add_reloc(cg_obj, arr_sec, off, gs, R_X86_64_64, 0);
+        secbuf_emit64le(cg_sec, (uint64_t)size); // size
+        // size_with_redzone: libasan requires it granule-aligned and >= size.
+        // Small globals get a 64-byte managed region (redzone covers OOB just
+        // past the global); large ones round up to the granule.
+        uint64_t swr = (size >= 64) ? ((size + 7) & ~7) : 64;
+        secbuf_emit64le(cg_sec, swr); // size_with_redzone
+        size_t noff = cg_sec->len;
+        secbuf_emit64le(cg_sec, 0); // name
+        objfile_add_reloc(cg_obj, arr_sec, noff, name_syms[ni], R_X86_64_64, 0);
+        secbuf_emit64le(cg_sec, 0); // module_name
+        secbuf_emit64le(cg_sec, 0); // has_dynamic_init
+        secbuf_emit64le(cg_sec, 0); // location
+        secbuf_emit64le(cg_sec, 0); // odr_indicator
+        ni++;
+    }
+    free(name_syms);
+
+    // ctor: __asan_init(); __asan_version_mismatch_check_v8();
+    //       __asan_register_globals(array, count);
+    cg_set_section(SEC_TEXT);
+    size_t cstart = cg_sec->len;
+    cg_def_fn_label(".L.asan_ctor");
+    x86_push(cg_sec, X86_RBP);
+    asm_mov_rsp_rbp(cg_sec);
+    emit_direct_call("__asan_init", false);
+    emit_direct_call("__asan_version_mismatch_check_v8", false);
+    {
+        VReg d = alloc_reg();
+        asm_lea_rip_reg(cg_sec, d, array_label);
+        x86_mov_rr(cg_sec, 8, X86_RDI, REG(d));
+        free_reg(d);
+        x86_mov_ri(cg_sec, 8, X86_RSI, count);
+        emit_direct_call("__asan_register_globals", false);
+    }
+    asm_mov_rbp_rsp(cg_sec);
+    x86_pop(cg_sec, X86_RBP);
+    asm_ret(cg_sec);
+    cg_patch_fn_size(".L.asan_ctor", cstart);
+
+    // fini: __asan_unregister_globals(array, count);
+    size_t fstart = cg_sec->len;
+    cg_def_fn_label(".L.asan_fini");
+    x86_push(cg_sec, X86_RBP);
+    asm_mov_rsp_rbp(cg_sec);
+    {
+        VReg d = alloc_reg();
+        asm_lea_rip_reg(cg_sec, d, array_label);
+        x86_mov_rr(cg_sec, 8, X86_RDI, REG(d));
+        free_reg(d);
+        x86_mov_ri(cg_sec, 8, X86_RSI, count);
+        emit_direct_call("__asan_unregister_globals", false);
+    }
+    asm_mov_rbp_rsp(cg_sec);
+    x86_pop(cg_sec, X86_RBP);
+    asm_ret(cg_sec);
+    cg_patch_fn_size(".L.asan_fini", fstart);
+
+    // init/fini_array entries.
+    cg_set_section(SEC_INIT_ARRAY);
+    secbuf_align(cg_sec, 8);
+    size_t io = cg_sec->len;
+    secbuf_emit64le(cg_sec, 0);
+    int ci = objfile_find_sym(cg_obj, ".L.asan_ctor");
+    objfile_add_reloc(cg_obj, SEC_INIT_ARRAY, io, ci, R_X86_64_64, 0);
+    cg_set_section(SEC_FINI_ARRAY);
+    secbuf_align(cg_sec, 8);
+    size_t fo = cg_sec->len;
+    secbuf_emit64le(cg_sec, 0);
+    int fi = objfile_find_sym(cg_obj, ".L.asan_fini");
+    objfile_add_reloc(cg_obj, SEC_FINI_ARRAY, fo, fi, R_X86_64_64, 0);
+    cg_set_section(SEC_TEXT);
+#else
+    (void)0;
+#endif
+}
+
 // Generate code for a given node.
 VReg gen(Node *node) {
     if (!node) return R_NONE;
@@ -10804,6 +10988,7 @@ VReg gen(Node *node) {
                     emit_load(node->ty, r, r, 0);
                 } else {
                     asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var)); // lea rip, rr
+                    cg_asan_check_mem(r, node->ty->size, false);
                     emit_load(node->ty, r, r, 0);
                 }
 #endif
@@ -11085,6 +11270,7 @@ VReg gen(Node *node) {
                         if (st_sz == 3) st_sz = 4;
                         else if (st_sz > 4 && st_sz < 8)
                             st_sz = 8;
+                        cg_asan_check_mem(dst, st_sz, true);
                         asm_mov_reg_mem(cg_sec, src, dst, st_sz); // movb/movw/movl/movq src, (%dst)
                     }
 #endif
@@ -11542,6 +11728,7 @@ VReg gen(Node *node) {
             pop_spill_slot(r2);
             r1 = ra;
         }
+        cg_asan_check_mem(r1, node->lhs->ty->size, true);
 #ifdef ARCH_ARM64
         emit_store(node->lhs->ty, r2, r1, 0);
 #else
@@ -12466,8 +12653,10 @@ VReg gen(Node *node) {
             free_reg(base);
             // For aggregate types, return the address, not the loaded value
             if (node->ty->kind != TY_STRUCT && node->ty->kind != TY_UNION &&
-                node->ty->kind != TY_COMPLEX)
+                node->ty->kind != TY_COMPLEX) {
+                cg_asan_check_mem(idx, node->ty->size, false);
                 emit_load(node->ty, idx, idx, 0); // load from (idx)
+            }
             return idx;
 #endif
         }
@@ -12491,6 +12680,7 @@ VReg gen(Node *node) {
             asm_movq_xmm_r(cg_sec, r, X86_XMM0); // asm_movq_xmm_r(r, X86_XMM0)
 #endif
         } else {
+            cg_asan_check_mem(r, node->ty->size, false);
 #ifdef ARCH_ARM64
             emit_load(node->ty, r, r, 0);
 #else
@@ -18268,6 +18458,11 @@ struct ObjFile *codegen(Program *prog) {
         }
         cg_set_section(SEC_TEXT);
     }
+
+    // Register the TU's globals with libasan (poisons their redzones) and emit
+    // the ctor/fini; done before any function body so the register allocator is
+    // clean when the ctor/fini allocate temporaries. No-op unless -fsanitize=address.
+    cg_emit_asan_globals(prog);
 
     for (TLItem *item = prog->items; item; item = item->next) {
         if (item->kind == TL_ASM) {
