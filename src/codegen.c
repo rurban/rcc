@@ -966,6 +966,7 @@ static void cg_ubsan_null_check(Node *node, VReg r); // defined below (null-dere
 static void cg_ubsan_align_check(Node *node, VReg r); // defined below (misalign-deref check)
 static void cg_ubsan_bounds_check(Node *node, Node *base_node, VReg idx, VReg base); // local array OOB
 static void cg_ubsan_fco_check(VReg r, Type *from, Type *to, int line); // float->int cast overflow
+static void cg_ubsan_nonnull_ret_check(VReg r, const char *filename, int line); // returns_nonnull
 static bool is_asm_reserved(const char *name);
 static void sign_extend_to(VReg r, int from_size, int to_size);
 static void zero_extend_to(VReg r, int from_size, int to_size);
@@ -10663,6 +10664,77 @@ static void cg_ubsan_fco_check(VReg r, Type *from, Type *to, int line) {
 #endif
 }
 // ---------------------------------------------------------------------------
+// -fsanitize=returns-nonnull-attribute (in the default undefined group): a
+// function declared __attribute__((returns_nonnull)) returning a NULL pointer
+// reports via __ubsan_handle_nonnull_return_v1(NonNullReturnData*,
+// SourceLocation*). NonnullReturnData is a single SourceLocation (AttrLoc);
+// gcc emits AttrLoc=UNKNOWN for data and the return-stmt loc for the 2nd arg.
+// x86-64 only.
+static char *cg_emit_ubsan_nonnull_ret_data(const char *filename, int line, int n) {
+    if (!opt_ubsan || cg_dry_run) return NULL;
+    const char *fn = (filename && filename[0]) ? filename : "?";
+    char *data_label = format(".L.ubsan_nnret_data.%d", n);
+    char *loc_label = format(".L.ubsan_nnret_loc.%d", n);
+    char *str_label = format(".L.ubsan_nnret_str.%d", n);
+    // NonnullReturnData { AttrLoc = UNKNOWN } = 16 zero bytes in .rodata.
+    cg_set_section(SEC_RODATA);
+    secbuf_align(cg_sec, 8);
+    cg_def_label_sec(data_label, SEC_RODATA);
+    secbuf_emit64le(cg_sec, 0); // AttrLoc.Filename = NULL
+    secbuf_emit32le(cg_sec, 0); // AttrLoc.Line
+    secbuf_emit32le(cg_sec, 0); // AttrLoc.Col
+    cg_set_section(SEC_RODATA);
+    cg_def_label_sec(str_label, SEC_RODATA);
+    int str_sym = objfile_find_sym(cg_obj, str_label);
+    secbuf_emitbuf(cg_sec, fn, strlen(fn));
+    secbuf_emit8(cg_sec, 0);
+    // SourceLocation { Filename, Line, Col } in .data (Filename is a reloc).
+    cg_set_section(SEC_DATA);
+    secbuf_align(cg_sec, 8);
+    size_t loc_off = cg_sec->len;
+    cg_def_label_sec(loc_label, SEC_DATA);
+    secbuf_emit64le(cg_sec, 0); // Filename
+    secbuf_emit32le(cg_sec, (uint32_t)line); // Line
+    secbuf_emit32le(cg_sec, 0); // Col
+    objfile_add_reloc(cg_obj, SEC_DATA, loc_off, str_sym,
+#ifdef ARCH_ARM64
+                      R_AARCH64_ABS64,
+#else
+                      R_X86_64_64,
+#endif
+                      0);
+    cg_set_section(SEC_TEXT);
+    return data_label;
+}
+// Fire when `r` (the pointer return value, still live) is NULL in a
+// returns_nonnull function. Preserves r. x86-64 only.
+static void cg_ubsan_nonnull_ret_check(VReg r, const char *filename, int line) {
+#ifndef ARCH_ARM64
+    if (!opt_ubsan || cg_dry_run || r < 0) return;
+    int n = ubsan_ctr++;
+    char *data_label = cg_emit_ubsan_nonnull_ret_data(filename, line, n);
+    if (!data_label) return;
+    char *loc_label = format(".L.ubsan_nnret_loc.%d", n);
+    char *skip = format(".L.ubsan_nnret_skip.%d", n);
+    x86_cmp_ri(cg_sec, 8, REG(r), 0); // cmpq $0, ptr
+    emit_jcc_fixup(cg_sec, X86_NE, skip); // non-null -> skip
+    VReg d = alloc_reg_avoid2(r, -1);
+    asm_lea_rip_reg(cg_sec, d, data_label); // d = &Data
+    x86_mov_rr(cg_sec, 8, X86_RDI, REG(d)); // rdi = &Data
+    free_reg(d);
+    VReg l = alloc_reg_avoid2(r, -1);
+    asm_lea_rip_reg(cg_sec, l, loc_label); // l = &Loc
+    x86_mov_rr(cg_sec, 8, X86_RSI, REG(l)); // rsi = &Loc
+    free_reg(l);
+    emit_direct_call("__ubsan_handle_nonnull_return_v1", false); // aborts on halt
+    cg_def_label(skip);
+#else
+    (void)r;
+    (void)filename;
+    (void)line;
+#endif
+}
+// ---------------------------------------------------------------------------
 // gcc checks the first arg of libc string functions (strlen/strcpy/...) for
 // null before the call: cmpq $0,arg; jne skip; call
 // __ubsan_handle_nonnull_arg(NonNullArgData*). NonNullArgData is
@@ -13319,7 +13391,8 @@ VReg gen(Node *node) {
         // keeps the ordinary call-and-return path.
         if (!cg_dry_run && opt_finline && opt_funroll && node->lhs && node->lhs->kind == ND_FUNCALL &&
             !node->defer_retspill && current_fn_def && !current_fn_def->is_variadic &&
-            !current_fn_def->is_nested && !fn_uses_alloca && !tail_call_frame_escapes) {
+            !current_fn_def->is_nested && !current_fn_def->is_returns_nonnull &&
+            !fn_uses_alloca && !tail_call_frame_escapes) {
             Node *call = node->lhs;
             // A __builtin_* name (bswap64, clz, popcount, ...) is a
             // compiler intrinsic the ordinary FUNCALL codegen expands
@@ -13805,6 +13878,10 @@ VReg gen(Node *node) {
                     // Truncate BEFORE moving to %rax so return register has correct value
                     if (scalar_ret_ty && scalar_ret_ty->size < 4 && scalar_ret_ty->is_unsigned)
                         asm_and_imm(cg_sec, r, 4, (1 << (scalar_ret_ty->size * 8)) - 1); // and mask, rr
+                    if (scalar_ret_ty && scalar_ret_ty->kind == TY_PTR && current_fn_def &&
+                        current_fn_def->is_returns_nonnull)
+                        cg_ubsan_nonnull_ret_check(r, node->tok ? node->tok->filename : NULL,
+                                                   node->tok ? node->tok->lineno : 0);
                     asm_mov_reg_to_retval(cg_sec, r, 8); // movq rr, %rax
 #endif
                 }

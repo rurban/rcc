@@ -48,6 +48,7 @@ struct VarAttr {
     unsigned char bitfield_mode;
     bool is_noreturn;
     bool is_noreturn_std;
+    bool is_returns_nonnull;
     bool has_alignas;
     bool is_deprecated;
     char *deprecated_msg;
@@ -2608,6 +2609,8 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                 if (attr) {
                     if (equalc(tok, "noreturn"))
                         attr->is_noreturn = true;
+                    else if (equalc(tok, "returns_nonnull"))
+                        attr->is_returns_nonnull = true;
                     else if (equalc(tok, "deprecated")) {
                         attr->is_deprecated = true;
                         Token *next = tok->next;
@@ -2856,6 +2859,17 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     if (attr)
                         attr->is_gnu_inline = true;
                     tok = tok->next;
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
+                if (equalc(tok, "returns_nonnull") || equalc(tok, "__returns_nonnull__")) {
+                    if (attr)
+                        attr->is_returns_nonnull = true;
+                    tok = tok->next;
+                    if (equalc(tok, "("))
+                        tok = skip_balanced(tok);
                     if (equalc(tok, ","))
                         tok = tok->next;
                     continue;
@@ -16109,6 +16123,7 @@ Program *parse(Token *tok) {
                                                 : (fn_sym2 ? fn_sym2->asm_name : NULL);
                     fn->alias_target = def_alias_target;
                     fn->ty = fty;
+                    fn->is_returns_nonnull = attr.is_returns_nonnull;
                     fn->params = params;
                     fn->locals = fn_locals;
                     fn->body = body->body;

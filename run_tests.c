@@ -1769,6 +1769,7 @@ static int test_unit_expected_exit(const char *base) {
     if (streq(base, "test_ubsan_align")) return 1; // UBSan halt_on_error
     if (streq(base, "test_ubsan_bounds")) return 1; // UBSan halt_on_error
     if (streq(base, "test_ubsan_fco")) return 1; // UBSan halt_on_error
+    if (streq(base, "test_ubsan_rn")) return 1; // UBSan halt_on_error
     if (streq(base, "test_include")) return 42;
     if (streq(base, "test_include2")) return 10;
     if (streq(base, "test_self_include2")) return 1;
@@ -1786,7 +1787,8 @@ static const char *test_unit_env(const char *base) {
         streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null") ||
         streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable") ||
         streq(base, "test_ubsan_ptr") || streq(base, "test_ubsan_align") ||
-        streq(base, "test_ubsan_bounds") || streq(base, "test_ubsan_fco"))
+        streq(base, "test_ubsan_bounds") || streq(base, "test_ubsan_fco") ||
+        streq(base, "test_ubsan_rn"))
         return "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=0";
     return NULL;
 }
@@ -1800,7 +1802,7 @@ static const char *extra_ldflags(const char *base, const char *srcfile) {
         streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null") ||
         streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable") ||
         streq(base, "test_ubsan_ptr") || streq(base, "test_ubsan_align") ||
-        streq(base, "test_ubsan_bounds"))
+        streq(base, "test_ubsan_bounds") || streq(base, "test_ubsan_rn"))
         return " -fsanitize=undefined";
     bool lm = streq(base, "22_floating_point") || streq(base, "24_math_library");
     bool pt = false;
@@ -3879,7 +3881,8 @@ static int run_unit_tests(void) {
                  streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null") ||
                  streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable") ||
                  streq(base, "test_ubsan_ptr") || streq(base, "test_ubsan_align") ||
-                 streq(base, "test_ubsan_bounds") || streq(base, "test_ubsan_fco"))) {
+                 streq(base, "test_ubsan_bounds") || streq(base, "test_ubsan_fco") ||
+                 streq(base, "test_ubsan_rn"))) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
                 continue;
@@ -3990,7 +3993,8 @@ static int run_unit_tests(void) {
                  streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null") ||
                  streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable") ||
                  streq(base, "test_ubsan_ptr") || streq(base, "test_ubsan_align") ||
-                 streq(base, "test_ubsan_bounds") || streq(base, "test_ubsan_fco"))) {
+                 streq(base, "test_ubsan_bounds") || streq(base, "test_ubsan_fco") ||
+                 streq(base, "test_ubsan_rn"))) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
                 free(nl[i]);

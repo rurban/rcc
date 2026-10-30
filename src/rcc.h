@@ -914,6 +914,7 @@ struct Function {
     bool is_static;
     bool is_extern;
     bool is_weak;
+    bool is_returns_nonnull; // __attribute__((returns_nonnull)): never returns NULL
     bool is_used; // __attribute__((used)): exempts from
     bool has_visibility; // __attribute__((visibility("..."))) seen
     uint8_t visibility; // STV_* (obj.h) when has_visibility
