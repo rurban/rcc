@@ -2462,6 +2462,8 @@ static bool node_may_call(Node *n) {
 }
 
 VReg alloc_reg_avoid2(VReg avoid1, VReg avoid2);
+static void cg_ubsan_nonnull_check(Node *node, char *call_target, VReg r, int i); // defined below
+static void cg_ubsan_unreachable(Node *node); // defined below
 
 static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     int nargs = 0;
@@ -2717,11 +2719,14 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     if (call_target && call_target == bi_s_alloca && nargs != 1)
         error_tok(node->tok, "too %s arguments to function 'alloca'; expected 1, have %d",
                   nargs < 1 ? "few" : "many", nargs);
-    // __builtin_unreachable(): reaching it is undefined behaviour, so emit no
-    // code (GCC does the same). Statements following it in a block are dead and
-    // are elided at -O1 (see the ND_BLOCK loop).
-    if (call_target && call_target == bi_unreachable)
+    // __builtin_unreachable(): reaching it is undefined behaviour. Without
+    // -fsanitize=undefined, emit no code (GCC does the same); with it, emit an
+    // aborting UBSan call so a reached point is reported. Statements following
+    // it in a block are dead and are elided at -O1 (see the ND_BLOCK loop).
+    if (call_target && call_target == bi_unreachable) {
+        cg_ubsan_unreachable(node);
         return -1;
+    }
     /*
     if (0 && opt_O >= 1 && call_target && nargs >= 2) {
         if ((strcmp(call_target, "__printf_chk") == 0 && nargs >= 2) ||
@@ -2933,7 +2938,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             Node *str = node->args;
             if (str && !str->next && free_reg_count() >= 1) {
                 VReg str_r = gen(str);
-
+                cg_ubsan_nonnull_check(node, "strlen", str_r, 0); // null src
                 asm_cld(cg_sec); // cld
                 asm_push(cg_sec, X86_RDI); // pushq %rdi
                 asm_push(cg_sec, X86_RCX); // pushq %rcx
@@ -2962,6 +2967,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             if (s1 && s2 && !s2->next && free_reg_count() >= 2) {
                 VReg r = gen(s1);
                 VReg r2 = gen(s2);
+                cg_ubsan_nonnull_check(node, "strcmp", r, 0); // null s1
+                cg_ubsan_nonnull_check(node, "strcmp", r2, 1); // null s2
                 int cl = ++rcc_label_count;
                 asm_push(cg_sec, X86_RDI); // pushq %rdi
                 asm_push(cg_sec, X86_RSI); // pushq %rsi
@@ -3003,6 +3010,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             if (s && c && !c->next && free_reg_count() >= 2) {
                 VReg sr = gen(s);
                 VReg cr = gen(c);
+                cg_ubsan_nonnull_check(node, "strchr", sr, 0); // null s
                 int cl = ++rcc_label_count;
                 asm_push(cg_sec, X86_RDI); // pushq %rdi
                 asm_push(cg_sec, X86_RCX); // pushq %rcx
@@ -3727,6 +3735,9 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             // from a prior outer-expression spill, not from this arg.
             // Keep it set so the outer value survives in the spill slot.
         }
+        // non-null-string: check the first arg of a libc string fn before the
+        // call (arg_regs[i] holds the value here, before it moves to arg_gp_idx).
+        cg_ubsan_nonnull_check(node, call_target, arg_regs[i], i);
         if (arg_is_float[i] && arg_sizes[i] > 8 && arg_fp_idx[i] >= 0) {
             continue;
         }
@@ -10351,6 +10362,168 @@ static void cg_ubsan_null_check(Node *node, VReg r) {
 #else
     (void)node;
     (void)r;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// -fsanitize=undefined: non-null C-string (nonnull_arg)
+// ---------------------------------------------------------------------------
+// gcc checks the first arg of libc string functions (strlen/strcpy/...) for
+// null before the call: cmpq $0,arg; jne skip; call
+// __ubsan_handle_nonnull_arg(NonNullArgData*). NonNullArgData is
+// {SourceLocation Loc; SourceLocation AttrLoc; int ArgIndex} (40 bytes).
+// x86-64 only (aarch64 to do).
+static char *cg_emit_ubsan_nonnull_data(const char *filename, int line, int argidx, int n) {
+    if (!opt_ubsan || cg_dry_run) return NULL;
+    const char *fn = filename ? filename : "";
+    char *data_label = format(".L.ubsan_nn_data.%d", n);
+    char *str_label = format(".L.ubsan_nn_str.%d", n);
+    cg_set_section(SEC_RODATA);
+    cg_def_label_sec(str_label, SEC_RODATA);
+    int str_sym = objfile_find_sym(cg_obj, str_label);
+    secbuf_emitbuf(cg_sec, fn, strlen(fn));
+    secbuf_emit8(cg_sec, 0);
+    // +0 Loc.filename, +8 Loc.line, +12 Loc.col, +16 AttrLoc.filename,
+    // +24 AttrLoc.line, +28 AttrLoc.col, +32 ArgIndex (40 total).
+    cg_set_section(SEC_DATA);
+    secbuf_align(cg_sec, 8);
+    size_t data_off = cg_sec->len;
+    cg_def_label_sec(data_label, SEC_DATA);
+    size_t fn_off = data_off;
+    size_t attr_off = data_off + 16;
+    secbuf_emit64le(cg_sec, 0); // Loc.filename
+    secbuf_emit32le(cg_sec, (uint32_t)line); // Loc.line
+    secbuf_emit32le(cg_sec, 0); // Loc.col
+    secbuf_emit64le(cg_sec, 0); // AttrLoc.filename
+    secbuf_emit32le(cg_sec, (uint32_t)line); // AttrLoc.line
+    secbuf_emit32le(cg_sec, 0); // AttrLoc.col
+    secbuf_emit32le(cg_sec, (uint32_t)argidx); // ArgIndex
+    secbuf_emit32le(cg_sec, 0); // pad (36 -> 40)
+#ifdef ARCH_ARM64
+    objfile_add_reloc(cg_obj, SEC_DATA, fn_off, str_sym, R_AARCH64_ABS64, 0);
+    objfile_add_reloc(cg_obj, SEC_DATA, attr_off, str_sym, R_AARCH64_ABS64, 0);
+#else
+    objfile_add_reloc(cg_obj, SEC_DATA, fn_off, str_sym, R_X86_64_64, 0);
+    objfile_add_reloc(cg_obj, SEC_DATA, attr_off, str_sym, R_X86_64_64, 0);
+#endif
+    cg_set_section(SEC_TEXT);
+    return data_label;
+}
+
+// Non-null libc string fn with a nonnull first arg -> 0; else -1.
+static int nonnull_string_argidx(const char *fn) {
+    if (!fn) return -1;
+    static const char *const names[] = {
+        "strlen",
+        "strnlen",
+        "strchr",
+        "strchrnul",
+        "strcspn",
+        "strspn",
+        "strpbrk",
+        "strstr",
+        "strtok",
+        "strtok_r",
+        "stpcpy",
+        "stpncpy",
+        "strcat",
+        "strcpy",
+        "strncpy",
+        "strncat",
+        "strdup",
+        "strndup",
+        "strcmp",
+        "strncmp",
+        "strcoll",
+        "strxfrm",
+        "swab",
+    };
+    for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+        if (!strcmp(fn, names[i])) return 0;
+    return -1;
+}
+
+// Null-check arg `i` (0-based) before a call to a non-null string fn.
+// `r` holds the arg value. x86-64 only.
+static void cg_ubsan_nonnull_check(Node *node, char *call_target, VReg r, int i) {
+#ifndef ARCH_ARM64
+    if (!opt_ubsan || cg_dry_run || r < 0) return;
+    int argidx = nonnull_string_argidx(call_target);
+    if (argidx < 0 || i != argidx) return;
+    int n = ubsan_ctr++;
+    char *data_label = cg_emit_ubsan_nonnull_data(
+        node->tok ? node->tok->filename : NULL,
+        node->tok ? node->tok->lineno : 0, argidx + 1, n); // 1-based
+    if (!data_label) return;
+    char *skip = format(".L.ubsan_nn.%d", n);
+    x86_cmp_ri(cg_sec, 8, REG(r), 0); // cmpq $0, arg
+    emit_jcc_fixup(cg_sec, X86_NE, skip); // non-null -> skip
+    VReg d = alloc_reg_avoid2(r, -1);
+    asm_lea_rip_reg(cg_sec, d, data_label);
+    x86_mov_rr(cg_sec, 8, X86_RDI, REG(d)); // arg1 = data
+    free_reg(d);
+    emit_direct_call("__ubsan_handle_nonnull_arg", false); // aborts
+    cg_def_label(skip);
+#else
+    (void)node;
+    (void)call_target;
+    (void)r;
+    (void)i;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// -fsanitize=undefined: __builtin_unreachable reached
+// ---------------------------------------------------------------------------
+// gcc emits an UnreachableData {SourceLocation} (16 bytes) and, at the
+// unreachable program point, calls __ubsan_handle_builtin_unreachable(data)
+// (which aborts) instead of emitting nothing. x86-64 only (aarch64 to do).
+static char *cg_emit_ubsan_unreach_data(const char *filename, int line, int n) {
+    if (!opt_ubsan || cg_dry_run) return NULL;
+    const char *fn = filename ? filename : "";
+    char *data_label = format(".L.ubsan_ur_data.%d", n);
+    char *str_label = format(".L.ubsan_ur_str.%d", n);
+    cg_set_section(SEC_RODATA);
+    cg_def_label_sec(str_label, SEC_RODATA);
+    int str_sym = objfile_find_sym(cg_obj, str_label);
+    secbuf_emitbuf(cg_sec, fn, strlen(fn));
+    secbuf_emit8(cg_sec, 0);
+    // +0 Filename, +8 Line, +12 Column (16 total).
+    cg_set_section(SEC_DATA);
+    secbuf_align(cg_sec, 8);
+    size_t data_off = cg_sec->len;
+    cg_def_label_sec(data_label, SEC_DATA);
+    secbuf_emit64le(cg_sec, 0); // Filename
+    secbuf_emit32le(cg_sec, (uint32_t)line); // Line
+    secbuf_emit32le(cg_sec, 0); // Column
+    objfile_add_reloc(cg_obj, SEC_DATA, data_off, str_sym,
+#ifdef ARCH_ARM64
+                      R_AARCH64_ABS64,
+#else
+                      R_X86_64_64,
+#endif
+                      0);
+    cg_set_section(SEC_TEXT);
+    return data_label;
+}
+
+// At a __builtin_unreachable point, emit the aborting UBSan call instead of
+// falling off (which would otherwise be undefined / a dead-end). x86-64 only.
+static void cg_ubsan_unreachable(Node *node) {
+#ifndef ARCH_ARM64
+    if (!opt_ubsan || cg_dry_run) return;
+    int n = ubsan_ctr++;
+    char *data_label = cg_emit_ubsan_unreach_data(
+        node->tok ? node->tok->filename : NULL,
+        node->tok ? node->tok->lineno : 0, n);
+    if (!data_label) return;
+    VReg d = alloc_reg();
+    asm_lea_rip_reg(cg_sec, d, data_label);
+    x86_mov_rr(cg_sec, 8, X86_RDI, REG(d)); // arg1 = data
+    free_reg(d);
+    emit_direct_call("__ubsan_handle_builtin_unreachable", false); // aborts
+#else
+    (void)node;
 #endif
 }
 

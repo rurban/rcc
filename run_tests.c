@@ -1763,6 +1763,8 @@ static int test_unit_expected_exit(const char *base) {
     if (streq(base, "test_ubsan_intoverflow")) return 1; // UBSan halt_on_error
     if (streq(base, "test_ubsan_shift")) return 1; // UBSan halt_on_error
     if (streq(base, "test_ubsan_null")) return 1; // UBSan halt_on_error
+    if (streq(base, "test_ubsan_nonnull")) return 1; // UBSan halt_on_error
+    if (streq(base, "test_ubsan_unreachable")) return 1; // UBSan halt_on_error
     if (streq(base, "test_include")) return 42;
     if (streq(base, "test_include2")) return 10;
     if (streq(base, "test_self_include2")) return 1;
@@ -1777,14 +1779,16 @@ static int test_unit_expected_exit(const char *base) {
 // handler would otherwise intercept the SIGFPE with a build-dependent exit.
 static const char *test_unit_env(const char *base) {
     if (streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
-        streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null"))
+        streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null") ||
+        streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable"))
         return "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=0";
     return NULL;
 }
 static const char *extra_ldflags(const char *base, const char *srcfile) {
     // -fsanitize=undefined unit test: compile+link with the gcc UBSan runtime.
     if (streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
-        streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null"))
+        streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null") ||
+        streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable"))
         return " -fsanitize=undefined";
     bool lm = streq(base, "22_floating_point") || streq(base, "24_math_library");
     bool pt = false;
@@ -3860,7 +3864,8 @@ static int run_unit_tests(void) {
              * test_ubsan_intoverflow uses the same libubsan link + halt. */
             if (!streq(platform, "linux") &&
                 (streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
-                 streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null"))) {
+                 streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null") ||
+                 streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable"))) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
                 continue;
@@ -3968,7 +3973,8 @@ static int run_unit_tests(void) {
              * rely on the libubsan runtime, verified on native Linux only. */
             if (!streq(platform, "linux") &&
                 (streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
-                 streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null"))) {
+                 streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null") ||
+                 streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable"))) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
                 free(nl[i]);
