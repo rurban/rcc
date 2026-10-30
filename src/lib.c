@@ -208,7 +208,7 @@ static void apply_sanitize_from_ldflags(const char *ldflags) {
     char *copy = strdup(ldflags);
     char *sv = NULL;
     for (char *tok = strtok_r(copy, " \t", &sv); tok; tok = strtok_r(NULL, " \t", &sv)) {
-        if (!strncmp(tok, "-fsanitize=", 11) || !strncmp(tok, "-fsanitizer=", 12)) {
+        if (!strncmp(tok, "-fsanitize=", 11)) {
             const char *list = strchr(tok, '=') + 1;
             char *lsv = NULL;
             for (char *lt = strtok_r((char *)list, ",", &lsv); lt;

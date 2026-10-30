@@ -356,11 +356,7 @@ void help(void) {
            "-mno-ms-bitfields   use GCC bitfield layout by default\n"
            "-pie|-fPIE|-fpie    generate position-independent executable\n"
            "-fPIC|-fpic         generate position-independent code\n"
-           "-fsanitize=<list>   enable sanitizers (comma list): address, undefined. "
-           "undefined instruments integer divide-by-zero, signed overflow "
-           "(add/sub/mul), and shift out-of-range; address instruments global "
-           "out-of-bounds reads/writes (x86-64); both link the gcc runtime "
-           "(-fsanitizer= is an alias)\n"
+           "-fsanitize=<list>   enable sanitizers (comma list): address, undefined\n"
            "-time               print timing for each compilation substep\n"
            "-v                  be more verbose\n"
            "-xc                 treat next input as C\n"
@@ -435,7 +431,7 @@ bool opt_g = false;
 bool opt_pie = false;
 bool opt_pic = false;
 bool opt_shared = false;
-// -fsanitize=<list> / -fsanitizer=<list>: see rcc.h. opt_sanitize_list is
+// -fsanitize=<list>: see rcc.h. opt_sanitize_list is
 // rebuilt (free/realloc) as flags are parsed so a later -fsanitize=none
 // clears an earlier request.
 bool opt_asan = false;
@@ -556,7 +552,7 @@ static void sanitize_list_rebuild(void) {
         opt_sanitize_list = format("undefined");
 }
 
-// Parse a "-fsanitize=<list>" / "-fsanitizer=<list>" value: a comma
+// Parse a "-fsanitize=<list>" value: a comma
 // separated list of sanitizer names. rcc instruments "undefined" (integer
 // divide-by-zero, calling the gcc libubsan handler) and links the gcc
 // runtime for "address"; other names are accepted but not acted on (same
@@ -823,10 +819,6 @@ int main(int argc, char **argv) {
             opt_pie = true;
         } else if (!strcmp(argv[i], "-fPIC") || !strcmp(argv[i], "-fpic")) {
             opt_pic = true;
-        } else if (!strncmp(argv[i], "-fsanitizer=", 12)) {
-            // -fsanitizer=<list> (alias of the canonical -fsanitize=<list>);
-            // the 'r' at offset 10 keeps this distinct from "-fsanitize=".
-            parse_sanitize_list(argv[i] + 12);
         } else if (!strncmp(argv[i], "-fsanitize=", 11)) {
             parse_sanitize_list(argv[i] + 11);
         } else if (!strcmp(argv[i], "-time")) {
@@ -1905,7 +1897,7 @@ int main(int argc, char **argv) {
 #endif
 #endif
 
-        // Sanitizer runtime (opt_asan/opt_ubsan set by -fsanitize/-fsanitizer):
+        // Sanitizer runtime (opt_asan/opt_ubsan set by -fsanitize):
         // re-pass the recognized list to the gcc driver so it links the
         // matching runtime (libasan / libubsan). No source is compiled here
         // (the objects already exist), so gcc only does the link-time wiring
