@@ -12,11 +12,13 @@ complete list of changes see the git log.
     --as-needed/--no-undefined/-v/-z), -nodefaultlibs, -nostdlib, and -r, and for
     linking only objects and libs instead of falling back to the external linker.
   - Implemented native macho linker for executables with external symbols.
-  - New -fsanitize=<list>: address, undefined. `undefined` instruments
-    divide-by-zero, signed overflow, shift out-of-range, null deref, null
-    C-string argument, pointer-overflow, and reached __builtin_unreachable;
-    `address` checks global out-of-bounds on x86-64. Both link the gcc
-    sanitizer runtime.
+  - New -fsanitize=<list>: address, undefined, float-cast-overflow.
+    `undefined` instruments divide-by-zero, signed overflow, shift
+    out-of-range, null deref, null C-string argument, pointer-overflow,
+    alignment, local array bounds, returns-nonnull-attribute, and reached
+    __builtin_unreachable; `float-cast-overflow` (a separate flag, not in
+    `undefined`) checks float->int cast overflow; `address` checks global
+    out-of-bounds on x86-64. All link the gcc sanitizer runtime.
 
 * Changes in v1.2.2 (2026-09-19) (Reini Urban)
 
