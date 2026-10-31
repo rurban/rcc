@@ -174,10 +174,13 @@ All compilers but rcc fail the -Whomoglyph test/test_unicode.c
   compile-time-constant divisor replace the runtime `idiv`/`div`/`sdiv`
   with a precomputed multiply and shift. x86-64 signed 32-bit division
   by a positive non-power-of-2 constant uses the Lemire 33-bit multiplier
-  (`c = 2^s/d + 1`, `s = 31 + ceil(log2 d)`): the product fits signed
-  64-bit, so a single 64-bit multiply needs no add-back correction —
-  the faster path for the ~38% of divisors whose classic Hacker's Delight
-  magic (gcc/clang's default) needs one.
+  (`c = 2^s/d + 1`, `s = 31 + ceil(log2 d)`): `|n| <= 2^31` and `c < 2^32`
+  keep the product in signed 64-bit, so a single 64-bit multiply plus a
+  shift does the whole division — no add-back correction, no branches, no
+  conditional move. For the ~38% of divisors whose classic Hacker's
+  Delight magic (gcc/clang's default) needs that add-back, this matches
+  gcc's instruction count (and beats clang's by one); and it stays
+  branch-free where gcc/clang emit a cmov for power-of-two divisors.
 - **Switch-dispatch lowering** — `-O1`: dense small-int `switch` → jump
   table (x86); a sparse switch (no case-ranges) with >= 150 cases →
   compile-time perfect hash (32-bit multiplicative, deterministic
