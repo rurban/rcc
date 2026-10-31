@@ -265,6 +265,9 @@ int rcc_lib_compile_file_ex2(RCCLib *lib, const char *path,
 
     error_count = 0; // fresh diagnostics per compile
     Token *tok = preprocess((char *)path, contents);
+    // #pragma pack state is position-dependent: start from the default
+    // and let the parser's pack marker handlers track it (see main.c).
+    pack_align = 0;
     Program *prog = parse(tok);
     prog->in_path = (char *)path;
 

@@ -1379,6 +1379,11 @@ int main(int argc, char **argv) {
         }
 
         t0 = opt_time ? timer_start() : 0;
+        // #pragma pack state is position-dependent: preprocess() has fully
+        // scanned the file, so start this parse from the default (0) and
+        // let the parser's pack marker handlers track it from the token
+        // stream.
+        pack_align = 0;
         Program *prog = parse(tok);
         prog->in_path = cur_path;
         if (opt_time)
@@ -1412,6 +1417,7 @@ int main(int argc, char **argv) {
         // checked like the user's code.
         if (parser_used_wide_bitint) {
             Token *rt_tok = preprocess("<rcc-bitint-runtime>", (char *)bitint_rt_src);
+            pack_align = 0;
             Program *rt_prog = parse(rt_tok);
             for (TLItem *item = rt_prog->items; item; item = item->next) {
                 if (item->kind == TL_FUNC) {

@@ -186,9 +186,19 @@ static void clear_macros(void) {
     for (Macro *m = macros; m; m = m->next) macro_ht_add(m);
 }
 
+// Parser-owned: the current #pragma pack(n) state while parsing, driven
+// by the pack marker tokens the preprocessor emits (see the handlers in
+// parser.c). The preprocessor must NOT mutate it: preprocess() runs a full
+// scan of the whole TU (including all includes) before parsing starts, so
+// a preprocessor-side write would leave it holding the END-OF-FILE pack
+// state, and every struct layout would pick it up instead of the pack
+// state active at its definition site (a `#pragma pack(1)` left active at
+// EOF would silently repack every struct in the TU). The preprocessor
+// keeps its own shadow (pp_pack) just to compute push/pop marker values.
 int pack_align;
 int pack_align_stack[16];
 int pack_align_idx;
+static int pp_pack; // preprocessor shadow of pack_align for push/pop
 bool fenv_access;
 
 void rcc_reset_state(void) {
@@ -203,6 +213,7 @@ void rcc_reset_state(void) {
     pp_counter = 0;
     once_files = NULL;
     pack_align = 0;
+    pp_pack = 0;
     pack_align_idx = 0;
 }
 
@@ -3256,17 +3267,17 @@ static void do_directive(void) {
             p = p->next;
             if (ptok(p, "(")) p = p->next;
             if (p && p->kind == TK_IDENT && !strcmp(p->name, "push")) {
-                pack_align_stack[pack_align_idx++] = pack_align;
+                pack_align_stack[pack_align_idx++] = pp_pack;
                 p = p->next;
                 if (ptok(p, ",")) p = p->next;
-                if (p && p->kind == TK_NUM && p->ptr[0] >= '1' && p->ptr[0] <= '9') pack_align = p->ptr[0] - '0';
-                emit_pragma_marker("pack", pack_align, true, p);
+                if (p && p->kind == TK_NUM && p->ptr[0] >= '1' && p->ptr[0] <= '9') pp_pack = p->ptr[0] - '0';
+                emit_pragma_marker("pack", pp_pack, true, p);
             } else if (p && p->kind == TK_IDENT && !strcmp(p->name, "pop")) {
-                if (pack_align_idx > 0) pack_align = pack_align_stack[--pack_align_idx];
-                emit_pragma_marker("pack", pack_align, true, p);
+                if (pack_align_idx > 0) pp_pack = pack_align_stack[--pack_align_idx];
+                emit_pragma_marker("pack", pp_pack, true, p);
             } else if (p && p->kind == TK_NUM && p->ptr[0] >= '1' && p->ptr[0] <= '9') {
-                pack_align = p->ptr[0] - '0';
-                emit_pragma_marker("pack", pack_align, true, p);
+                pp_pack = p->ptr[0] - '0';
+                emit_pragma_marker("pack", pp_pack, true, p);
             } else {
                 // Bare `#pragma pack()` (no push/pop/number, e.g. every
                 // ACPI table header's pack(1) ... pack() pair) or an
@@ -3275,8 +3286,8 @@ static void do_directive(void) {
                 // previous behavior) never reset pack_align, leaking the
                 // most recent pack(N) into every struct declared for the
                 // rest of the translation unit.
-                pack_align = 0;
-                emit_pragma_marker("pack", pack_align, true, p);
+                pp_pack = 0;
+                emit_pragma_marker("pack", pp_pack, true, p);
             }
             return;
         }
