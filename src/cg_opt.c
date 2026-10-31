@@ -205,11 +205,15 @@ static MagicS32 magic32(int32_t d) {
 // fits an unsigned 32-bit register). Quotient q = ((int64)n*c) >> s + (n<0);
 // |n| <= 2^31 and c < 2^32 keep |n*c| < 2^63, so a plain 64-bit imul gives the
 // full product and no Hacker's-Delight add-back correction is needed.
+// x86-only (the 2-operand 64-bit imul it relies on); arm64 uses the
+// standard magic with a signed high multiply.
+#ifndef ARCH_ARM64
 static uint32_t lemire32(int32_t d, int *ps) {
     int s = 31 + (32 - __builtin_clz((uint32_t)d - 1));
     *ps = s;
     return (uint32_t)((((uint64_t)1 << s) / (uint32_t)d) + 1);
 }
+#endif
 
 static MagicS64 magic64(int64_t d) {
     MagicS64 mag;
@@ -359,22 +363,65 @@ static VReg cgopt_sdiv_const_q(VReg n_reg, int64_t d, int sz) {
         return q;
     }
 #ifndef ARCH_ARM64
-    // x86 32-bit positive divisor: Lemire 33-bit multiplier (no add-back).
+    // x86 32-bit positive divisor: branch-free, no add-back.
     if (sz == 4 && d > 0) {
-        int s;
-        uint32_t c = lemire32((int32_t)d, &s);
-        VReg creg = alloc_reg();
-        cgopt_mov_imm(creg, 4, (int64_t)c);
+        MagicS32 mg = magic32((int32_t)d);
         VReg q = alloc_reg();
         x86_movsx(cg_sec, 8, 4, REG(q), REG(n_reg)); // q = sext64(n)
-        x86_imul_rr(cg_sec, 8, REG(q), REG(creg)); // q = q*c (3-operand, no RDX)
-        free_reg(creg);
-        asm_sar_imm(cg_sec, q, 8, (uint8_t)s); // q >>= s, arithmetic
+        if (mg.M > 0) {
+            // M fits a signed 32-bit immediate: 3-operand immediate imul
+            // (no register load) + combined high-half+postshift (32+s).
+            x86_imul_rri(cg_sec, 8, REG(q), REG(q), mg.M); // q = q*M
+            asm_sar_imm(cg_sec, q, 8, (uint8_t)(32 + mg.s)); // q >>= 32+s
+        } else {
+            // M wraps negative (the standard needs the add-back): Lemire
+            // 33-bit multiplier, product fits signed 64-bit, no add-back.
+            int ls;
+            uint32_t c = lemire32((int32_t)d, &ls);
+            VReg creg = alloc_reg();
+            cgopt_mov_imm(creg, 4, (int64_t)c);
+            x86_imul_rr(cg_sec, 8, REG(q), REG(creg)); // q = q*c (3-operand)
+            free_reg(creg);
+            asm_sar_imm(cg_sec, q, 8, (uint8_t)ls); // q >>= ls
+        }
         VReg sbit = alloc_reg();
         asm_mov_reg_reg(cg_sec, sbit, n_reg, 4);
         asm_shr_imm(cg_sec, sbit, 4, 31); // 0 or 1, the sign of n
         asm_add_reg_reg(cg_sec, q, sbit, 8); // round toward zero
         free_reg(sbit);
+        return q;
+    }
+#endif
+#ifdef ARCH_ARM64
+    // arm64 32-bit positive divisor: standard magic, branch-free.
+    if (sz == 4 && d > 0) {
+        MagicS32 mg = magic32((int32_t)d);
+        VReg mreg = alloc_reg();
+        cgopt_mov_imm(mreg, 4, mg.M); // mreg = M (MOVZ + MOVK)
+        VReg q = alloc_reg();
+        asm_smull(cg_sec, q, n_reg, mreg); // q = sext(n) * sext(M) (64-bit)
+        free_reg(mreg);
+        if (mg.M > 0) {
+            // no correction: combined high-half+postshift (32+s), sign from
+            // the product (same sign as n since M>0).
+            VReg sbit = alloc_reg();
+            arm64_lsr_imm(cg_sec, 1, REG(sbit), REG(q), 63); // sbit = q>>63
+            asm_sar_imm(cg_sec, q, 8, 32 + mg.s); // q >>= 32+s, arithmetic
+            asm_add_reg_reg(cg_sec, q, sbit, 4); // q += sign (round)
+            free_reg(sbit);
+        } else {
+            // M wraps negative: add-back correction, then round folded into
+            // a shifted-operand add (q = qpost + (q lsr 31)).
+            asm_shr_imm(cg_sec, q, 8, 32); // q = high 32 bits (in low 32)
+            asm_add_reg_reg(cg_sec, q, n_reg, 4); // q += n (correction)
+            VReg qpost = alloc_reg();
+            if (mg.s)
+                arm64_asr_imm(cg_sec, 0, REG(qpost), REG(q), mg.s); // qpost = q>>s
+            else
+                asm_mov_reg_reg(cg_sec, qpost, q, 4);
+            arm64_add_reg(cg_sec, 0, REG(q), REG(qpost), REG(q), ARM64_LSR, 31);
+            free_reg(qpost);
+        }
         return q;
     }
 #endif
