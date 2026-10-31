@@ -10762,7 +10762,7 @@ static void cg_ubsan_fco_check(VReg r, Type *from, Type *to, int line) {
     x86_mov_rr(cg_sec, 8, X86_RDI, REG(d)); // rdi = &Data
     free_reg(d);
     asm_movq_r_xmm(cg_sec, X86_XMM0, r); // reload value for the handler
-    asm_movq_xmm_r(cg_sec, X86_RSI, X86_XMM0); // rsi = from (value)
+    x86_movq_xmm_r(cg_sec, X86_RSI, X86_XMM0); // rsi = from (value)
     emit_direct_call("__ubsan_handle_float_cast_overflow", false); // aborts
     cg_def_label(ok);
 #else
