@@ -1758,6 +1758,12 @@ static int test_expected_exit(const char *base) {
     if (streq(base, "101_cleanup")) return 105;
     return 0;
 }
+// 101_cleanup expands INCR_GI7 to 65536 cleanup locals (~25s compile), which
+// exceeds the 30s compile ceiling under --parallel load.
+static int test_compile_timeout(const char *base) {
+    if (streq(base, "101_cleanup")) return 120;
+    return 30;
+}
 static int test_unit_expected_exit(const char *base) {
     if (streq(base, "test_ubsan_divzero")) return 1; // UBSan halt_on_error
     if (streq(base, "test_ubsan_intoverflow")) return 1; // UBSan halt_on_error
@@ -2801,7 +2807,7 @@ static void run_one_test(const char *src_path, const char *base,
         }
         ca[ai] = NULL;
         vlog_compile_cmd = cmdline_from_argv(ca);
-        ProcResult cr = proc_run(ca, scaled(30), 0);
+        ProcResult cr = proc_run(ca, scaled(test_compile_timeout(base)), 0);
         if (cr.exit_code != 0) {
             /* 106_versym calls pthread_condattr_setpshared(), a POSIX
              * process-shared-condvar API OpenBSD's and NetBSD's pthread
