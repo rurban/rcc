@@ -11049,10 +11049,13 @@ static void cg_emit_asan_globals(Program *prog) {
             gs = objfile_add_sym(cg_obj, gsym, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_OBJECT);
         objfile_add_reloc(cg_obj, arr_sec, off, gs, R_X86_64_64, 0);
         secbuf_emit64le(cg_sec, (uint64_t)size); // size
-        // size_with_redzone: libasan requires it granule-aligned and >= size.
-        // Small globals get a 64-byte managed region (redzone covers OOB just
-        // past the global); large ones round up to the granule.
-        uint64_t swr = (size >= 64) ? ((size + 7) & ~7) : 64;
+        // size_with_redzone: libasan's global redzone scheme is
+        // ASAN_RED_ZONE_SIZE=32 (same as GCC's asan_red_zone_size): the
+        // redzone pads beg+swr up to a 64-byte boundary, minimum 32 bytes.
+        // cg_emit_global() reserves one slot per global (beg..beg+swr) so a
+        // redzone can never overlap the next global's body.
+        uint64_t c = (uint64_t)size & 31;
+        uint64_t swr = (uint64_t)size + (c ? 64 - c : 32);
         secbuf_emit64le(cg_sec, swr); // size_with_redzone
         size_t noff = cg_sec->len;
         secbuf_emit64le(cg_sec, 0); // name
@@ -19092,6 +19095,15 @@ struct ObjFile *codegen(Program *prog) {
                     cg_apply_sym_visibility(asm_sym_name(sym_name(label)), var->has_visibility, var->visibility);
                 }
                 cg_obj->bss_size += var->ty->size;
+                if (opt_asan) {
+                    // ASan slot: reserve beg..beg+swr (same swr as
+                    // cg_emit_asan_globals) so this global's redzone cannot
+                    // overlap the body of the next global.
+                    size_t c = var->ty->size & 31;
+                    size_t swr = var->ty->size + (c ? 64 - c : 32);
+                    size_t end = off + swr;
+                    if (cg_obj->bss_size < end) cg_obj->bss_size = end;
+                }
             } else {
                 cg_set_section(data_sec);
                 {
@@ -19220,6 +19232,18 @@ struct ObjFile *codegen(Program *prog) {
                         secbuf_emit32le(cg_sec, (uint32_t)var->init_val); // .quad %s
                     else
                         secbuf_emit64le(cg_sec, (uint64_t)var->init_val); // .byte %u
+                }
+                if (opt_asan && !var->is_tls) {
+                    // ASan slot, see the bss path above: pad to beg+swr so
+                    // the registered redzone fits before the next global.
+                    size_t c = var->ty->size & 31;
+                    size_t swr = var->ty->size + (c ? 64 - c : 32);
+                    size_t end = off + swr;
+                    if (cg_sec->len < end) {
+                        secbuf_reserve(cg_sec, end - cg_sec->len);
+                        memset(cg_sec->data + cg_sec->len, 0, end - cg_sec->len);
+                        cg_sec->len = end;
+                    }
                 }
             }
         }
