@@ -10351,7 +10351,14 @@ static char *cg_emit_ubsan_tmm_data(Type *ty, const char *filename, int line, in
 // Must be called before the load/store. `r` is preserved. x86-64 only.
 static void cg_ubsan_null_check(Node *node, VReg r) {
 #ifndef ARCH_ARM64
-    if (!opt_ubsan || cg_dry_run) return;
+    if (!opt_ubsan) return;
+    if (cg_dry_run) {
+        // Pass 1: replay the temp allocation so the prologue saves the
+        // callee-saved register the check clobbers in Pass 2.
+        VReg d = alloc_reg_avoid2(r, -1);
+        free_reg(d);
+        return;
+    }
     int n = ubsan_ctr++;
     char *data_label = cg_emit_ubsan_tmm_data(node->ty,
                                               node->tok ? node->tok->filename : NULL,
@@ -10381,9 +10388,16 @@ static void cg_ubsan_null_check(Node *node, VReg r) {
 // x86-64 only.
 static void cg_ubsan_align_check(Node *node, VReg r) {
 #ifndef ARCH_ARM64
-    if (!opt_ubsan || cg_dry_run) return;
+    if (!opt_ubsan) return;
     int sz = node->ty->size;
     if (sz < 2 || (sz & (sz - 1)) != 0) return; // only check N>1 power-of-2
+    if (cg_dry_run) {
+        // Pass 1: replay the temp allocation so the prologue saves the
+        // callee-saved register the check clobbers in Pass 2.
+        VReg d = alloc_reg_avoid2(r, -1);
+        free_reg(d);
+        return;
+    }
     int n = ubsan_ctr++;
     char *data_label = cg_emit_ubsan_tmm_data(node->ty,
                                               node->tok ? node->tok->filename : NULL,
@@ -10479,12 +10493,19 @@ static char *cg_emit_ubsan_oob_data(const char *array_name, const char *elem_nam
 // share a VReg (the self-add spill case). `idx` is preserved. x86-64 only.
 static void cg_ubsan_bounds_check(Node *node, Node *base_node, VReg idx, VReg base) {
 #ifndef ARCH_ARM64
-    if (!opt_ubsan || cg_dry_run) return;
+    if (!opt_ubsan) return;
     Type *array_ty = base_node->ty;
     if (!array_ty || array_ty->kind != TY_ARRAY) return;
     Type *elem = array_ty->base ? array_ty->base : node->ty;
     int64_t len = elem->size > 0 ? array_ty->size / elem->size : 0;
     if (len <= 0 || idx == base) return; // only constant non-empty; skip self-add
+    if (cg_dry_run) {
+        // Pass 1: replay the temp allocation so the prologue saves the
+        // callee-saved register the check clobbers in Pass 2.
+        VReg d = alloc_reg_avoid2(idx, -1);
+        free_reg(d);
+        return;
+    }
     const char *ename = elem->size == 8 ? "long int" : elem->size == 2 ? "short int"
                                                                        : "int";
     char array_name[64], elem_name[32];
@@ -10613,11 +10634,20 @@ static char *cg_emit_ubsan_fco_data(Type *from, Type *to, uint64_t maxv_bits,
 // x86-64 only.
 static void cg_ubsan_fco_check(VReg r, Type *from, Type *to, int line) {
 #ifndef ARCH_ARM64
-    if (!opt_float_cast_overflow || cg_dry_run) return;
+    if (!opt_float_cast_overflow) return;
     int bits = to->size * 8;
     // max double representable by the target int: 2^bits (or 2^(bits-1)).
     int exp = to->is_unsigned ? bits : bits - 1;
     if (exp >= 1024) return; // target larger than any double can express
+    if (cg_dry_run) {
+        // Pass 1: replay the temp allocations (mt, then d) so the prologue
+        // saves the callee-saved registers the check clobbers in Pass 2.
+        VReg mt = alloc_reg();
+        free_reg(mt);
+        VReg d = alloc_reg_avoid2(r, -1);
+        free_reg(d);
+        return;
+    }
     union {
         double d;
         uint64_t b;
@@ -10710,7 +10740,16 @@ static char *cg_emit_ubsan_nonnull_ret_data(const char *filename, int line, int 
 // returns_nonnull function. Preserves r. x86-64 only.
 static void cg_ubsan_nonnull_ret_check(VReg r, const char *filename, int line) {
 #ifndef ARCH_ARM64
-    if (!opt_ubsan || cg_dry_run || r < 0) return;
+    if (!opt_ubsan || r < 0) return;
+    if (cg_dry_run) {
+        // Pass 1: replay the temp allocations (d, then l) so the prologue
+        // saves the callee-saved registers the check clobbers in Pass 2.
+        VReg d = alloc_reg_avoid2(r, -1);
+        free_reg(d);
+        VReg l = alloc_reg_avoid2(r, -1);
+        free_reg(l);
+        return;
+    }
     int n = ubsan_ctr++;
     char *data_label = cg_emit_ubsan_nonnull_ret_data(filename, line, n);
     if (!data_label) return;
@@ -10814,9 +10853,16 @@ static int nonnull_string_argidx(const char *fn) {
 // `r` holds the arg value. x86-64 only.
 static void cg_ubsan_nonnull_check(Node *node, char *call_target, VReg r, int i) {
 #ifndef ARCH_ARM64
-    if (!opt_ubsan || cg_dry_run || r < 0) return;
+    if (!opt_ubsan || r < 0) return;
     int argidx = nonnull_string_argidx(call_target);
     if (argidx < 0 || i != argidx) return;
+    if (cg_dry_run) {
+        // Pass 1: replay the temp allocation so the prologue saves the
+        // callee-saved register the check clobbers in Pass 2.
+        VReg d = alloc_reg_avoid2(r, -1);
+        free_reg(d);
+        return;
+    }
     int n = ubsan_ctr++;
     char *data_label = cg_emit_ubsan_nonnull_data(
         node->tok ? node->tok->filename : NULL,
@@ -10878,7 +10924,14 @@ static char *cg_emit_ubsan_unreach_data(const char *filename, int line, int n) {
 // falling off (which would otherwise be undefined / a dead-end). x86-64 only.
 static void cg_ubsan_unreachable(Node *node) {
 #ifndef ARCH_ARM64
-    if (!opt_ubsan || cg_dry_run) return;
+    if (!opt_ubsan) return;
+    if (cg_dry_run) {
+        // Pass 1: replay the temp allocation so the prologue saves the
+        // callee-saved register the check clobbers in Pass 2.
+        VReg d = alloc_reg();
+        free_reg(d);
+        return;
+    }
     int n = ubsan_ctr++;
     char *data_label = cg_emit_ubsan_unreach_data(
         node->tok ? node->tok->filename : NULL,
@@ -10946,10 +10999,22 @@ static int asan_chk_ctr = 0; // per-TU counter naming each check's skip label
 // follows. x86-64 Linux: shadow = (addr >> 3) + 0x7fff8000.
 static void cg_asan_check_mem(VReg addr, int sz, bool is_write) {
 #ifndef ARCH_ARM64
-    if (!opt_asan || cg_dry_run) return;
+    if (!opt_asan) return;
     if (sz < 1) sz = 1;
     else if (sz > 8)
         sz = 8;
+    if (cg_dry_run) {
+        // Pass 1 emits nothing, but must replay the two temp allocations
+        // below: the prologue's callee-saved save set is computed from
+        // ever_used_regs discovered here, and the shadow check clobbers a
+        // register (possibly rbx/r12-r15) in Pass 2 that the prologue must
+        // save or it corrupts the caller's value across the call.
+        VReg t1 = alloc_reg_avoid2(addr, -1);
+        VReg t2 = alloc_reg_avoid2(addr, t1);
+        free_reg(t1);
+        free_reg(t2);
+        return;
+    }
     int n = asan_chk_ctr++;
     char *ok = format(".L.asan_ok.%d", n);
     VReg t1 = alloc_reg_avoid2(addr, -1);
@@ -18525,7 +18590,13 @@ VReg gen(Node *node) {
             // Only fully-signed ops are checked (unsigned wraps, no overflow).
             // A pointer add (lhs TY_PTR) is checked for pointer overflow via
             // the carry flag instead of the signed-overflow flag.
-            if (opt_ubsan && !cg_dry_run && sz <= 8 &&
+            // Runs in BOTH passes: the temp allocations (r_a/r_save/d) and
+            // the fn_struct_ret_off growth must be visible in Pass 1, or the
+            // prologue will not save a callee-saved temp and the frame will
+            // be 8 bytes too small for a_slot. data_label is NULL in Pass 1
+            // (data emitters are dry-run no-ops), so only the lea of &Data
+            // is skipped; every alloc/free and the frame growth replay.
+            if (opt_ubsan && sz <= 8 &&
                 (node->kind == ND_ADD || node->kind == ND_SUB || node->kind == ND_MUL) &&
                 !use_unsigned(node->ty) && !use_unsigned(node->lhs->ty) &&
                 !use_unsigned(node->rhs->ty) &&
@@ -18538,7 +18609,9 @@ VReg gen(Node *node) {
                     : cg_emit_ubsan_divrem_data(node->ty, NULL,
                                                 node->tok ? node->tok->filename : NULL,
                                                 node->tok ? node->tok->lineno : 0, n);
-                if (data_label) {
+                // Pass 1 (cg_dry_run) enters with data_label NULL and replays
+                // the allocations/frame growth without emitting &Data.
+                if (data_label || cg_dry_run) {
                     const char *handler = is_ptr ? "__ubsan_handle_pointer_overflow"
                         : node->kind == ND_ADD   ? "__ubsan_handle_add_overflow"
                         : node->kind == ND_SUB   ? "__ubsan_handle_sub_overflow"
@@ -18586,7 +18659,7 @@ VReg gen(Node *node) {
                     asm_push(cg_sec, X86_R10); // preserve live VRegs (see emit_dec_call)
                     asm_push(cg_sec, X86_R11);
                     VReg d = alloc_reg_avoid2(r_a, r_b);
-                    asm_lea_rip_reg(cg_sec, d, data_label); // d = &Data
+                    if (data_label) asm_lea_rip_reg(cg_sec, d, data_label); // d = &Data (none in Pass 1)
                     x86_mov_rr(cg_sec, 8, X86_RDI, REG(d)); // rdi = &Data
                     free_reg(d);
                     if (sz == 4) asm_movsx(cg_sec, r_save, r_save, 8, 4); // sign-extend a
