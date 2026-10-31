@@ -431,6 +431,25 @@ output type).
 
 Generate position-independent code suitable for a shared library.
 
+=item B<-fsanitize=>I<list>
+
+Enable sanitizers (comma-separated list): C<address>, C<undefined>,
+C<float-cast-overflow>.  Links the matching GCC runtime (libasan /
+libubsan) and emits the instrumentation natively.  C<address> (ASan)
+instruments every load/store with a shadow check; C<undefined> (UBSan)
+emits handlers for null-deref, misalignment, local-array OOB,
+float-cast-overflow, nonnull-returns, unreachable, div-by-zero,
+signed-overflow, pointer-overflow, and shift-out-of-range.  See the
+F<rcc.md> "Sanitizer checks" section for details.
+
+=item B<-fstack-protector>, B<-fstack-protector-strong>, B<-fstack-protector-all>
+
+Insert a stack-smashing canary at C<[fp-96]> checked before every
+return.  The check fires when the function has a local array or VLA,
+an address-taken local, or a frame larger than 8 bytes.  On x86-64
+the canary is loaded from C<%fs:0x28> (TLS); on arm64 via the GOT
+(C<__stack_chk_guard> / C<___stack_chk_guard>).
+
 =back
 
 =head2 Linking

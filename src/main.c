@@ -357,6 +357,7 @@ void help(void) {
            "-pie|-fPIE|-fpie    generate position-independent executable\n"
            "-fPIC|-fpic         generate position-independent code\n"
            "-fsanitize=<list>   enable sanitizers (comma list): address, undefined\n"
+           "-fstack-protector   insert stack-smashing canary (-strong/-all accepted)\n"
            "-time               print timing for each compilation substep\n"
            "-v                  be more verbose\n"
            "-xc                 treat next input as C\n"
@@ -450,6 +451,7 @@ bool opt_relocatable = false;
 char *opt_out_implib = NULL;
 bool opt_time = false;
 bool opt_defer_ts = false;
+bool opt_stack_protector = false;
 bool opt_v = false;
 bool opt_ms_bitfields =
 #ifdef _WIN32
@@ -1115,6 +1117,12 @@ int main(int argc, char **argv) {
             opt_char_signedness = -1; // signed
         } else if (!strcmp(argv[i], "-fdefer-ts")) {
             opt_defer_ts = true;
+        } else if (!strcmp(argv[i], "-fstack-protector") ||
+                   !strcmp(argv[i], "-fstack-protector-strong") ||
+                   !strcmp(argv[i], "-fstack-protector-all")) {
+            opt_stack_protector = true;
+        } else if (!strcmp(argv[i], "-fno-stack-protector")) {
+            opt_stack_protector = false;
         } else if (!strcmp(argv[i], "-fwrapv") || !strcmp(argv[i], "-fno-strict-overflow")) {
             ; // accepted, no effect: rcc's codegen never exploits signed-overflow
             // UB (no such optimization pass exists), so it is already

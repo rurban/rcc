@@ -486,6 +486,7 @@ extern char *opt_sanitize_list;
 // in stmt() so ordinary code using `defer` as an identifier elsewhere
 // in the corpus is unaffected when the flag isn't passed.
 extern bool opt_defer_ts;
+extern bool opt_stack_protector; // -fstack-protector[-strong|-all]
 // codeql[cpp/commented-out-code]: trailing note names the real pragma this flag mirrors, not dead code
 extern bool fenv_access; // #pragma STDC FENV_ACCESS state
 extern int pack_align;
@@ -925,6 +926,7 @@ struct Function {
     bool dce_live; // scratch flag for eliminate_unused_static_inline()'s
     // reachability pass; meaningless outside that pass
     bool has_def;
+    bool needs_stack_chk; // -fstack-protector: canary needed
     bool dealloc_vla; // restore RSP from VLA base on scope exit
     // FMV (Function Multi-Versioning): __attribute__((target_clones(...)))
     char **target_clones; // NULL-terminated array of clone target strings

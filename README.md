@@ -233,6 +233,9 @@ cmpsb`/`repne scasb`/ byte loops), avoiding libc call overhead. Also
 - **ASan/UBSan** — `-fsanitize=address`/`undefined` link libasan/libubsan.
   In rcc the `__asan_globals` table is a read-only (non-writable) segment unless
   `-fPIC`/`-fPIE`, where it must stay writable for dynamic relocations.
+- **Stack protector** — `-fstack-protector` (accepts `-strong`/`-all` as
+  aliases) inserts a canary at `[fp-96]` checked before every return.
+  Fires when the function has a local array, address-taken local, or frame > 8B.
 - **Insecure C11-C26 unicode identifier** checks, instead using true
   TR39 advised homoglyph/confusable checks via my
   [libu8indent](https://github.com/rurban/libu8ident/) library.

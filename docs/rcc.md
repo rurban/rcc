@@ -540,25 +540,25 @@ check. Never runs below `-O3`.
 
 ### Code generation and ABI
 
-| Option                                               | Meaning                                                                                                                                                                                                                                    |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `-mms-bitfields`                                     | MSVC-compatible bitfield layout (default on Windows).                                                                                                                                                                                      |
-| `-mno-ms-bitfields`                                  | GCC/System-V-compatible bitfield layout (default elsewhere).                                                                                                                                                                               |
-| `-fvisibility={default,hidden,internal,protected}`   | Default ELF symbol visibility (also accepts the two-argv form). Unrecognized value warns and is ignored.                                                                                                                                   |
-| `-m64`                                               | No-op (the x86-64 build is always 64-bit).                                                                                                                                                                                                 |
-| `-m32`, `-mx32`, `-m16`                              | **Fatal error** — rcc is native-only, no cross-word-width compilation in one binary.                                                                                                                                                       |
-| `-pie`                                               | Generate a position-independent executable.                                                                                                                                                                                                |
-| `-fPIE`, `-fpie`                                     | Generate PIE-suitable code.                                                                                                                                                                                                                |
-| `-fPIC`, `-fpic`                                     | Generate shared-library-suitable position-independent code.                                                                                                                                                                                |
-| `-fsanitize={address,undefined,float-cast-overflow}` | Link libasan/libubsan and instrument the program. The `__asan_globals` table is a read-only (non-writable) segment unless `-fPIC`/`-fPIE`, where it must stay writable for dynamic relocations. See [Sanitizer checks](#sanitizer-checks). |
+| Option                                                                     | Meaning                                                                                                                                                                                                                                                                              |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `-mms-bitfields`                                                           | MSVC-compatible bitfield layout (default on Windows).                                                                                                                                                                                                                                |
+| `-mno-ms-bitfields`                                                        | GCC/System-V-compatible bitfield layout (default elsewhere).                                                                                                                                                                                                                         |
+| `-fvisibility={default,hidden,internal,protected}`                         | Default ELF symbol visibility (also accepts the two-argv form). Unrecognized value warns and is ignored.                                                                                                                                                                             |
+| `-m64`                                                                     | No-op (the x86-64 build is always 64-bit).                                                                                                                                                                                                                                           |
+| `-m32`, `-mx32`, `-m16`                                                    | **Fatal error** — rcc is native-only, no cross-word-width compilation in one binary.                                                                                                                                                                                                 |
+| `-pie`                                                                     | Generate a position-independent executable.                                                                                                                                                                                                                                          |
+| `-fPIE`, `-fpie`                                                           | Generate PIE-suitable code.                                                                                                                                                                                                                                                          |
+| `-fPIC`, `-fpic`                                                           | Generate shared-library-suitable position-independent code.                                                                                                                                                                                                                          |
+| `-fsanitize={address,undefined,float-cast-overflow}`                       | Link libasan/libubsan and instrument the program. The `__asan_globals` table is a read-only (non-writable) segment unless `-fPIC`/`-fPIE`, where it must stay writable for dynamic relocations. See [Sanitizer checks](#sanitizer-checks).                                           |
+| `-fstack-protector` / `-fstack-protector-strong` / `-fstack-protector-all` | Insert a stack-smashing canary at `[fp-96]` checked before every return. Fires when the function has a local array/VLA, an address-taken local, or frame > 8B. On x86 the canary is loaded from `%fs:0x28` (TLS); on arm64 via the GOT (`__stack_chk_guard` / `___stack_chk_guard`). |
 
 ### Sanitizer checks
 
 `-fsanitize=address`/`-asan` and `-fsanitize=undefined`/`-ubsan` link the
 matching GCC runtime (libasan / libubsan) and emit the check descriptors and
-the `__asan_report_*` / `__ubsan_handle_*` calls natively. The per-access
-checks are x86-64 only; on arm64 the runtime is linked but the emitted checks
-are a no-op.
+the `__asan_report_*` / `__ubsan_handle_*` calls natively. All checks are
+supported on both x86-64 and arm64.
 
 **AddressSanitizer** (`-fsanitize=address` / `-asan`):
 
@@ -603,13 +603,13 @@ emitting gcc's exact libubsan descriptor + handler:
 
 - **x86-64 (native Linux)** — full coverage: every check above is emitted and
   verified by the `test_ubsan_*` / ASan unit tests.
-- **arm64** — only `integer-divide-by-zero` has arm64 codegen; every other
-  UBSan check, plus all ASan per-access checks and the global-redzone
-  registration, are x86-64 only, so on arm64 the runtime is linked but those
-  checks emit nothing.
-- The UBSan/ASan unit tests run on **native Linux only** — they are skipped on
-  arm64-cross (qemu), Windows, macOS, and the BSDs (libubsan/libasan runtime
-  paths and fault semantics differ there).
+- **arm64** — full coverage: all 11 UBSan checks and the ASan per-access
+  shadow check are emitted. The canary is loaded via the GOT
+  (`__stack_chk_guard` / `___stack_chk_guard`); the dynamic shadow offset is
+  read from `__asan_shadow_memory_dynamic_address` (macOS) or
+  `__asan_shadow_offset` (Linux).
+- The UBSan/ASan unit tests run on **native Linux and macOS (arm64)** —
+  they are skipped on arm64-cross (qemu), Windows, and the BSDs.
 
 ### Linking
 

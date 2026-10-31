@@ -20578,6 +20578,18 @@ struct ObjFile *codegen(Program *prog) {
             cg_def_fn_label(fn_sym_name);
         cg_apply_sym_visibility(fn_sym_name, fn->has_visibility, fn->visibility);
 
+        // -fstack-protector-strong: canary needed if any local is an
+        // array/VLA, any local's address is taken, or the frame is > 8B.
+        if (opt_stack_protector) {
+            for (LVar *v = fn->locals; v; v = v->next) {
+                if ((v->ty->kind == TY_ARRAY || v->ty->kind == TY_VLA) ||
+                    v->addr_taken || fn->stack_size > 8) {
+                    fn->needs_stack_chk = true;
+                    break;
+                }
+            }
+        }
+
         // Stack frame: stp fp,lr; mov fp,sp; sub sp,sp,#frame_size
         asm_stp_fp_lr(cg_sec); // stp x29, x30, [sp, #-16]!
         asm_mov_fp_sp(cg_sec); // mov x29, sp
@@ -20586,6 +20598,20 @@ struct ObjFile *codegen(Program *prog) {
         else {
             emit_mov_imm64(ARM64_X16, (uint64_t)frame_size); // mov x16, #frame_size
             arm64_sub_extreg(cg_sec, 1, ARM64_SP, ARM64_SP, ARM64_X16, ARM64_UXTX, 0); // sub sp, sp, x16
+        }
+
+        // -fstack-protector: load canary into [x29, #-8]
+        if (fn->needs_stack_chk) {
+#ifdef __APPLE__
+            const char *guard_sym = "___stack_chk_guard";
+#else
+            const char *guard_sym = "__stack_chk_guard";
+#endif
+            VReg t = alloc_reg();
+            emit_adrp_add(t, guard_sym);
+            asm_ldr_phy_reg(cg_sec, REG(t), t, 1);
+            asm_stur_fp(cg_sec, t, 96); // str x{t}, [x29, #-96]
+            free_reg(t);
         }
 
         // GNU nested function: spill the incoming static-chain pointer
@@ -20982,6 +21008,27 @@ struct ObjFile *codegen(Program *prog) {
             }
         }
 
+        // -fstack-protector: verify canary before tearing down the frame
+        if (fn->needs_stack_chk) {
+#ifdef __APPLE__
+            const char *guard_sym = "___stack_chk_guard";
+#else
+            const char *guard_sym = "__stack_chk_guard";
+#endif
+            VReg t = alloc_reg();
+            asm_ldur_fp(cg_sec, t, 96); // t = [x29, #-96]
+            VReg u = alloc_reg_avoid2(t, -1);
+            emit_adrp_add(u, guard_sym);
+            asm_ldr_phy_reg(cg_sec, REG(u), u, 1);
+            asm_cmp_reg_reg(cg_sec, t, u, 8);
+            free_reg(u);
+            char *ok_lbl = format(".L.stackchk_ok.%s", fn->name);
+            emit_jcc_fixup(cg_sec, ARM64_EQ, ok_lbl);
+            emit_direct_call("__stack_chk_fail", false);
+            cg_def_label(ok_lbl);
+            free_reg(t);
+        }
+
         if (frame_size <= 4095)
             arm64_add_imm(cg_sec, 1, ARM64_SP, ARM64_SP, frame_size, 0); // add sp, sp, #frame_size
         else {
@@ -21099,6 +21146,19 @@ struct ObjFile *codegen(Program *prog) {
             cg_def_fn_label(fn_sym_name);
         }
         cg_apply_sym_visibility(fn_sym_name, fn->has_visibility, fn->visibility);
+
+        // -fstack-protector-strong: canary needed if any local is an
+        // array/VLA, any local's address is taken, or the frame is > 8B.
+        if (opt_stack_protector) {
+            for (LVar *v = fn->locals; v; v = v->next) {
+                if ((v->ty->kind == TY_ARRAY || v->ty->kind == TY_VLA) ||
+                    v->addr_taken || fn->stack_size > 8) {
+                    fn->needs_stack_chk = true;
+                    break;
+                }
+            }
+        }
+
 #ifdef _WIN32
         uw_begin(); // .seh_proc
 #endif
@@ -21130,6 +21190,22 @@ struct ObjFile *codegen(Program *prog) {
         uw_stackalloc(sub_amount); // .seh_stackalloc sub_amount
         uw_endprologue(); // .seh_endprologue
 #endif
+
+        // -fstack-protector: load canary into [rbp-8] via %fs:0x28 (TLS)
+        if (fn->needs_stack_chk) {
+            // mov %fs:0x28, %rdx
+            secbuf_emit8(cg_sec, 0x65); // FS prefix
+            secbuf_emit8(cg_sec, 0x8B); // MOV r64, m
+            secbuf_emit8(cg_sec, 0x15); // ModRM: rdx, disp32
+            secbuf_emit8(cg_sec, 0x28); // disp32 = 0x28
+            secbuf_emit8(cg_sec, 0x00);
+            secbuf_emit8(cg_sec, 0x00);
+            secbuf_emit8(cg_sec, 0x00);
+            // mov %rdx, -96(%rbp)
+            secbuf_emit8(cg_sec, 0x89); // MOV m, r64
+            secbuf_emit8(cg_sec, 0x55); // ModRM: rdx, [rbp+disp8]
+            secbuf_emit8(cg_sec, 0xA0); // disp8 = -96
+        }
 
         // Save the callee-saved registers that were actually used into
         // their dedicated slots below the locals/spill region.
@@ -21702,6 +21778,30 @@ struct ObjFile *codegen(Program *prog) {
                 slot += 8;
                 asm_mov_rbp(cg_sec, REG(j + 2), 8, slot); // movq -slot(%rbp), %reg
             }
+        // -fstack-protector: verify canary before tearing down the frame
+        if (fn->needs_stack_chk) {
+            // mov -96(%rbp), %rdx
+            secbuf_emit8(cg_sec, 0x8B);
+            secbuf_emit8(cg_sec, 0x55); // ModRM: rdx, [rbp+disp8]
+            secbuf_emit8(cg_sec, 0xA0); // disp8 = -96
+            // mov %fs:0x28, %rsi
+            secbuf_emit8(cg_sec, 0x65); // FS prefix
+            secbuf_emit8(cg_sec, 0x8B); // MOV r64, m
+            secbuf_emit8(cg_sec, 0x35); // ModRM: rsi, disp32
+            secbuf_emit8(cg_sec, 0x28); // disp32 = 0x28
+            secbuf_emit8(cg_sec, 0x00);
+            secbuf_emit8(cg_sec, 0x00);
+            secbuf_emit8(cg_sec, 0x00);
+            // cmp %rsi, %rdx
+            secbuf_emit8(cg_sec, 0x48); // REX.W
+            secbuf_emit8(cg_sec, 0x39); // CMP r/m, r
+            secbuf_emit8(cg_sec, 0xDA); // ModRM: rdx, rsi
+            char *ok_lbl = format(".L.stackchk_ok.%s", fn->name);
+            emit_jcc_fixup(cg_sec, X86_Z, ok_lbl);
+            emit_direct_call("__stack_chk_fail", false);
+            cg_def_label(ok_lbl);
+        }
+
         asm_mov_rbp_rsp(cg_sec); // movq %rbp, %rsp
         asm_pop(cg_sec, X86_RBP); // popq %rbp
         asm_ret(cg_sec); // ret
