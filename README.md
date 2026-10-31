@@ -170,6 +170,14 @@ All compilers but rcc fail the -Whomoglyph test/test_unicode.c
   - 3-instruction chain folding (`load; op; mov dst` → `load dst; op dst`)
   - Dead jump elimination (`jmp .L; .L:` → `.L:`)
   - Operates on emitted bytecode via `asm_record`/`asm_peep_try` with no separate pass
+- **Constant-divisor strength reduction** — `-O1`: `/` and `%` by a
+  compile-time-constant divisor replace the runtime `idiv`/`div`/`sdiv`
+  with a precomputed multiply and shift. x86-64 signed 32-bit division
+  by a positive non-power-of-2 constant uses the Lemire 33-bit multiplier
+  (`c = 2^s/d + 1`, `s = 31 + ceil(log2 d)`): the product fits signed
+  64-bit, so a single 64-bit multiply needs no add-back correction —
+  the faster path for the ~38% of divisors whose classic Hacker's Delight
+  magic (gcc/clang's default) needs one.
 - **Switch-dispatch lowering** — `-O1`: dense small-int `switch` → jump
   table (x86); a sparse switch (no case-ranges) with >= 150 cases →
   compile-time perfect hash (32-bit multiplicative, deterministic

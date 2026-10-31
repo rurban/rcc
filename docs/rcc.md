@@ -294,6 +294,11 @@ rcc has two independent optimization layers:
     add-back step), replacing the divide with a multiply that retires in
     a handful of cycles. `%` reuses the computed quotient
     (`r = n - q*d`) rather than an independent remainder computation.
+  - x86-64 signed 32-bit by a positive non-power-of-2 divisor: where the
+    magic number above would need that add-back step, the Lemire 33-bit
+    multiplier (`c = 2^s/d + 1`, `s = 31 + ceil(log2 d)`) is used instead
+    — `|n| <= 2^31` and `c < 2^32` keep the product in signed 64-bit, so
+    a plain 64-bit multiply needs no add-back correction.
 
   Skipped under an explicit `-O0` — that's the one level meant to emit
   the plain, predictable `idiv`/`div` every other codegen shortcut in

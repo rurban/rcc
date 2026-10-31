@@ -200,6 +200,17 @@ static MagicS32 magic32(int32_t d) {
     return mag;
 }
 
+// Lemire 33-bit multiplier for signed 32-bit division by a positive
+// non-power-of-2 d (d >= 3): s = 31+ceil(log2 d), c = 2^s/d + 1 (< 2^32,
+// fits an unsigned 32-bit register). Quotient q = ((int64)n*c) >> s + (n<0);
+// |n| <= 2^31 and c < 2^32 keep |n*c| < 2^63, so a plain 64-bit imul gives the
+// full product and no Hacker's-Delight add-back correction is needed.
+static uint32_t lemire32(int32_t d, int *ps) {
+    int s = 31 + (32 - __builtin_clz((uint32_t)d - 1));
+    *ps = s;
+    return (uint32_t)((((uint64_t)1 << s) / (uint32_t)d) + 1);
+}
+
 static MagicS64 magic64(int64_t d) {
     MagicS64 mag;
     uint64_t ad = (uint64_t)(d < 0 ? -(__int128)d : d);
@@ -347,6 +358,27 @@ static VReg cgopt_sdiv_const_q(VReg n_reg, int64_t d, int sz) {
         if (d < 0) asm_neg(cg_sec, q, sz);
         return q;
     }
+#ifndef ARCH_ARM64
+    // x86 32-bit positive divisor: Lemire 33-bit multiplier (no add-back).
+    if (sz == 4 && d > 0) {
+        int s;
+        uint32_t c = lemire32((int32_t)d, &s);
+        VReg creg = alloc_reg();
+        cgopt_mov_imm(creg, 4, (int64_t)c);
+        x86_movsx(cg_sec, 8, 4, X86_RAX, REG(n_reg)); // RAX = sext64(n)
+        x86_imul_r(cg_sec, 8, REG(creg)); // RDX:RAX = RAX*c
+        VReg q = alloc_reg();
+        x86_mov_rr(cg_sec, 8, REG(q), X86_RAX); // q = 64-bit product
+        free_reg(creg);
+        asm_sar_imm(cg_sec, q, 8, (uint8_t)s); // q >>= s, arithmetic
+        VReg sbit = alloc_reg();
+        asm_mov_reg_reg(cg_sec, sbit, n_reg, 4);
+        asm_shr_imm(cg_sec, sbit, 4, 31); // 0 or 1, the sign of n
+        asm_add_reg_reg(cg_sec, q, sbit, 8); // round toward zero
+        free_reg(sbit);
+        return q;
+    }
+#endif
     int64_t M;
     int postshift;
     if (sz == 8) {
