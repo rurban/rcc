@@ -365,10 +365,9 @@ static VReg cgopt_sdiv_const_q(VReg n_reg, int64_t d, int sz) {
         uint32_t c = lemire32((int32_t)d, &s);
         VReg creg = alloc_reg();
         cgopt_mov_imm(creg, 4, (int64_t)c);
-        x86_movsx(cg_sec, 8, 4, X86_RAX, REG(n_reg)); // RAX = sext64(n)
-        x86_imul_r(cg_sec, 8, REG(creg)); // RDX:RAX = RAX*c
         VReg q = alloc_reg();
-        x86_mov_rr(cg_sec, 8, REG(q), X86_RAX); // q = 64-bit product
+        x86_movsx(cg_sec, 8, 4, REG(q), REG(n_reg)); // q = sext64(n)
+        x86_imul_rr(cg_sec, 8, REG(q), REG(creg)); // q = q*c (3-operand, no RDX)
         free_reg(creg);
         asm_sar_imm(cg_sec, q, 8, (uint8_t)s); // q >>= s, arithmetic
         VReg sbit = alloc_reg();
