@@ -11021,8 +11021,15 @@ static void cg_emit_asan_globals(Program *prog) {
         name_syms[ni++] = ns;
     }
 
-    // __asan_global array in a custom alloc section.
-    int arr_sec = objfile_find_or_add_section(cg_obj, "__asan_globals", SHF_ALLOC, 0);
+    // __asan_global array in a custom alloc section. The R_X86_64_64
+    // descriptor entries become dynamic relocations in shared/PIE links
+    // (the runtime loader must patch them), which ld.bfd refuses in a
+    // read-only segment ("relocation in read-only section __asan_globals").
+    // A plain static link resolves them at link time, so the section may be
+    // read-only there. Match codegen's PIC signal: SHF_WRITE only for
+    // position-independent code (opt_pic), SHF_ALLOC otherwise.
+    int arr_sec = objfile_find_or_add_section(
+        cg_obj, "__asan_globals", SHF_ALLOC | (opt_pic ? SHF_WRITE : 0), 0);
     objfile_section_align(cg_obj, arr_sec, 8); // __asan_global is 8-byte aligned
     cg_set_section(arr_sec);
     secbuf_align(cg_sec, 8);
@@ -19049,11 +19056,18 @@ struct ObjFile *codegen(Program *prog) {
             // linker places the section itself (and thus every object in
             // it, GC-tagged-pointer schemes especially) at an address
             // whose low bits stay zero -- see obj.h's ExtraSection::align.
-            if (var->section_name)
-                objfile_section_align(cg_obj, data_sec, var->ty->align > 1 ? (uint32_t)var->ty->align : 1);
+            if (var->section_name) {
+                size_t sec_align = var->ty->align > 1 ? var->ty->align : 1;
+                if (opt_asan && sec_align < 8) sec_align = 8;
+                objfile_section_align(cg_obj, data_sec, (uint32_t)sec_align);
+            }
             const char *sym_name_str = asm_sym_name(sym_name(safe_label)); // .balign %d
             if (is_bss) {
                 size_t align = var->ty->align > 1 ? var->ty->align : 1;
+                // ASan assumes globals are 8-byte aligned (shadow math on
+                // x86-64); libasan's ODR/alignment check aborts otherwise
+                // ("global variable is not properly aligned").
+                if (opt_asan && align < 8) align = 8;
                 size_t rem = cg_obj->bss_size % align;
                 if (rem) cg_obj->bss_size += align - rem;
                 size_t off = cg_obj->bss_size;
@@ -19080,7 +19094,12 @@ struct ObjFile *codegen(Program *prog) {
                 cg_obj->bss_size += var->ty->size;
             } else {
                 cg_set_section(data_sec);
-                secbuf_align(cg_sec, var->ty->align > 1 ? var->ty->align : 1);
+                {
+                    size_t dalign = var->ty->align > 1 ? var->ty->align : 1;
+                    // ASan requires 8-byte-aligned globals, see bss path.
+                    if (opt_asan && dalign < 8) dalign = 8;
+                    secbuf_align(cg_sec, dalign);
+                }
 #ifdef __APPLE__
                 // Apple ARM64: ensure at least 8-byte alignment for data symbols
                 // (needed for proper relocation handling, fixes 119_random_stuff)

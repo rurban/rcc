@@ -218,6 +218,9 @@ cmpsb`/`repne scasb`/ byte loops), avoiding libc call overhead. Also
   allocated size (may be larger than requested due to rounding).
   Unlike GCC -O2 which tracks malloc size through the optimizer, rcc
   reads the chunk metadata.
+- **ASan/UBSan** — `-fsanitize=address`/`undefined` link libasan/libubsan.
+  In rcc the `__asan_globals` table is a read-only (non-writable) segment unless
+  `-fPIC`/`-fPIE`, where it must stay writable for dynamic relocations.
 - **Insecure C11-C26 unicode identifier** checks, instead using true
   TR39 advised homoglyph/confusable checks via my
   [libu8indent](https://github.com/rurban/libu8ident/) library.

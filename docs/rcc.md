@@ -535,16 +535,76 @@ check. Never runs below `-O3`.
 
 ### Code generation and ABI
 
-| Option                                             | Meaning                                                                                                  |
-| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `-mms-bitfields`                                   | MSVC-compatible bitfield layout (default on Windows).                                                    |
-| `-mno-ms-bitfields`                                | GCC/System-V-compatible bitfield layout (default elsewhere).                                             |
-| `-fvisibility={default,hidden,internal,protected}` | Default ELF symbol visibility (also accepts the two-argv form). Unrecognized value warns and is ignored. |
-| `-m64`                                             | No-op (the x86-64 build is always 64-bit).                                                               |
-| `-m32`, `-mx32`, `-m16`                            | **Fatal error** — rcc is native-only, no cross-word-width compilation in one binary.                     |
-| `-pie`                                             | Generate a position-independent executable.                                                              |
-| `-fPIE`, `-fpie`                                   | Generate PIE-suitable code.                                                                              |
-| `-fPIC`, `-fpic`                                   | Generate shared-library-suitable position-independent code.                                              |
+| Option                                               | Meaning                                                                                                                                                                                                                                    |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `-mms-bitfields`                                     | MSVC-compatible bitfield layout (default on Windows).                                                                                                                                                                                      |
+| `-mno-ms-bitfields`                                  | GCC/System-V-compatible bitfield layout (default elsewhere).                                                                                                                                                                               |
+| `-fvisibility={default,hidden,internal,protected}`   | Default ELF symbol visibility (also accepts the two-argv form). Unrecognized value warns and is ignored.                                                                                                                                   |
+| `-m64`                                               | No-op (the x86-64 build is always 64-bit).                                                                                                                                                                                                 |
+| `-m32`, `-mx32`, `-m16`                              | **Fatal error** — rcc is native-only, no cross-word-width compilation in one binary.                                                                                                                                                       |
+| `-pie`                                               | Generate a position-independent executable.                                                                                                                                                                                                |
+| `-fPIE`, `-fpie`                                     | Generate PIE-suitable code.                                                                                                                                                                                                                |
+| `-fPIC`, `-fpic`                                     | Generate shared-library-suitable position-independent code.                                                                                                                                                                                |
+| `-fsanitize={address,undefined,float-cast-overflow}` | Link libasan/libubsan and instrument the program. The `__asan_globals` table is a read-only (non-writable) segment unless `-fPIC`/`-fPIE`, where it must stay writable for dynamic relocations. See [Sanitizer checks](#sanitizer-checks). |
+
+### Sanitizer checks
+
+`-fsanitize=address`/`-asan` and `-fsanitize=undefined`/`-ubsan` link the
+matching GCC runtime (libasan / libubsan) and emit the check descriptors and
+the `__asan_report_*` / `__ubsan_handle_*` calls natively. The per-access
+checks are x86-64 only; on arm64 the runtime is linked but the emitted checks
+are a no-op.
+
+**AddressSanitizer** (`-fsanitize=address` / `-asan`):
+
+- **Global redzone** — registers the TU's globals with `__asan_register_globals`
+  (per-global `__asan_global` descriptor, 8-byte aligned) so libasan poisons
+  each global's redzone (`global-buffer-overflow`).
+- **Per-access shadow checks** — on out-of-bounds reads/writes at every global
+  load, array element / pointer deref, and scalar store. Heap / stack checks
+  come from libasan's interceptors, not rcc.
+
+**UndefinedBehaviorSanitizer** (`-fsanitize=undefined` / `-ubsan`), each
+emitting gcc's exact libubsan descriptor + handler:
+
+- **`integer-divide-by-zero`** — `/` or `%` by a zero divisor
+  (`__ubsan_handle_divrem_overflow`).
+- **`signed-integer-overflow`** — signed `+` / `-` / `*`
+  (`__ubsan_handle_{add,sub,mul}_overflow`).
+- **`shift-out-of-bounds`** — shift count >= the type width, signed types
+  (`__ubsan_handle_shift_out_of_bounds`).
+- **`null`** — null pointer deref (`__ubsan_handle_type_mismatch_v1`, kind 0).
+- **`alignment`** — misaligned access to a >1-byte power-of-2-aligned type
+  (`__ubsan_handle_type_mismatch_v1`, kind 2).
+- **`bounds`** — local-array index < 0 or >= length
+  (`__ubsan_handle_out_of_bounds`).
+- **`returns-nonnull`** — a `returns_nonnull` function returns NULL
+  (`__ubsan_handle_nonnull_return_v1`).
+- **`nonnull-attribute`** — a null C string passed to a `nonnull` string
+  function (`strlen` / `strcmp` / `strchr` / …)
+  (`__ubsan_handle_nonnull_arg`).
+- **`pointer-overflow`** — pointer `+` / `-` arithmetic wraps the address space
+  (`__ubsan_handle_pointer_overflow`).
+- **`unreachable`** — execution reaches `__builtin_unreachable`
+  (`__ubsan_handle_builtin_unreachable`).
+
+**Float-cast-overflow** (`-fsanitize=float-cast-overflow`; a separate
+`-fsanitize` value in rcc, unlike GCC where it rides on `-fsanitize=undefined`):
+
+- **`float-cast-overflow`** — a float → int cast outside the integer's
+  representable range, or NaN (`__ubsan_handle_float_cast_overflow`).
+
+**Architecture / platform limitations**:
+
+- **x86-64 (native Linux)** — full coverage: every check above is emitted and
+  verified by the `test_ubsan_*` / ASan unit tests.
+- **arm64** — only `integer-divide-by-zero` has arm64 codegen; every other
+  UBSan check, plus all ASan per-access checks and the global-redzone
+  registration, are x86-64 only, so on arm64 the runtime is linked but those
+  checks emit nothing.
+- The UBSan/ASan unit tests run on **native Linux only** — they are skipped on
+  arm64-cross (qemu), Windows, macOS, and the BSDs (libubsan/libasan runtime
+  paths and fault semantics differ there).
 
 ### Linking
 
