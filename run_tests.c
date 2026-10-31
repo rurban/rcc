@@ -1764,18 +1764,27 @@ static int test_compile_timeout(const char *base) {
     if (streq(base, "101_cleanup")) return 120;
     return 30;
 }
+// libubsan halt_on_error exits 1 on Linux/glibc but aborts (SIGABRT, 128+6)
+// on macOS/Apple clang. The check code is identical; only the halt differs.
+static int ubsan_halt_exit(void) {
+#ifdef __APPLE__
+    return 134; // SIGABRT
+#else
+    return 1;
+#endif
+}
 static int test_unit_expected_exit(const char *base) {
-    if (streq(base, "test_ubsan_divzero")) return 1; // UBSan halt_on_error
-    if (streq(base, "test_ubsan_intoverflow")) return 1; // UBSan halt_on_error
-    if (streq(base, "test_ubsan_shift")) return 1; // UBSan halt_on_error
-    if (streq(base, "test_ubsan_null")) return 1; // UBSan halt_on_error
-    if (streq(base, "test_ubsan_nonnull")) return 1; // UBSan halt_on_error
-    if (streq(base, "test_ubsan_unreachable")) return 1; // UBSan halt_on_error
-    if (streq(base, "test_ubsan_ptr")) return 1; // UBSan halt_on_error
-    if (streq(base, "test_ubsan_align")) return 1; // UBSan halt_on_error
-    if (streq(base, "test_ubsan_bounds")) return 1; // UBSan halt_on_error
-    if (streq(base, "test_ubsan_fco")) return 1; // UBSan halt_on_error
-    if (streq(base, "test_ubsan_rn")) return 1; // UBSan halt_on_error
+    if (streq(base, "test_ubsan_divzero")) return ubsan_halt_exit();
+    if (streq(base, "test_ubsan_intoverflow")) return ubsan_halt_exit();
+    if (streq(base, "test_ubsan_shift")) return ubsan_halt_exit();
+    if (streq(base, "test_ubsan_null")) return ubsan_halt_exit();
+    if (streq(base, "test_ubsan_nonnull")) return ubsan_halt_exit();
+    if (streq(base, "test_ubsan_unreachable")) return ubsan_halt_exit();
+    if (streq(base, "test_ubsan_ptr")) return ubsan_halt_exit();
+    if (streq(base, "test_ubsan_align")) return ubsan_halt_exit();
+    if (streq(base, "test_ubsan_bounds")) return ubsan_halt_exit();
+    if (streq(base, "test_ubsan_fco")) return ubsan_halt_exit();
+    if (streq(base, "test_ubsan_rn")) return ubsan_halt_exit();
     if (streq(base, "test_include")) return 42;
     if (streq(base, "test_include2")) return 10;
     if (streq(base, "test_self_include2")) return 1;
@@ -3878,11 +3887,11 @@ static int run_unit_tests(void) {
                 continue;
             }
             /* test_ubsan_divzero links the gcc libubsan runtime and relies on
-             * SIGFPE (128+8) for the divide-by-zero trap; verified on native
-             * Linux only (Windows/macOS/BSD fault semantics + runtime paths
-             * differ, and qemu arm64_cross is not covered).
+             * SIGFPE (128+8) for the divide-by-zero trap. Verified on native
+             * Linux and arm64 (macOS); Windows/BSD fault semantics + runtime
+             * paths differ, and qemu arm64_cross is not covered.
              * test_ubsan_intoverflow uses the same libubsan link + halt. */
-            if (!streq(platform, "linux") &&
+            if ((!streq(platform, "linux") && !streq(platform, "arm64")) &&
                 (streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
                  streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null") ||
                  streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable") ||
@@ -3993,8 +4002,8 @@ static int run_unit_tests(void) {
                 continue;
             }
             /* See the parallel path's matching skip: UBSan divzero/intoverflow
-             * rely on the libubsan runtime, verified on native Linux only. */
-            if (!streq(platform, "linux") &&
+             * rely on the libubsan runtime, verified on native Linux and arm64. */
+            if ((!streq(platform, "linux") && !streq(platform, "arm64")) &&
                 (streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
                  streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null") ||
                  streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable") ||

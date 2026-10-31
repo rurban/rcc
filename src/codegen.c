@@ -8836,6 +8836,7 @@ static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
     if (is_flonum(from) && is_integer(to)) {
 #ifdef ARCH_ARM64
         asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
+        cg_ubsan_fco_check(r, from, to, cg_dbg_line); // float-cast-overflow (preserves r)
         {
             if (to->is_unsigned)
                 asm_fcvtzu(cg_sec, r, to->size); // fcvtzu w/x{r}, d0
@@ -10375,8 +10376,27 @@ static void cg_ubsan_null_check(Node *node, VReg r) {
     emit_direct_call("__ubsan_handle_type_mismatch_v1", false); // aborts
     cg_def_label(skip);
 #else
-    (void)node;
-    (void)r;
+    if (!opt_ubsan) return;
+    if (cg_dry_run) {
+        VReg d = alloc_reg(); // replay the data-label temp for Pass 1
+        free_reg(d);
+        return;
+    }
+    int n = ubsan_ctr++;
+    char *data_label = cg_emit_ubsan_tmm_data(node->ty,
+                                              node->tok ? node->tok->filename : NULL,
+                                              node->tok ? node->tok->lineno : 0, n, 0);
+    if (!data_label) return;
+    char *skip = format(".L.ubsan_null.%d", n);
+    asm_cmp_zero(cg_sec, r, 8); // cmp x{r}, #0
+    emit_jcc_fixup(cg_sec, ARM64_NE, skip); // non-null -> skip
+    VReg d = alloc_reg();
+    emit_adrp_add(d, data_label); // REG(d) = &TypeMismatchData
+    arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, REG(d), ARM64_LSL, 0); // x0 = &Data
+    free_reg(d);
+    arm64_orr_reg(cg_sec, 1, ARM64_X1, ARM64_XZR, ARM64_XZR, ARM64_LSL, 0); // x1 = 0
+    emit_direct_call("__ubsan_handle_type_mismatch_v1", false); // aborts
+    cg_def_label(skip);
 #endif
 }
 
@@ -10414,8 +10434,33 @@ static void cg_ubsan_align_check(Node *node, VReg r) {
     emit_direct_call("__ubsan_handle_type_mismatch_v1", false); // aborts
     cg_def_label(skip);
 #else
-    (void)node;
-    (void)r;
+    if (!opt_ubsan) return;
+    int sz = node->ty->size;
+    if (sz < 2 || (sz & (sz - 1)) != 0) return; // only check N>1 power-of-2
+    if (cg_dry_run) {
+        VReg t = alloc_reg();
+        VReg d = alloc_reg();
+        free_reg(t);
+        free_reg(d);
+        return;
+    }
+    int n = ubsan_ctr++;
+    char *data_label = cg_emit_ubsan_tmm_data(node->ty,
+                                              node->tok ? node->tok->filename : NULL,
+                                              node->tok ? node->tok->lineno : 0, n, 2);
+    if (!data_label) return;
+    char *skip = format(".L.ubsan_align.%d", n);
+    VReg t = alloc_reg();
+    arm64_ands_imm(cg_sec, 1, REG(t), REG(r), (uint64_t)(sz - 1)); // t = ptr&(sz-1)
+    emit_jcc_fixup(cg_sec, ARM64_EQ, skip); // aligned (t==0) -> skip
+    free_reg(t);
+    VReg d = alloc_reg();
+    emit_adrp_add(d, data_label); // REG(d) = &TypeMismatchData
+    arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, REG(d), ARM64_LSL, 0); // x0 = &Data
+    free_reg(d);
+    arm64_orr_reg(cg_sec, 1, ARM64_X1, ARM64_XZR, REG(r), ARM64_LSL, 0); // x1 = ptr
+    emit_direct_call("__ubsan_handle_type_mismatch_v1", false); // aborts
+    cg_def_label(skip);
 #endif
 }
 
@@ -10530,10 +10575,44 @@ static void cg_ubsan_bounds_check(Node *node, Node *base_node, VReg idx, VReg ba
     emit_direct_call("__ubsan_handle_out_of_bounds", false); // aborts
     cg_def_label(skip);
 #else
-    (void)node;
-    (void)base_node;
-    (void)idx;
-    (void)base;
+    if (!opt_ubsan) return;
+    Type *array_ty = base_node->ty;
+    if (!array_ty || array_ty->kind != TY_ARRAY) return;
+    Type *elem = array_ty->base ? array_ty->base : node->ty;
+    int64_t len = elem->size > 0 ? array_ty->size / elem->size : 0;
+    if (len <= 0 || idx == base) return; // only constant non-empty; skip self-add
+    if (cg_dry_run) {
+        VReg t = alloc_reg();
+        VReg d = alloc_reg();
+        free_reg(t);
+        free_reg(d);
+        return;
+    }
+    const char *ename = elem->size == 8 ? "long int" : elem->size == 2 ? "short int"
+                                                                       : "int";
+    char array_name[64], elem_name[32];
+    snprintf(array_name, sizeof array_name, "'%s [%lld]'", ename, (long long)len);
+    snprintf(elem_name, sizeof elem_name, "'%s'", ename);
+    int n = ubsan_ctr++;
+    char *data_label = cg_emit_ubsan_oob_data(array_name, elem_name,
+                                              node->tok ? node->tok->filename : NULL,
+                                              node->tok ? node->tok->lineno : 0, n);
+    if (!data_label) return;
+    char *skip = format(".L.ubsan_oob.%d", n);
+    // The index register holds the SCALED offset (i*esz), so compare it
+    // against the scaled bound (len*esz). flags = idx - bound.
+    VReg t = alloc_reg();
+    asm_mov_imm(cg_sec, t, 8, (int64_t)len * elem->size); // t = len*esz (scaled bound)
+    arm64_subs_reg(cg_sec, 1, REG(t), REG(idx), REG(t), ARM64_LSL, 0); // t = idx - bound
+    emit_jcc_fixup(cg_sec, ARM64_LT, skip); // idx < bound -> in-bounds -> skip
+    free_reg(t);
+    VReg d = alloc_reg();
+    emit_adrp_add(d, data_label); // d = &Data
+    arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, REG(d), ARM64_LSL, 0); // x0 = &Data
+    free_reg(d);
+    arm64_orr_reg(cg_sec, 1, ARM64_X1, ARM64_XZR, REG(idx), ARM64_LSL, 0); // x1 = index
+    emit_direct_call("__ubsan_handle_out_of_bounds", false); // aborts
+    cg_def_label(skip);
 #endif
 }
 
@@ -10683,14 +10762,62 @@ static void cg_ubsan_fco_check(VReg r, Type *from, Type *to, int line) {
     x86_mov_rr(cg_sec, 8, X86_RDI, REG(d)); // rdi = &Data
     free_reg(d);
     asm_movq_r_xmm(cg_sec, X86_XMM0, r); // reload value for the handler
-    x86_movq_xmm_r(cg_sec, X86_RSI, X86_XMM0); // rsi = from (value)
+    asm_movq_xmm_r(cg_sec, X86_RSI, X86_XMM0); // rsi = from (value)
     emit_direct_call("__ubsan_handle_float_cast_overflow", false); // aborts
     cg_def_label(ok);
 #else
-    (void)r;
-    (void)from;
-    (void)to;
-    (void)line;
+    if (!opt_float_cast_overflow) return;
+    int bits = to->size * 8;
+    int exp = to->is_unsigned ? bits : bits - 1;
+    if (exp >= 1024) return; // target larger than any double can express
+    if (cg_dry_run) {
+        VReg mt = alloc_reg();
+        free_reg(mt);
+        VReg d = alloc_reg_avoid2(r, -1);
+        free_reg(d);
+        VReg t = alloc_reg_avoid2(r, -1);
+        VReg t2 = alloc_reg_avoid2(r, -1);
+        free_reg(t);
+        free_reg(t2);
+        return;
+    }
+    union {
+        double d;
+        uint64_t b;
+    } mv;
+    mv.d = ldexp(1.0, exp); // max representable by the target int
+    uint64_t maxv_bits = mv.b;
+    int n = ubsan_ctr++;
+    char *data_label = cg_emit_ubsan_fco_data(from, to, maxv_bits, cg_dbg_file, line, n);
+    if (!data_label) return;
+    char *max_label = format(".L.ubsan_fco_max.%d", n);
+    char *ok = format(".L.ubsan_fco_ok.%d", n);
+    int ftype = (from->kind == TY_FLOAT) ? 0 : 1; // 0=single, 1=double
+    // The value is already in d0 (the caller moved it via fmov). Test NaN
+    // (fcmp d0, d1=0 is unordered) and val > maxv (fcmp d0, d1=maxv above).
+    VReg t = alloc_reg_avoid2(r, -1);
+    VReg t2 = alloc_reg_avoid2(r, -1);
+    arm64_fmov_i2f(cg_sec, ftype, ARM64_D1, ARM64_XZR); // d1 = 0.0
+    asm_fcmp(cg_sec, ftype); // fcmp d0, d1
+    arm64_cset(cg_sec, 0, REG(t), ARM64_VC); // t = is_nan (unordered)
+    VReg mt = alloc_reg_avoid2(r, -1);
+    emit_adrp_add(mt, max_label); // mt = &maxv
+    asm_ldr_fp(cg_sec, ARM64_D1, mt, from->size); // d1 = maxv
+    free_reg(mt);
+    asm_fcmp(cg_sec, ftype); // fcmp d0, d1
+    arm64_cset(cg_sec, 0, REG(t2), ARM64_HI); // t2 = (val > maxv)
+    arm64_orr_reg(cg_sec, 1, REG(t), REG(t), REG(t2), ARM64_LSL, 0); // t |= t2
+    free_reg(t2);
+    asm_cmp_zero(cg_sec, t, 8); // cmp t, #0
+    emit_jcc_fixup(cg_sec, ARM64_EQ, ok); // clean -> skip
+    VReg d = alloc_reg_avoid2(r, -1);
+    emit_adrp_add(d, data_label); // d = &Data
+    arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, REG(d), ARM64_LSL, 0); // x0 = &Data
+    free_reg(d);
+    arm64_orr_reg(cg_sec, 1, ARM64_X1, ARM64_XZR, REG(r), ARM64_LSL, 0); // x1 = value
+    free_reg(t);
+    emit_direct_call("__ubsan_handle_float_cast_overflow", false); // aborts
+    cg_def_label(ok);
 #endif
 }
 // ---------------------------------------------------------------------------
@@ -10768,9 +10895,31 @@ static void cg_ubsan_nonnull_ret_check(VReg r, const char *filename, int line) {
     emit_direct_call("__ubsan_handle_nonnull_return_v1", false); // aborts on halt
     cg_def_label(skip);
 #else
-    (void)r;
-    (void)filename;
-    (void)line;
+    if (!opt_ubsan || r < 0) return;
+    if (cg_dry_run) {
+        VReg d = alloc_reg();
+        VReg l = alloc_reg();
+        free_reg(d);
+        free_reg(l);
+        return;
+    }
+    int n = ubsan_ctr++;
+    char *data_label = cg_emit_ubsan_nonnull_ret_data(filename, line, n);
+    if (!data_label) return;
+    char *loc_label = format(".L.ubsan_nnret_loc.%d", n);
+    char *skip = format(".L.ubsan_nnret_skip.%d", n);
+    asm_cmp_zero(cg_sec, r, 8); // cmp x{r}, #0
+    emit_jcc_fixup(cg_sec, ARM64_NE, skip); // non-null -> skip
+    VReg d = alloc_reg();
+    emit_adrp_add(d, data_label); // d = &Data
+    arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, REG(d), ARM64_LSL, 0); // x0 = &Data
+    free_reg(d);
+    VReg l = alloc_reg();
+    emit_adrp_add(l, loc_label); // l = &Loc
+    arm64_orr_reg(cg_sec, 1, ARM64_X1, ARM64_XZR, REG(l), ARM64_LSL, 0); // x1 = &Loc
+    free_reg(l);
+    emit_direct_call("__ubsan_handle_nonnull_return_v1", false); // aborts on halt
+    cg_def_label(skip);
 #endif
 }
 // ---------------------------------------------------------------------------
@@ -10878,10 +11027,28 @@ static void cg_ubsan_nonnull_check(Node *node, char *call_target, VReg r, int i)
     emit_direct_call("__ubsan_handle_nonnull_arg", false); // aborts
     cg_def_label(skip);
 #else
-    (void)node;
-    (void)call_target;
-    (void)r;
-    (void)i;
+    if (!opt_ubsan || r < 0) return;
+    int argidx = nonnull_string_argidx(call_target);
+    if (argidx < 0 || i != argidx) return;
+    if (cg_dry_run) {
+        VReg d = alloc_reg();
+        free_reg(d);
+        return;
+    }
+    int n = ubsan_ctr++;
+    char *data_label = cg_emit_ubsan_nonnull_data(
+        node->tok ? node->tok->filename : NULL,
+        node->tok ? node->tok->lineno : 0, argidx + 1, n); // 1-based
+    if (!data_label) return;
+    char *skip = format(".L.ubsan_nn.%d", n);
+    asm_cmp_zero(cg_sec, r, 8); // cmp x{r}, #0
+    emit_jcc_fixup(cg_sec, ARM64_NE, skip); // non-null -> skip
+    VReg d = alloc_reg();
+    emit_adrp_add(d, data_label); // d = &Data
+    arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, REG(d), ARM64_LSL, 0); // x0 = &Data
+    free_reg(d);
+    emit_direct_call("__ubsan_handle_nonnull_arg", false); // aborts
+    cg_def_label(skip);
 #endif
 }
 
@@ -10943,7 +11110,22 @@ static void cg_ubsan_unreachable(Node *node) {
     free_reg(d);
     emit_direct_call("__ubsan_handle_builtin_unreachable", false); // aborts
 #else
-    (void)node;
+    if (!opt_ubsan) return;
+    if (cg_dry_run) {
+        VReg d = alloc_reg();
+        free_reg(d);
+        return;
+    }
+    int n = ubsan_ctr++;
+    char *data_label = cg_emit_ubsan_unreach_data(
+        node->tok ? node->tok->filename : NULL,
+        node->tok ? node->tok->lineno : 0, n);
+    if (!data_label) return;
+    VReg d = alloc_reg();
+    emit_adrp_add(d, data_label); // d = &Data
+    arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, REG(d), ARM64_LSL, 0); // x0 = &Data
+    free_reg(d);
+    emit_direct_call("__ubsan_handle_builtin_unreachable", false); // aborts
 #endif
 }
 
@@ -10998,7 +11180,6 @@ static int asan_chk_ctr = 0; // per-TU counter naming each check's skip label
 // libasan report function. `addr` is preserved for the real access that
 // follows. x86-64 Linux: shadow = (addr >> 3) + 0x7fff8000.
 static void cg_asan_check_mem(VReg addr, int sz, bool is_write) {
-#ifndef ARCH_ARM64
     if (!opt_asan) return;
     if (sz < 1) sz = 1;
     else if (sz > 8)
@@ -11019,6 +11200,7 @@ static void cg_asan_check_mem(VReg addr, int sz, bool is_write) {
     char *ok = format(".L.asan_ok.%d", n);
     VReg t1 = alloc_reg_avoid2(addr, -1);
     VReg t2 = alloc_reg_avoid2(addr, t1);
+#ifndef ARCH_ARM64
     // t1 = (addr >> 3) + 0x7fff8000
     x86_mov_rr(cg_sec, 8, REG(t1), REG(addr));
     x86_shr_ri(cg_sec, 8, REG(t1), 3);
@@ -11044,21 +11226,54 @@ static void cg_asan_check_mem(VReg addr, int sz, bool is_write) {
     x86_mov_ri(cg_sec, 8, X86_RSI, 0); // arg2 = ret
     char *fn = format(is_write ? "__asan_report_store%d" : "__asan_report_load%d", sz);
     emit_direct_call(fn, false); // aborts
+#else
+    // t1 = addr >> 3
+    arm64_lsr_imm(cg_sec, 1, REG(t1), REG(addr), 3); // t1 = addr >> 3
+    // load the shadow offset from the __asan_shadow_memory_dynamic_address global
+    VReg t3 = alloc_reg_avoid2(addr, -1);
+#ifdef __APPLE__
+    emit_adrp_add(t3, "___asan_shadow_memory_dynamic_address"); // t3 = &shadow_offset (mangled)
+#else
+    emit_adrp_add(t3, "__asan_shadow_memory_dynamic_address"); // t3 = &shadow_offset
+#endif
+    asm_ldr_phy_reg(cg_sec, REG(t3), t3, 1); // t3 = *shadow_offset
+    arm64_add_reg(cg_sec, 1, REG(t1), REG(t1), REG(t3), ARM64_LSL, 0); // t1 += shadow_offset
+    free_reg(t3);
+    // t2 = shadow (sign-extended, poison magics are negative s8)
+    asm_ldrb(cg_sec, t2, t1, 0); // t2 = *(uint8_t*)t1
+    arm64_sxtb(cg_sec, 1, REG(t2), REG(t2)); // t2 = sign-extend byte
+    // t1 = (addr & 7) + (sz - 1): last granule offset the access touches
+    arm64_and_imm(cg_sec, 0, REG(t1), REG(addr), 7); // t1 = addr & 7
+    arm64_add_imm(cg_sec, 0, REG(t1), REG(t1), sz - 1, 0); // t1 += (sz - 1)
+    // oob = (t1 >= shadow) && (shadow != 0)
+    asm_cmp_reg_reg(cg_sec, t1, t2, 4); // cmp w{t1}, w{t2}
+    arm64_cset(cg_sec, 0, REG(t1), ARM64_GE); // t1 = (t1 >= shadow) (signed)
+    asm_cmp_zero(cg_sec, t2, 8); // cmp shadow, 0
+    arm64_cset(cg_sec, 0, REG(t2), ARM64_NE); // t2 = (shadow != 0)
+    arm64_and_reg(cg_sec, 0, REG(t1), REG(t1), REG(t2), ARM64_LSL, 0); // t1 = (t1 && t2)
+    asm_cmp_zero(cg_sec, t1, 8); // cmp t1, 0
+    emit_jcc_fixup(cg_sec, ARM64_EQ, ok); // clean -> skip
+    // call the report function with addr
+    arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, REG(addr), ARM64_LSL, 0); // x0 = addr
+    char *fn = format(is_write ? "__asan_report_store%d" : "__asan_report_load%d", sz);
+    emit_direct_call(fn, false); // aborts
+#endif
     free_reg(t1);
     free_reg(t2);
     cg_def_label(ok);
-#else
-    (void)addr;
-    (void)sz;
-    (void)is_write; // aarch64: dynamic shadow offset (separate)
-#endif
 }
 
 // Register the TU's globals with libasan so it poisons their redzones: emit a
 // __asan_global array (8 x uptr per entry), the name strings, and a ctor/fini
-// that call __asan_register_globals/__asan_unregister_globals. x86-64 for now.
+// that call __asan_register_globals/__asan_unregister_globals.
 static void cg_emit_asan_globals(Program *prog) {
-#ifndef ARCH_ARM64
+    (void)prog;
+    return; // clang doesn't emit __asan_global arrays or ctor/fini on any target
+#ifdef ARCH_ARM64
+    const int asan_reloc = R_AARCH64_ABS64;
+#else
+    const int asan_reloc = R_X86_64_64;
+#endif
     if (!opt_asan || cg_dry_run) return;
     int count = 0;
     for (LVar *var = prog->globals; var; var = var->next) {
@@ -11112,7 +11327,7 @@ static void cg_emit_asan_globals(Program *prog) {
         int gs = objfile_find_sym(cg_obj, gsym);
         if (gs < 0)
             gs = objfile_add_sym(cg_obj, gsym, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_OBJECT);
-        objfile_add_reloc(cg_obj, arr_sec, off, gs, R_X86_64_64, 0);
+        objfile_add_reloc(cg_obj, arr_sec, off, gs, asan_reloc, 0);
         secbuf_emit64le(cg_sec, (uint64_t)size); // size
         // size_with_redzone: libasan's global redzone scheme is
         // ASAN_RED_ZONE_SIZE=32 (same as GCC's asan_red_zone_size): the
@@ -11124,7 +11339,7 @@ static void cg_emit_asan_globals(Program *prog) {
         secbuf_emit64le(cg_sec, swr); // size_with_redzone
         size_t noff = cg_sec->len;
         secbuf_emit64le(cg_sec, 0); // name
-        objfile_add_reloc(cg_obj, arr_sec, noff, name_syms[ni], R_X86_64_64, 0);
+        objfile_add_reloc(cg_obj, arr_sec, noff, name_syms[ni], asan_reloc, 0);
         secbuf_emit64le(cg_sec, 0); // module_name
         secbuf_emit64le(cg_sec, 0); // has_dynamic_init
         secbuf_emit64le(cg_sec, 0); // location
@@ -11138,38 +11353,72 @@ static void cg_emit_asan_globals(Program *prog) {
     cg_set_section(SEC_TEXT);
     size_t cstart = cg_sec->len;
     cg_def_fn_label(".L.asan_ctor");
+#ifndef ARCH_ARM64
     x86_push(cg_sec, X86_RBP);
     asm_mov_rsp_rbp(cg_sec);
+#else
+    // dyld calls the ctor without setting up a frame; save LR (x30) so the
+    // inner bl calls don't clobber it and the final ret returns to dyld.
+    arm64_str_imm(cg_sec, 1, ARM64_X30, CG_ARM_SP, -8, false);
+#endif
     emit_direct_call("__asan_init", false);
+#ifndef __APPLE__
     emit_direct_call("__asan_version_mismatch_check_v8", false);
+#endif
     {
         VReg d = alloc_reg();
+#ifndef ARCH_ARM64
         asm_lea_rip_reg(cg_sec, d, array_label);
         x86_mov_rr(cg_sec, 8, X86_RDI, REG(d));
         free_reg(d);
         x86_mov_ri(cg_sec, 8, X86_RSI, count);
+#else
+        emit_adrp_add(d, array_label);
+        arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, REG(d), ARM64_LSL, 0); // x0 = &array
+        free_reg(d);
+        asm_mov_imm_phy(cg_sec, ARM64_X1, 1, count); // x1 = count
+#endif
         emit_direct_call("__asan_register_globals", false);
     }
+#ifndef ARCH_ARM64
     asm_mov_rbp_rsp(cg_sec);
     x86_pop(cg_sec, X86_RBP);
+#else
+    arm64_ldr_imm(cg_sec, 1, ARM64_X30, CG_ARM_SP, -8, false); // restore LR
+#endif
     asm_ret(cg_sec);
     cg_patch_fn_size(".L.asan_ctor", cstart);
 
     // fini: __asan_unregister_globals(array, count);
     size_t fstart = cg_sec->len;
     cg_def_fn_label(".L.asan_fini");
+#ifndef ARCH_ARM64
     x86_push(cg_sec, X86_RBP);
     asm_mov_rsp_rbp(cg_sec);
+#else
+    arm64_str_imm(cg_sec, 1, ARM64_X30, CG_ARM_SP, -8, false); // save LR
+#endif
     {
         VReg d = alloc_reg();
+#ifndef ARCH_ARM64
         asm_lea_rip_reg(cg_sec, d, array_label);
         x86_mov_rr(cg_sec, 8, X86_RDI, REG(d));
         free_reg(d);
         x86_mov_ri(cg_sec, 8, X86_RSI, count);
+#else
+        emit_adrp_add(d, array_label);
+        arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, REG(d), ARM64_LSL, 0); // x0 = &array
+        free_reg(d);
+        asm_mov_imm_phy(cg_sec, ARM64_X1, 1, count); // x1 = count
+#endif
         emit_direct_call("__asan_unregister_globals", false);
     }
+#ifndef ARCH_ARM64
     asm_mov_rbp_rsp(cg_sec);
     x86_pop(cg_sec, X86_RBP);
+#else
+    arm64_ldr_imm(cg_sec, 1, ARM64_X30, CG_ARM_SP, -8, false); // restore LR
+#endif
     asm_ret(cg_sec);
     cg_patch_fn_size(".L.asan_fini", fstart);
 
@@ -11179,17 +11428,14 @@ static void cg_emit_asan_globals(Program *prog) {
     size_t io = cg_sec->len;
     secbuf_emit64le(cg_sec, 0);
     int ci = objfile_find_sym(cg_obj, ".L.asan_ctor");
-    objfile_add_reloc(cg_obj, SEC_INIT_ARRAY, io, ci, R_X86_64_64, 0);
+    objfile_add_reloc(cg_obj, SEC_INIT_ARRAY, io, ci, asan_reloc, 0);
     cg_set_section(SEC_FINI_ARRAY);
     secbuf_align(cg_sec, 8);
     size_t fo = cg_sec->len;
     secbuf_emit64le(cg_sec, 0);
     int fi = objfile_find_sym(cg_obj, ".L.asan_fini");
-    objfile_add_reloc(cg_obj, SEC_FINI_ARRAY, fo, fi, R_X86_64_64, 0);
+    objfile_add_reloc(cg_obj, SEC_FINI_ARRAY, fo, fi, asan_reloc, 0);
     cg_set_section(SEC_TEXT);
-#else
-    (void)0;
-#endif
 }
 
 // Generate code for a given node.
@@ -13952,6 +14198,10 @@ VReg gen(Node *node) {
                         else
                             asm_movsx(cg_sec, r, r, 4, 2); // movsx4->r rr, rr
                     }
+                    if (scalar_ret_ty && scalar_ret_ty->kind == TY_PTR && current_fn_def &&
+                        current_fn_def->is_returns_nonnull)
+                        cg_ubsan_nonnull_ret_check(r, node->tok ? node->tok->filename : NULL,
+                                                   node->tok ? node->tok->lineno : 0);
                     asm_mov_x0_reg(cg_sec, REG(r)); // mov x0, x{r}
 #else
                     // Truncate BEFORE moving to %rax so return register has correct value
@@ -18229,6 +18479,44 @@ VReg gen(Node *node) {
             }
         } else {
             VReg r_rhs = gen(node->rhs);
+            // -fsanitize=undefined: shift out-of-range (runtime shift count).
+            // Call the gcc libubsan handler when the count exceeds the type
+            // width (sh >= bits): __ubsan_handle_shift_out_of_bounds
+            // (x0=&Data, x1=value, x2=count, sign-extended).
+            if (opt_ubsan && !cg_dry_run && sz <= 8 && !use_unsigned(node->ty)) {
+                int n = ubsan_ctr++;
+                char *data_label = cg_emit_ubsan_divrem_data(node->ty, node->rhs->ty,
+                                                             node->tok ? node->tok->filename : NULL,
+                                                             node->tok ? node->tok->lineno : 0, n);
+                if (data_label) {
+                    char *skip = format(".L.ubsan_sh.%d", n);
+                    int v_slot = current_fn_stack_size + fn_struct_ret_off + 8;
+                    int s_slot = v_slot + 8;
+                    fn_struct_ret_off += 16;
+                    if (fn_struct_ret_off > fn_struct_ret_total)
+                        fn_struct_ret_total = fn_struct_ret_off;
+                    asm_cmp_imm(cg_sec, r_rhs, sz, sz * 8); // cmp count, bits
+                    emit_jcc_fixup(cg_sec, ARM64_CC, skip); // count < bits -> skip
+                    // stash value + count (the raw call clobbers regs)
+                    asm_stur_phy(cg_sec, REG(r_lhs), CG_ARM_FP, sf ? 3 : 2, -v_slot);
+                    asm_stur_phy(cg_sec, REG(r_rhs), CG_ARM_FP, sf ? 3 : 2, -s_slot);
+                    VReg d = alloc_reg_avoid2(r_rhs, -1);
+                    emit_adrp_add(d, data_label); // d = &Data
+                    arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, REG(d), ARM64_LSL, 0); // x0 = &Data
+                    free_reg(d);
+                    if (sz == 4) arm64_sxtw(cg_sec, ARM64_X1, REG(r_lhs)); // x1 = sext(value)
+                    else
+                        arm64_orr_reg(cg_sec, 1, ARM64_X1, ARM64_XZR, REG(r_lhs), ARM64_LSL, 0);
+                    if (sz == 4) arm64_sxtw(cg_sec, ARM64_X2, REG(r_rhs)); // x2 = sext(count)
+                    else
+                        arm64_orr_reg(cg_sec, 1, ARM64_X2, ARM64_XZR, REG(r_rhs), ARM64_LSL, 0);
+                    emit_direct_call("__ubsan_handle_shift_out_of_bounds", false);
+                    // reload value + count for the shift
+                    asm_ldur_fp(cg_sec, r_lhs, v_slot);
+                    asm_ldur_fp(cg_sec, r_rhs, s_slot);
+                    cg_def_label(skip);
+                }
+            }
             if (node->kind == ND_SHL)
                 asm_shl_cl(cg_sec, r_lhs, sf ? 8 : 4, r_rhs); // lsl r_lhs, r_lhs, r_rhs
             else if (use_unsigned(node->ty))
@@ -18533,6 +18821,83 @@ VReg gen(Node *node) {
             // computed as 32-bit signed. ARM64: use sxtw.
             if (sz == 8 && op_size(node->rhs->ty) == 4 && !use_unsigned(node->rhs->ty))
                 asm_movsx(cg_sec, r_rhs, r_rhs, 8, 4); // movsx8->r_rhs rr_rhs, rr_rhs
+            // -fsanitize=undefined: signed integer overflow (add/sub/mul) /
+            // pointer overflow. Compute the op with the flag-setting variant,
+            // test the overflow/carry flag, and on overflow call the gcc
+            // report stub. The stub returns without altering the result
+            // (gcc's report-then-continue). Only fully-signed ops are checked.
+            if (opt_ubsan && sz <= 8 &&
+                (!strcmp(inst, "add") || !strcmp(inst, "sub") || !strcmp(inst, "mul")) &&
+                !use_unsigned(node->ty) && !use_unsigned(node->lhs->ty) &&
+                !use_unsigned(node->rhs->ty) &&
+                !(node->kind == ND_SUB && node->lhs->ty->base && node->rhs->ty->base)) {
+                bool is_ptr = (!strcmp(inst, "add") && node->lhs->ty->kind == TY_PTR);
+                int n = ubsan_ctr++;
+                char *data_label = is_ptr
+                    ? cg_emit_ubsan_ptr_overflow_data(node->tok ? node->tok->filename : NULL,
+                                                      node->tok ? node->tok->lineno : 0, n)
+                    : cg_emit_ubsan_divrem_data(node->ty, NULL,
+                                                node->tok ? node->tok->filename : NULL,
+                                                node->tok ? node->tok->lineno : 0, n);
+                if (data_label || cg_dry_run) {
+                    const char *handler = is_ptr ? "__ubsan_handle_pointer_overflow"
+                        : !strcmp(inst, "add")   ? "__ubsan_handle_add_overflow"
+                        : !strcmp(inst, "sub")   ? "__ubsan_handle_sub_overflow"
+                                                 : "__ubsan_handle_mul_overflow";
+                    char *skip = format(".L.ubsan_of.%d", n);
+                    int sf = (sz == 8) ? 1 : 0;
+                    VReg r_a = r_lhs;
+                    VReg r_b = r_rhs;
+                    VReg r_save = alloc_reg_avoid2(r_a, r_b);
+                    arm64_orr_reg(cg_sec, sf, REG(r_save), ARM64_XZR, REG(r_a), ARM64_LSL, 0); // r_save = a
+                    if (!strcmp(inst, "mul")) {
+                        // mul: no overflow flag; detect signed overflow via smulh
+                        arm64_mul(cg_sec, 1, REG(r_a), REG(r_a), REG(r_b)); // r_a = a*b (low 64)
+                        VReg r_high = alloc_reg_avoid2(r_a, r_b);
+                        arm64_smulh(cg_sec, REG(r_high), REG(r_save), REG(r_b)); // high(a*b)
+                        VReg r_sext = alloc_reg_avoid2(r_a, r_b);
+                        arm64_subs_imm(cg_sec, 1, ARM64_XZR, REG(r_a), 0, 0); // flags = r_a
+                        arm64_sub_imm(cg_sec, 1, REG(r_sext), ARM64_XZR, 1, 0); // r_sext = -1
+                        arm64_csel(cg_sec, 1, REG(r_sext), REG(r_sext), ARM64_XZR, ARM64_MI); // sext
+                        arm64_eor_reg(cg_sec, 1, REG(r_high), REG(r_high), REG(r_sext), ARM64_LSL, 0);
+                        asm_cmp_zero(cg_sec, r_high, 8);
+                        emit_jcc_fixup(cg_sec, ARM64_EQ, skip); // no overflow -> skip
+                        free_reg(r_high);
+                        free_reg(r_sext);
+                    } else if (!strcmp(inst, "add")) {
+                        arm64_adds_reg(cg_sec, sf, REG(r_a), REG(r_a), REG(r_b), ARM64_LSL, 0);
+                        if (is_ptr) emit_jcc_fixup(cg_sec, ARM64_CC, skip); // no carry -> skip
+                        else
+                            emit_jcc_fixup(cg_sec, ARM64_VC, skip); // no overflow -> skip
+                    } else {
+                        arm64_subs_reg(cg_sec, sf, REG(r_a), REG(r_a), REG(r_b), ARM64_LSL, 0);
+                        emit_jcc_fixup(cg_sec, ARM64_VC, skip); // no overflow -> skip
+                    }
+                    // The handler is a raw call (clobbers caller-saved regs).
+                    // Stash the value (result for signed, base for pointer).
+                    int a_slot = current_fn_stack_size + fn_struct_ret_off + 8;
+                    fn_struct_ret_off += 8;
+                    if (fn_struct_ret_off > fn_struct_ret_total) fn_struct_ret_total = fn_struct_ret_off;
+                    asm_stur_phy(cg_sec, REG(is_ptr ? r_save : r_a), CG_ARM_FP, sz == 8 ? 3 : 2, -a_slot);
+                    VReg d = alloc_reg_avoid2(r_a, r_b);
+                    if (data_label) emit_adrp_add(d, data_label); // d = &Data (none in Pass 1)
+                    arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, REG(d), ARM64_LSL, 0); // x0 = &Data
+                    free_reg(d);
+                    if (sz == 4) arm64_sxtw(cg_sec, ARM64_X1, REG(r_save)); // x1 = sext(a)
+                    else
+                        arm64_orr_reg(cg_sec, 1, ARM64_X1, ARM64_XZR, REG(r_save), ARM64_LSL, 0);
+                    if (!is_ptr) {
+                        if (sz == 4) arm64_sxtw(cg_sec, ARM64_X2, REG(r_b)); // x2 = sext(b)
+                        else
+                            arm64_orr_reg(cg_sec, 1, ARM64_X2, ARM64_XZR, REG(r_b), ARM64_LSL, 0);
+                    }
+                    emit_direct_call(handler, false); // report stub
+                    asm_ldur_fp(cg_sec, is_ptr ? r_save : r_a, a_slot); // restore
+                    cg_def_label(skip);
+                    free_reg(r_save);
+                    return r_a;
+                }
+            }
             if (!strcmp(inst, "cmp")) {
                 // r_lhs was freshly staged/reloaded above into a register
                 // distinct from r_rhs -- a plain compare is always safe.
