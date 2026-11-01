@@ -1,6 +1,6 @@
 # Linux RCC Benchmark Results
 
-_Generated: September 2026_
+_Generated: November 2026 (ssa-opt branch, CSE + const prop + copy prop + DCE active)_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) | Spread |
 | :-------- | -----------: | -----------: | ---------: | -----: |
