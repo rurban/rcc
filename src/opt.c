@@ -3205,10 +3205,21 @@ typedef struct SsaConst {
     LVar *equiv; // copy prop: var = equiv (if set)
 } SsaConst;
 
+// CSE: cache of recent "var op var" expressions
+typedef struct SsaExpr {
+    LVar *lhs, *rhs;
+    int op; // NodeKind
+    LVar *result;
+} SsaExpr;
+
+#define CSE_MAX 64
+
 typedef struct SsaConstCtx {
     SsaConst *consts;
     int nconsts;
     int cap;
+    SsaExpr cse[CSE_MAX]; // ring buffer
+    int cse_head;
 } SsaConstCtx;
 
 static SsaConst *cp_find(SsaConstCtx *ctx, LVar *var) {
@@ -3216,6 +3227,35 @@ static SsaConst *cp_find(SsaConstCtx *ctx, LVar *var) {
         if (ctx->consts[i].var == var)
             return &ctx->consts[i];
     return NULL;
+}
+
+// CSE: look up "lhs op rhs" in the ring buffer
+static LVar *cse_lookup(SsaConstCtx *ctx, LVar *lhs, LVar *rhs, int op) {
+    for (int i = 0; i < CSE_MAX; i++) {
+        SsaExpr *e = &ctx->cse[i];
+        if (e->lhs == lhs && e->rhs == rhs && e->op == op)
+            return e->result;
+    }
+    return NULL;
+}
+
+// CSE: store "lhs op rhs -> result"
+static void cse_store(SsaConstCtx *ctx, LVar *lhs, LVar *rhs, int op, LVar *result) {
+    SsaExpr *e = &ctx->cse[ctx->cse_head];
+    e->lhs = lhs;
+    e->rhs = rhs;
+    e->op = op;
+    e->result = result;
+    ctx->cse_head = (ctx->cse_head + 1) & (CSE_MAX - 1);
+}
+
+// CSE: invalidate entries involving a variable
+static void cse_invalidate(SsaConstCtx *ctx, LVar *var) {
+    for (int i = 0; i < CSE_MAX; i++) {
+        SsaExpr *e = &ctx->cse[i];
+        if (e->lhs == var || e->rhs == var)
+            e->lhs = NULL;
+    }
 }
 
 static void cp_set(SsaConstCtx *ctx, LVar *var, bool is_float,
@@ -3262,6 +3302,8 @@ static void cp_clear(SsaConstCtx *ctx, LVar *var) {
     for (int i = 0; i < ctx->nconsts; i++)
         if (ctx->consts[i].equiv == var)
             ctx->consts[i].equiv = NULL;
+    // Invalidate CSE entries involving var
+    cse_invalidate(ctx, var);
 }
 
 // Check if a node is a compile-time constant
@@ -3431,12 +3473,26 @@ static Node *cp_transform(Node *n, SsaConstCtx *ctx) {
                 // Simple assignment: x = expr
                 int64_t v;
                 double f;
-                if (cp_is_const(n->rhs, &v, &f))
+                if (cp_is_const(n->rhs, &v, &f)) {
                     cp_set(ctx, var, (n->rhs->ty && n->rhs->ty->kind >= TY_FLOAT), v, f, n->lhs->ty);
-                else if (n->rhs && n->rhs->kind == ND_LVAR && n->rhs->var)
+                } else if (n->rhs && n->rhs->kind == ND_LVAR && n->rhs->var) {
                     cp_set_equiv(ctx, var, n->rhs->var, n->lhs->ty);
-                else
+                } else if (n->rhs && n->rhs->lhs && n->rhs->lhs->kind == ND_LVAR &&
+                           n->rhs->rhs && n->rhs->rhs->kind == ND_LVAR) {
+                    // CSE: x = a op b
+                    LVar *a = n->rhs->lhs->var;
+                    LVar *b = n->rhs->rhs->var;
+                    int opk = n->rhs->kind;
+                    LVar *cached = cse_lookup(ctx, a, b, opk);
+                    if (cached)
+                        cp_set_equiv(ctx, var, cached, n->lhs->ty);
+                    else {
+                        cse_store(ctx, a, b, opk, var);
+                        cp_clear(ctx, var);
+                    }
+                } else {
                     cp_clear(ctx, var);
+                }
             } else if (op[1] == '=' && op[2] == '\0' && op[0] != '=' && op[0] != '!' && op[0] != '<' && op[0] != '>' && op[0] != '&' && op[0] != '|') {
                 // Compound assignment: x op= expr (only single-char ops: +=, -=, *=, /=, %=)
                 SsaConst *c = cp_find(ctx, var);
@@ -3723,28 +3779,5 @@ static void ssa_dce(Function *fn, char *in_path) {
 void ssa_run(Function *fn, char *in_path) {
     ssa_const_prop(fn);
     ssa_dce(fn, in_path);
-
-    // Phase 1-3: CFG + dom tree + DFs (infrastructure validation)
-    SsaCFG *cfg = ssa_build_cfg(fn);
-    if (!cfg) return;
-    SsaDom *dom = ssa_build_dom(cfg);
-    int **df, *dfc;
-    ssa_compute_df(cfg, dom, &df, &dfc);
-    SsaRename *r = ssa_rename_init(fn);
-    ssa_insert_phis(cfg, dom, df, dfc, r);
-    ssa_rename_free(r);
-
-    // Free all.
-    for (int i = 0; i < cfg->nblocks; i++) {
-        free(cfg->blocks[i]);
-        free(dom->anc[i]);
-        free(df[i]);
-    }
-    free(cfg->blocks);
-    free(cfg);
-    free(dom->idom);
-    free(dom->depth);
-    free(dom->anc);
-    free(dom);
-    free(dfc);
+    // Phase 1-3 (CFG/dom/DFs/phi) disabled until SSA renaming is complete
 }
