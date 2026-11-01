@@ -3643,6 +3643,51 @@ static LVar *licm_get_loopvar(Node *init) {
     return NULL;
 }
 
+// Collect all LVars assigned anywhere in a statement tree (for while-loop LICM)
+static void licm_collect_modified(Node *n, LVar ***out, int *nvars, int *cap) {
+    if (!n) return;
+    if (n->kind == ND_ASSIGN && n->lhs && n->lhs->kind == ND_LVAR && n->lhs->var) {
+        // Check if already in list
+        bool found = false;
+        for (int i = 0; i < *nvars; i++)
+            if ((*out)[i] == n->lhs->var) {
+                found = true;
+                break;
+            }
+        if (!found) {
+            if (*nvars >= *cap) {
+                *cap = *cap ? *cap * 2 : 16;
+                *out = realloc(*out, *cap * sizeof(LVar *));
+            }
+            (*out)[(*nvars)++] = n->lhs->var;
+        }
+    }
+    // Recurse into children
+    licm_collect_modified(n->lhs, out, nvars, cap);
+    licm_collect_modified(n->rhs, out, nvars, cap);
+    if (n->kind == ND_IF) {
+        licm_collect_modified(n->cond, out, nvars, cap);
+        licm_collect_modified(n->then, out, nvars, cap);
+        licm_collect_modified(n->els, out, nvars, cap);
+    }
+    if (n->kind == ND_FOR || n->kind == ND_DO) {
+        licm_collect_modified(n->body, out, nvars, cap);
+        licm_collect_modified(n->cond, out, nvars, cap);
+        licm_collect_modified(n->inc, out, nvars, cap);
+        licm_collect_modified(n->init, out, nvars, cap);
+    }
+    if (n->kind == ND_BLOCK) {
+        for (Node *s = n->body; s; s = s->next)
+            licm_collect_modified(s, out, nvars, cap);
+    }
+}
+
+static bool licm_var_modified(LVar *var, LVar **modified, int nmodified) {
+    for (int i = 0; i < nmodified; i++)
+        if (modified[i] == var) return true;
+    return false;
+}
+
 static Node *licm(Node *n) {
     if (!n) return NULL;
     n->lhs = licm(n->lhs);
@@ -3656,21 +3701,19 @@ static Node *licm(Node *n) {
         n->inc = licm(n->inc);
         // Try LICM on this loop
         LVar *lv = licm_get_loopvar(n->init);
-        if (lv) {
-            Node *body = n->body;
-            // Collect invariant assignments from a block body
-            if (body && body->kind == ND_BLOCK) {
+        Node *body = n->body;
+        if (body && body->kind == ND_BLOCK) {
+            if (lv) {
+                // for-loop: check against single induction var
                 Node **pp = &body;
                 while (*pp) {
                     Node *stmt = *pp;
-                    // Pattern: x = expr (simple assign, no side effects, no loopvar ref)
                     if (stmt->kind == ND_EXPR_STMT && stmt->body) {
                         Node *a = stmt->body;
                         if (a->kind == ND_ASSIGN &&
                             a->lhs && a->lhs->kind == ND_LVAR &&
                             a->lhs->var != lv &&
                             !licm_refs_loopvar(a->rhs, lv)) {
-                            // Hoist: remove from loop, insert before loop
                             *pp = stmt->next;
                             stmt->next = n;
                             n = stmt;
@@ -3679,6 +3722,35 @@ static Node *licm(Node *n) {
                     }
                     pp = &stmt->next;
                 }
+            } else {
+                // while-loop: collect all modified vars, hoist invariant assigns
+                LVar **modified = NULL;
+                int nmod = 0, modcap = 0;
+                licm_collect_modified(body, &modified, &nmod, &modcap);
+                Node **pp = &body;
+                while (*pp) {
+                    Node *stmt = *pp;
+                    if (stmt->kind == ND_EXPR_STMT && stmt->body) {
+                        Node *a = stmt->body;
+                        if (a->kind == ND_ASSIGN &&
+                            a->lhs && a->lhs->kind == ND_LVAR &&
+                            !licm_var_modified(a->lhs->var, modified, nmod)) {
+                            // Check RHS doesn't reference any modified var
+                            bool refs_mod = false;
+                            for (int i = 0; i < nmod && !refs_mod; i++)
+                                if (licm_refs_loopvar(a->rhs, modified[i]))
+                                    refs_mod = true;
+                            if (!refs_mod) {
+                                *pp = stmt->next;
+                                stmt->next = n;
+                                n = stmt;
+                                continue;
+                            }
+                        }
+                    }
+                    pp = &stmt->next;
+                }
+                free(modified);
             }
         }
     } else if (n->kind == ND_DO) {
