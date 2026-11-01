@@ -3682,6 +3682,112 @@ static Node *peephole(Node *n) {
                     sub->ty = n->ty;
                     return sub;
                 }
+                if (m == 9) {
+                    // x * 9 = (x << 3) + x
+                    Node *sh = malloc(sizeof(Node));
+                    memset(sh, 0, sizeof(Node));
+                    sh->kind = ND_SHL;
+                    sh->lhs = n->lhs;
+                    Node *c3 = malloc(sizeof(Node));
+                    memset(c3, 0, sizeof(Node));
+                    c3->kind = ND_NUM;
+                    c3->val = 3;
+                    sh->rhs = c3;
+                    sh->ty = n->ty;
+                    Node *add = malloc(sizeof(Node));
+                    memset(add, 0, sizeof(Node));
+                    add->kind = ND_ADD;
+                    add->lhs = sh;
+                    add->rhs = n->lhs;
+                    add->ty = n->ty;
+                    return add;
+                }
+                if (m == 10) {
+                    // x * 10 = (x << 3) + (x << 1)
+                    Node *sh3 = malloc(sizeof(Node));
+                    memset(sh3, 0, sizeof(Node));
+                    sh3->kind = ND_SHL;
+                    sh3->lhs = n->lhs;
+                    Node *c3 = malloc(sizeof(Node));
+                    memset(c3, 0, sizeof(Node));
+                    c3->kind = ND_NUM;
+                    c3->val = 3;
+                    sh3->rhs = c3;
+                    sh3->ty = n->ty;
+                    Node *sh1 = malloc(sizeof(Node));
+                    memset(sh1, 0, sizeof(Node));
+                    sh1->kind = ND_SHL;
+                    sh1->lhs = n->lhs;
+                    Node *c1 = malloc(sizeof(Node));
+                    memset(c1, 0, sizeof(Node));
+                    c1->kind = ND_NUM;
+                    c1->val = 1;
+                    sh1->rhs = c1;
+                    sh1->ty = n->ty;
+                    Node *add = malloc(sizeof(Node));
+                    memset(add, 0, sizeof(Node));
+                    add->kind = ND_ADD;
+                    add->lhs = sh3;
+                    add->rhs = sh1;
+                    add->ty = n->ty;
+                    return add;
+                }
+                if (m == 11) {
+                    // x * 11 = (x << 3) + (x << 1) + x
+                    Node *sh3 = malloc(sizeof(Node));
+                    memset(sh3, 0, sizeof(Node));
+                    sh3->kind = ND_SHL;
+                    sh3->lhs = n->lhs;
+                    Node *c3 = malloc(sizeof(Node));
+                    memset(c3, 0, sizeof(Node));
+                    c3->kind = ND_NUM;
+                    c3->val = 3;
+                    sh3->rhs = c3;
+                    sh3->ty = n->ty;
+                    Node *sh1 = malloc(sizeof(Node));
+                    memset(sh1, 0, sizeof(Node));
+                    sh1->kind = ND_SHL;
+                    sh1->lhs = n->lhs;
+                    Node *c1 = malloc(sizeof(Node));
+                    memset(c1, 0, sizeof(Node));
+                    c1->kind = ND_NUM;
+                    c1->val = 1;
+                    sh1->rhs = c1;
+                    sh1->ty = n->ty;
+                    Node *add1 = malloc(sizeof(Node));
+                    memset(add1, 0, sizeof(Node));
+                    add1->kind = ND_ADD;
+                    add1->lhs = sh3;
+                    add1->rhs = sh1;
+                    add1->ty = n->ty;
+                    Node *add2 = malloc(sizeof(Node));
+                    memset(add2, 0, sizeof(Node));
+                    add2->kind = ND_ADD;
+                    add2->lhs = add1;
+                    add2->rhs = n->lhs;
+                    add2->ty = n->ty;
+                    return add2;
+                }
+                if (m == 15) {
+                    // x * 15 = (x << 4) - x
+                    Node *sh = malloc(sizeof(Node));
+                    memset(sh, 0, sizeof(Node));
+                    sh->kind = ND_SHL;
+                    sh->lhs = n->lhs;
+                    Node *c4 = malloc(sizeof(Node));
+                    memset(c4, 0, sizeof(Node));
+                    c4->kind = ND_NUM;
+                    c4->val = 4;
+                    sh->rhs = c4;
+                    sh->ty = n->ty;
+                    Node *sub = malloc(sizeof(Node));
+                    memset(sub, 0, sizeof(Node));
+                    sub->kind = ND_SUB;
+                    sub->lhs = sh;
+                    sub->rhs = n->lhs;
+                    sub->ty = n->ty;
+                    return sub;
+                }
             }
         }
         break;
