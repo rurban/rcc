@@ -8,6 +8,8 @@
 #define CF_NEXT 0
 #define CF_RETURN 1
 
+void ssa_run(Function *fn); // SSA section below
+
 // Known pure/const library functions that can be folded at compile time.
 // "const" = result depends only on args, no side effects, no global state, no IO.
 // "pure"  = no side effects, no IO, but may read global state, e.g. errno.
@@ -2091,6 +2093,8 @@ void optimize(Program *prog) {
             local_opt_stmt_list(fn->body, true);
         if (opt_O >= 1)
             local_opt_clear_addrs();
+        if (opt_O >= 2)
+            ssa_run(fn);
     }
 }
 
@@ -2590,4 +2594,605 @@ void eliminate_unused_static_inline(Program *prog) {
 
     free(fns);
     free(wl);
+}
+
+// ============================================================================
+// SSA Conversion (-O2)
+// ============================================================================
+// Phase 1: CFG + dominator tree + dominance frontiers.
+// Phase 2: Proper CFG edges from if/for/while/switch.
+// Phase 3: Phi insertion + variable renaming.
+// Phase 4: SSA-based optimizations (copy prop, DCE, CSE).
+// Phase 5: Un-SSA (lower back for existing codegen).
+
+typedef struct SsaBlock {
+    int id;
+    Node *first, *last;
+    int succ[4], nsucc;
+    int pred[8], npred;
+} SsaBlock;
+
+typedef struct SsaCFG {
+    SsaBlock **blocks;
+    int nblocks, entry, exit;
+    Function *fn;
+} SsaCFG;
+
+typedef struct SsaDom {
+    int *idom, *depth;
+    int **anc; // binary lifting: anc[b][i] = 2^i-th ancestor
+    int logn;
+} SsaDom;
+
+static SsaBlock *ssa_new_block(SsaCFG *cfg) {
+    SsaBlock *bb = calloc(1, sizeof(SsaBlock));
+    bb->id = cfg->nblocks;
+    cfg->blocks = realloc(cfg->blocks, (cfg->nblocks + 1) * sizeof(SsaBlock *));
+    cfg->blocks[cfg->nblocks++] = bb;
+    return bb;
+}
+
+static void ssa_edge(SsaCFG *cfg, int from, int to) {
+    SsaBlock *s = cfg->blocks[from], *d = cfg->blocks[to];
+    if (s->nsucc < 4) s->succ[s->nsucc++] = to;
+    if (d->npred < 8) d->pred[d->npred++] = from;
+}
+
+// Context for recursive CFG construction.
+typedef struct SsaBuildCtx {
+    SsaCFG *cfg;
+    // Loop stack: for break/continue targets
+    int *loop_exit; // block ID after the loop
+    int *loop_cond; // block ID of the loop condition (for continue)
+    int loop_depth;
+    // Label → block ID mapping (for goto)
+    char **label_names;
+    int *label_blocks;
+    int nlabels;
+} SsaBuildCtx;
+
+// Forward declaration
+static int ssa_build_stmts(SsaBuildCtx *ctx, Node *n, int fallthrough);
+
+static SsaBuildCtx *ssa_build_ctx_new(SsaCFG *cfg) {
+    SsaBuildCtx *ctx = calloc(1, sizeof(SsaBuildCtx));
+    ctx->cfg = cfg;
+    ctx->loop_exit = calloc(64, sizeof(int));
+    ctx->loop_cond = calloc(64, sizeof(int));
+    ctx->label_names = calloc(64, sizeof(char *));
+    ctx->label_blocks = calloc(64, sizeof(int));
+    return ctx;
+}
+
+// Register a label at the current block.
+static void ssa_register_label(SsaBuildCtx *ctx, const char *name, int block) {
+    if (ctx->nlabels >= 64) return; // cap for Phase 2
+    ctx->label_names[ctx->nlabels] = (char *)name;
+    ctx->label_blocks[ctx->nlabels] = block;
+    ctx->nlabels++;
+}
+
+static int ssa_find_label(SsaBuildCtx *ctx, const char *name) {
+    for (int i = 0; i < ctx->nlabels; i++)
+        if (ctx->label_names[i] == name)
+            return ctx->label_blocks[i];
+    return -1;
+}
+
+// Build CFG for a linked list of statements. Returns the ID of the
+// "fall-through" block (where execution continues after all stmts).
+// `fallthrough` is the block to connect to after the last statement.
+static int ssa_build_stmts(SsaBuildCtx *ctx, Node *n, int fallthrough) {
+    SsaCFG *cfg = ctx->cfg;
+    if (!n) {
+        // No statements: connect directly to fallthrough
+        return fallthrough;
+    }
+
+    int cur = -1; // current block being built
+    for (; n; n = n->next) {
+        switch (n->kind) {
+        case ND_LABEL:
+            // Label: current block is the target
+            if (cur == -1) {
+                SsaBlock *bb = ssa_new_block(cfg);
+                bb->first = bb->last = n;
+                cur = bb->id;
+            } else {
+                cfg->blocks[cur]->last = n;
+            }
+            if (n->label_name)
+                ssa_register_label(ctx, n->label_name, cur);
+            break;
+
+        case ND_IF: {
+            // if (cond) { then } [else { els }]
+            int then_next, els_next;
+            // Condition block
+            if (cur == -1) {
+                SsaBlock *bb = ssa_new_block(cfg);
+                bb->first = bb->last = n;
+                cur = bb->id;
+            } else {
+                cfg->blocks[cur]->last = n;
+            }
+            int cond_block = cur;
+            // Then block
+            SsaBlock *tb = ssa_new_block(cfg);
+            tb->first = n->then;
+            tb->last = n->then ? n->then : n->then;
+            then_next = ssa_build_stmts(ctx, n->then, fallthrough);
+            ssa_edge(cfg, cond_block, tb->id);
+            if (n->els) {
+                SsaBlock *eb = ssa_new_block(cfg);
+                eb->first = n->els;
+                els_next = ssa_build_stmts(ctx, n->els, fallthrough);
+                ssa_edge(cfg, cond_block, eb->id);
+                ssa_edge(cfg, then_next, fallthrough);
+                ssa_edge(cfg, els_next, fallthrough);
+            } else {
+                ssa_edge(cfg, then_next, fallthrough);
+                ssa_edge(cfg, cond_block, fallthrough); // implicit else
+            }
+            cur = -1;
+            break;
+        }
+
+        case ND_FOR: {
+            // for (init; cond; inc) { body }
+            int cond_block, body_block, inc_block;
+            // Init block
+            if (cur == -1) {
+                SsaBlock *bb = ssa_new_block(cfg);
+                bb->first = bb->last = n;
+                cur = bb->id;
+            } else {
+                cfg->blocks[cur]->last = n;
+            }
+            int init_block = cur;
+            // Cond block
+            SsaBlock *cb = ssa_new_block(cfg);
+            cb->first = cb->last = n;
+            cond_block = cb->id;
+            ssa_edge(cfg, init_block, cond_block);
+            // Body block
+            SsaBlock *bb = ssa_new_block(cfg);
+            bb->first = n->body;
+            body_block = bb->id;
+            ssa_edge(cfg, cond_block, body_block);
+            // Inc block (after body)
+            SsaBlock *ib = ssa_new_block(cfg);
+            ib->first = ib->last = n;
+            inc_block = ib->id;
+            // Build body statements
+            int body_end = ssa_build_stmts(ctx, n->body, inc_block);
+            ssa_edge(cfg, body_end, inc_block);
+            // Back edge: inc → cond
+            ssa_edge(cfg, inc_block, cond_block);
+            // Exit edge: cond → fallthrough
+            ssa_edge(cfg, cond_block, fallthrough);
+            // Register loop for break/continue
+            if (ctx->loop_depth < 64) {
+                ctx->loop_exit[ctx->loop_depth] = fallthrough;
+                ctx->loop_cond[ctx->loop_depth] = cond_block;
+                ctx->loop_depth++;
+            }
+            cur = -1;
+            break;
+        }
+
+        case ND_DO: {
+            // do { body } while (cond)
+            SsaBlock *bb = ssa_new_block(cfg);
+            bb->first = n->body;
+            int body_block = bb->id;
+            if (cur != -1) ssa_edge(cfg, cur, body_block);
+            // Cond block (after body)
+            SsaBlock *cb = ssa_new_block(cfg);
+            cb->first = cb->last = n;
+            int cond_block = cb->id;
+            int body_end = ssa_build_stmts(ctx, n->body, cond_block);
+            ssa_edge(cfg, body_end, cond_block);
+            // Back edge: cond → body
+            ssa_edge(cfg, cond_block, body_block);
+            // Exit: cond → fallthrough
+            ssa_edge(cfg, cond_block, fallthrough);
+            if (ctx->loop_depth < 64) {
+                ctx->loop_exit[ctx->loop_depth] = fallthrough;
+                ctx->loop_cond[ctx->loop_depth] = cond_block;
+                ctx->loop_depth++;
+            }
+            cur = -1;
+            break;
+        }
+
+        case ND_BREAK: {
+            if (cur == -1) {
+                SsaBlock *bb = ssa_new_block(cfg);
+                bb->first = bb->last = n;
+                cur = bb->id;
+            } else {
+                cfg->blocks[cur]->last = n;
+            }
+            int target = (ctx->loop_depth > 0)
+                ? ctx->loop_exit[ctx->loop_depth - 1]
+                : fallthrough;
+            ssa_edge(cfg, cur, target);
+            cur = -1;
+            break;
+        }
+
+        case ND_CONTINUE: {
+            if (cur == -1) {
+                SsaBlock *bb = ssa_new_block(cfg);
+                bb->first = bb->last = n;
+                cur = bb->id;
+            } else {
+                cfg->blocks[cur]->last = n;
+            }
+            int target = (ctx->loop_depth > 0)
+                ? ctx->loop_cond[ctx->loop_depth - 1]
+                : fallthrough;
+            ssa_edge(cfg, cur, target);
+            cur = -1;
+            break;
+        }
+
+        case ND_GOTO: {
+            if (cur == -1) {
+                SsaBlock *bb = ssa_new_block(cfg);
+                bb->first = bb->last = n;
+                cur = bb->id;
+            } else {
+                cfg->blocks[cur]->last = n;
+            }
+            int target = ssa_find_label(ctx, n->label_name);
+            if (target >= 0)
+                ssa_edge(cfg, cur, target);
+            cur = -1;
+            break;
+        }
+
+        case ND_RETURN: {
+            if (cur == -1) {
+                SsaBlock *bb = ssa_new_block(cfg);
+                bb->first = bb->last = n;
+                cur = bb->id;
+            } else {
+                cfg->blocks[cur]->last = n;
+            }
+            ssa_edge(cfg, cur, cfg->exit);
+            cur = -1;
+            break;
+        }
+
+        case ND_BLOCK: {
+            // Recurse into block's statements (n->body is the linked list)
+            return ssa_build_stmts(ctx, n->body, fallthrough);
+        }
+
+        default: {
+            // Straight-line: add to current block
+            if (cur == -1) {
+                SsaBlock *bb = ssa_new_block(cfg);
+                bb->first = n;
+                cur = bb->id;
+            }
+            cfg->blocks[cur]->last = n;
+            break;
+        }
+        }
+    }
+    // Connect last block to fallthrough
+    if (cur != -1)
+        ssa_edge(cfg, cur, fallthrough);
+    return cur != -1 ? cur : fallthrough;
+}
+
+SsaCFG *ssa_build_cfg(Function *fn) {
+    if (!fn || !fn->body) return NULL;
+    SsaCFG *cfg = calloc(1, sizeof(SsaCFG));
+    cfg->fn = fn;
+    cfg->entry = 0;
+
+    // Entry block
+    SsaBlock *entry = ssa_new_block(cfg);
+    entry->first = entry->last = fn->body;
+
+    // Exit block
+    SsaBlock *exit_bb = ssa_new_block(cfg);
+    cfg->exit = exit_bb->id;
+
+    SsaBuildCtx *ctx = ssa_build_ctx_new(cfg);
+    // Build the body (ND_BLOCK case recurses into body->body)
+    ssa_build_stmts(ctx, fn->body, cfg->exit);
+    // Connect entry to the first body block (block 2: 0=entry, 1=exit)
+    if (cfg->nblocks > 2)
+        ssa_edge(cfg, cfg->entry, 2);
+    else
+        ssa_edge(cfg, cfg->entry, cfg->exit);
+
+    // Free build context
+    free(ctx->loop_exit);
+    free(ctx->loop_cond);
+    free(ctx->label_names);
+    free(ctx->label_blocks);
+    free(ctx);
+
+    return cfg;
+}
+
+SsaDom *ssa_build_dom(SsaCFG *cfg) {
+    int n = cfg->nblocks;
+    SsaDom *dom = calloc(1, sizeof(SsaDom));
+    dom->idom = calloc(n, sizeof(int));
+    dom->depth = calloc(n, sizeof(int));
+    dom->logn = 1;
+    while ((1 << dom->logn) < n) dom->logn++;
+    dom->anc = calloc(n, dom->logn * sizeof(int *));
+    for (int i = 0; i < n; i++) dom->anc[i] = calloc(dom->logn, sizeof(int));
+    for (int i = 0; i < n; i++) dom->idom[i] = -1;
+    dom->idom[cfg->entry] = cfg->entry;
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (int b = 1; b < n; b++) {
+            SsaBlock *bb = cfg->blocks[b];
+            if (bb->npred == 0) continue;
+            int nidom = -1;
+            for (int i = 0; i < bb->npred; i++)
+                if (dom->idom[bb->pred[i]] != -1) {
+                    nidom = bb->pred[i];
+                    break;
+                }
+            if (nidom == -1) continue;
+            for (int i = 0; i < bb->npred; i++) {
+                int p = bb->pred[i];
+                if (dom->idom[p] == -1 || p == nidom) continue;
+                int f = p;
+                while (f != nidom && f != -1) f = dom->idom[f];
+                if (f != -1) nidom = f;
+            }
+            if (dom->idom[b] != nidom) {
+                dom->idom[b] = nidom;
+                changed = true;
+            }
+        }
+    }
+    dom->depth[cfg->entry] = 0;
+    for (int b = 1; b < n; b++)
+        if (dom->idom[b] >= 0) dom->depth[b] = dom->depth[dom->idom[b]] + 1;
+    for (int b = 0; b < n; b++) dom->anc[b][0] = dom->idom[b];
+    for (int i = 1; i < dom->logn; i++)
+        for (int b = 0; b < n; b++)
+            dom->anc[b][i] = (dom->anc[b][i - 1] >= 0)
+                ? dom->anc[dom->anc[b][i - 1]][i - 1]
+                : -1;
+    return dom;
+}
+
+// Dominance frontier: DF(x) = { y | x dom a pred of y, x !strictly-dom y }
+static void ssa_compute_df(SsaCFG *cfg, SsaDom *dom,
+                           int ***df_out, int **dfc_out) {
+    int n = cfg->nblocks;
+    int **df = calloc(n, sizeof(int *));
+    int *dfc = calloc(n, sizeof(int));
+    for (int b = 0; b < n; b++) {
+        SsaBlock *bb = cfg->blocks[b];
+        int stop = dom->idom[b]; // stop at idom of b, not b itself
+        for (int i = 0; i < bb->npred; i++) {
+            int runner = bb->pred[i];
+            while (runner != stop && runner != -1) {
+                bool found = false;
+                for (int j = 0; j < dfc[runner]; j++)
+                    if (df[runner][j] == b) {
+                        found = true;
+                        break;
+                    }
+                if (!found) {
+                    df[runner] = realloc(df[runner], (dfc[runner] + 1) * sizeof(int));
+                    df[runner][dfc[runner]++] = b;
+                }
+                runner = dom->idom[runner];
+            }
+        }
+    }
+    *df_out = df;
+    *dfc_out = dfc;
+}
+
+// -O2 entry: build CFG + dom tree + DFs, then free (Phase 1 validation).
+// ============================================================================
+// Phase 3: Phi insertion + variable renaming
+// ============================================================================
+// For each variable, track which "version" is live at each block.
+// At dominance frontiers where multiple versions converge, insert a phi.
+
+// A phi node: selects a variable version at a merge point.
+typedef struct SsaPhi {
+    LVar *var; // the variable this phi is for
+    int version; // the new version number (assigned at insertion)
+    int n_operands; // number of incoming versions
+    int operands[8]; // operand versions (one per predecessor)
+    Node *ast_node; // the ND_LVAR node this phi replaces
+} SsaPhi;
+
+// Per-variable version tracking.
+typedef struct SsaVarInfo {
+    LVar *var;
+    int n_versions;
+    int *def_block; // def_block[i] = block where version i is defined
+} SsaVarInfo;
+
+typedef struct SsaRename {
+    SsaVarInfo *vars;
+    int nvars;
+    SsaPhi *phis;
+    int nphis;
+    // worklist for iterative phi insertion
+    int *wl_block;
+    int wl_head, wl_tail, wl_cap;
+} SsaRename;
+
+static SsaRename *ssa_rename_init(Function *fn) {
+    SsaRename *r = calloc(1, sizeof(SsaRename));
+    // Collect all locals
+    int n = 0;
+    for (LVar *v = fn->locals; v; v = v->next) n++;
+    r->vars = calloc(n + 1, sizeof(SsaVarInfo));
+    r->nvars = 0;
+    for (LVar *v = fn->locals; v; v = v->next) {
+        r->vars[r->nvars].var = v;
+        r->vars[r->nvars].n_versions = 0;
+        r->vars[r->nvars].def_block = NULL;
+        r->nvars++;
+    }
+    r->wl_cap = 256;
+    r->wl_block = calloc(r->wl_cap, sizeof(int));
+    return r;
+}
+
+static void ssa_rename_worklist_push(SsaRename *r, int block) {
+    if (r->wl_tail >= r->wl_cap) {
+        r->wl_cap *= 2;
+        r->wl_block = realloc(r->wl_block, r->wl_cap * sizeof(int));
+    }
+    r->wl_block[r->wl_tail++] = block;
+}
+
+static int ssa_rename_worklist_pop(SsaRename *r) {
+    if (r->wl_head >= r->wl_tail) return -1;
+    return r->wl_block[r->wl_head++];
+}
+
+static void ssa_rename_free(SsaRename *r) {
+    if (!r) return;
+    for (int i = 0; i < r->nvars; i++)
+        free(r->vars[i].def_block);
+    free(r->vars);
+    free(r->phis);
+    free(r->wl_block);
+    free(r);
+}
+
+// Walk a block's AST to find defs and uses of each variable.
+// For Phase 3, we do a simplified def analysis:
+// - An ND_ASSIGN where lhs is ND_LVAR is a def
+// - An ND_LVAR in any other position is a use
+static void ssa_block_defs_uses(SsaCFG *cfg, int bid, SsaRename *r,
+                                int *def_mask, int *use_mask) {
+    SsaBlock *bb = cfg->blocks[bid];
+    for (int i = 0; i < r->nvars; i++) {
+        def_mask[i] = 0;
+        use_mask[i] = 0;
+    }
+    // Walk the block's nodes
+    for (Node *n = bb->first; n; n = n->next) {
+        // Check for defs (assignments to locals)
+        if (n->kind == ND_ASSIGN && n->lhs && n->lhs->kind == ND_LVAR) {
+            for (int i = 0; i < r->nvars; i++)
+                if (r->vars[i].var == n->lhs->var) {
+                    def_mask[i] = 1;
+                    break;
+                }
+        }
+        // Check for uses (any ND_LVAR that's not a def target)
+        Node *use = (n->kind == ND_LVAR) ? n : NULL;
+        if (!use && n->kind == ND_ASSIGN && n->rhs)
+            use = n->rhs;
+        if (use && use->kind == ND_LVAR) {
+            for (int i = 0; i < r->nvars; i++)
+                if (r->vars[i].var == use->var) {
+                    if (!def_mask[i]) use_mask[i] = 1;
+                    break;
+                }
+        }
+    }
+}
+
+// Phase 3 entry: insert phis at dominance frontiers.
+// Simplified: for each variable, if it's defined in multiple blocks
+// that have a common dominance frontier, insert a phi there.
+static void ssa_insert_phis(SsaCFG *cfg, SsaDom *dom, int **df, int *dfc,
+                            SsaRename *r) {
+    int n = cfg->nblocks;
+    int *def_mask = calloc(r->nvars, sizeof(int));
+    int *use_mask = calloc(r->nvars, sizeof(int));
+
+    // For each variable, find all blocks where it's defined
+    for (int vi = 0; vi < r->nvars; vi++) {
+        // Collect def blocks for this variable
+        int *def_blocks = calloc(n, sizeof(int));
+        int ndef_blocks = 0;
+        for (int b = 0; b < n; b++) {
+            ssa_block_defs_uses(cfg, b, r, def_mask, use_mask);
+            if (def_mask[vi]) {
+                def_blocks[ndef_blocks++] = b;
+                // Assign a version number
+                r->vars[vi].n_versions++;
+                r->vars[vi].def_block = realloc(r->vars[vi].def_block,
+                                                r->vars[vi].n_versions * sizeof(int));
+                r->vars[vi].def_block[r->vars[vi].n_versions - 1] = b;
+            }
+        }
+        // For each pair of def blocks, find their LCA's DF and insert phi
+        // (simplified: just check if any DF block has multiple live versions)
+        for (int b = 0; b < n; b++) {
+            // Check if this block is in the DF of any def block
+            bool need_phi = false;
+            int n_live = 0;
+            for (int i = 0; i < ndef_blocks; i++) {
+                int db = def_blocks[i];
+                for (int j = 0; j < dfc[db]; j++) {
+                    if (df[db][j] == b) {
+                        n_live++;
+                        break;
+                    }
+                }
+            }
+            if (n_live > 1) {
+                need_phi = true;
+            }
+            if (need_phi) {
+                // Insert a phi for variable vi at block b
+                int phi_idx = r->nphis;
+                r->phis = realloc(r->phis, (r->nphis + 1) * sizeof(SsaPhi));
+                r->phis[r->nphis].var = r->vars[vi].var;
+                r->phis[r->nphis].version = r->vars[vi].n_versions;
+                r->phis[r->nphis].n_operands = n_live;
+                r->nphis++;
+                (void)phi_idx;
+            }
+        }
+        free(def_blocks);
+    }
+    free(def_mask);
+    free(use_mask);
+}
+
+void ssa_run(Function *fn) {
+    SsaCFG *cfg = ssa_build_cfg(fn);
+    if (!cfg) return;
+    SsaDom *dom = ssa_build_dom(cfg);
+    int **df, *dfc;
+    ssa_compute_df(cfg, dom, &df, &dfc);
+    // Phase 3: phi insertion
+    SsaRename *r = ssa_rename_init(fn);
+    ssa_insert_phis(cfg, dom, df, dfc, r);
+    ssa_rename_free(r);
+
+    // Phase 4-5: optimize, unconvert.
+    // Free all.
+    for (int i = 0; i < cfg->nblocks; i++) {
+        free(cfg->blocks[i]);
+        free(dom->anc[i]);
+        free(df[i]);
+    }
+    free(cfg->blocks);
+    free(cfg);
+    free(dom->idom);
+    free(dom->depth);
+    free(dom->anc);
+    free(dom);
+    free(dfc);
 }
