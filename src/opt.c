@@ -3202,6 +3202,7 @@ typedef struct SsaConst {
     int64_t val;
     double fval;
     Type *ty;
+    LVar *equiv; // copy prop: var = equiv (if set)
 } SsaConst;
 
 typedef struct SsaConstCtx {
@@ -3233,11 +3234,34 @@ static void cp_set(SsaConstCtx *ctx, LVar *var, bool is_float,
     c->val = val;
     c->fval = fval;
     c->ty = ty;
+    c->equiv = NULL;
+}
+
+static void cp_set_equiv(SsaConstCtx *ctx, LVar *var, LVar *equiv, Type *ty) {
+    SsaConst *c = cp_find(ctx, var);
+    if (!c) {
+        if (ctx->nconsts >= ctx->cap) {
+            ctx->cap = ctx->cap ? ctx->cap * 2 : 32;
+            ctx->consts = realloc(ctx->consts, ctx->cap * sizeof(SsaConst));
+        }
+        c = &ctx->consts[ctx->nconsts++];
+        c->var = var;
+    }
+    c->is_const = false;
+    c->equiv = equiv;
+    c->ty = ty;
 }
 
 static void cp_clear(SsaConstCtx *ctx, LVar *var) {
     SsaConst *c = cp_find(ctx, var);
-    if (c) c->is_const = false;
+    if (c) {
+        c->is_const = false;
+        c->equiv = NULL;
+    }
+    // Also clear any vars that were equivalent to var
+    for (int i = 0; i < ctx->nconsts; i++)
+        if (ctx->consts[i].equiv == var)
+            ctx->consts[i].equiv = NULL;
 }
 
 // Check if a node is a compile-time constant
@@ -3294,7 +3318,7 @@ static bool cp_replace_use(Node **pp, SsaConstCtx *ctx) {
 static Node *cp_transform(Node *n, SsaConstCtx *ctx) {
     if (!n) return NULL;
 
-    // If this is an LVAR use with a known constant, replace it
+    // If this is an LVAR use with a known constant or equivalent, replace it
     if (n->kind == ND_LVAR && n->var) {
         SsaConst *c = cp_find(ctx, n->var);
         if (c && c->is_const) {
@@ -3307,6 +3331,16 @@ static Node *cp_transform(Node *n, SsaConstCtx *ctx) {
             cn->tok = n->tok;
             return cn;
         }
+        if (c && c->equiv) {
+            // Copy prop: replace x with equiv
+            Node *cn = malloc(sizeof(Node));
+            memset(cn, 0, sizeof(Node));
+            cn->kind = ND_LVAR;
+            cn->var = c->equiv;
+            cn->ty = c->ty;
+            cn->tok = n->tok;
+            return cn;
+        }
         return n;
     }
 
@@ -3314,16 +3348,19 @@ static Node *cp_transform(Node *n, SsaConstCtx *ctx) {
     case ND_ASSIGN: {
         // Transform rhs first (may contain uses)
         n->rhs = cp_transform(n->rhs, ctx);
-        // Now check if this is a const assignment
         if (n->lhs && n->lhs->kind == ND_LVAR && n->lhs->var) {
             LVar *var = n->lhs->var;
             if (n->tok && n->tok->name && n->tok->name[0] == '=' && n->tok->name[1] == '\0') {
                 int64_t v;
                 double f;
-                if (cp_is_const(n->rhs, &v, &f))
+                if (cp_is_const(n->rhs, &v, &f)) {
                     cp_set(ctx, var, (n->rhs->ty && n->rhs->ty->kind >= TY_FLOAT), v, f, n->lhs->ty);
-                else
+                } else if (n->rhs && n->rhs->kind == ND_LVAR && n->rhs->var) {
+                    // Copy prop: x = y
+                    cp_set_equiv(ctx, var, n->rhs->var, n->lhs->ty);
+                } else {
                     cp_clear(ctx, var);
+                }
             } else {
                 cp_clear(ctx, var);
             }
