@@ -3191,6 +3191,205 @@ static void ssa_insert_phis(SsaCFG *cfg, SsaDom *dom, int **df, int *dfc,
 }
 
 // ============================================================================
+// Phase 3: SSA renaming (variable versioning)
+// ============================================================================
+// Walk the function body, assign version numbers to each variable definition,
+// replace uses with the appropriate version, then un-SSA (map back to original).
+// Validates the CFG/dom/DF/phi infrastructure end-to-end.
+
+// Recursively count definitions of each variable in a node tree.
+static void ssa_count_defs(Node *n, int *def_count, int nvars, LVar **var_list) {
+    if (!n) return;
+    if (n->kind == ND_ASSIGN && n->lhs && n->lhs->kind == ND_LVAR && n->lhs->var) {
+        for (int i = 0; i < nvars; i++)
+            if (var_list[i] == n->lhs->var)
+                def_count[i]++;
+    }
+    ssa_count_defs(n->lhs, def_count, nvars, var_list);
+    ssa_count_defs(n->rhs, def_count, nvars, var_list);
+    if (n->kind == ND_IF) {
+        ssa_count_defs(n->cond, def_count, nvars, var_list);
+        ssa_count_defs(n->then, def_count, nvars, var_list);
+        ssa_count_defs(n->els, def_count, nvars, var_list);
+    } else if (n->kind == ND_FOR) {
+        ssa_count_defs(n->init, def_count, nvars, var_list);
+        ssa_count_defs(n->cond, def_count, nvars, var_list);
+        ssa_count_defs(n->body, def_count, nvars, var_list);
+        ssa_count_defs(n->inc, def_count, nvars, var_list);
+    } else if (n->kind == ND_DO) {
+        ssa_count_defs(n->body, def_count, nvars, var_list);
+        ssa_count_defs(n->cond, def_count, nvars, var_list);
+    } else if (n->kind == ND_BLOCK) {
+        for (Node *s = n->body; s; s = s->next)
+            ssa_count_defs(s, def_count, nvars, var_list);
+    }
+}
+
+// Rename pass: track current version per variable, replace ND_LVAR uses.
+typedef struct SsaRenameCtx {
+    LVar **orig; // original variables
+    int *cur_ver; // current version per variable
+    LVar ***versions; // versions[var][ver] = LVar*
+    int *nvers; // number of versions per variable
+    int *def_count; // total definitions per variable
+    int nvars;
+} SsaRenameCtx;
+
+static LVar *ssa_new_version(SsaRenameCtx *rc, int vi, int ver) {
+    LVar *v = calloc(1, sizeof(LVar));
+    v->name = malloc(strlen(rc->orig[vi]->name) + 8);
+    snprintf(v->name, strlen(rc->orig[vi]->name) + 8, "%s.%d",
+             rc->orig[vi]->name, ver);
+    v->ty = rc->orig[vi]->ty;
+    v->is_local = true;
+    return v;
+}
+
+static Node *ssa_rename_node(Node *n, SsaRenameCtx *rc) {
+    if (!n) return NULL;
+    if (n->kind == ND_LVAR && n->var) {
+        // Find which variable this is
+        for (int i = 0; i < rc->nvars; i++) {
+            if (rc->orig[i] == n->var) {
+                int ver = rc->cur_ver[i];
+                if (ver < rc->nvers[i]) {
+                    // Replace with versioned variable
+                    Node *nn = calloc(1, sizeof(Node));
+                    nn->kind = ND_LVAR;
+                    nn->var = rc->versions[i][ver];
+                    nn->ty = n->ty;
+                    nn->tok = n->tok;
+                    nn->next = n->next;
+                    return nn;
+                }
+                break;
+            }
+        }
+    }
+    // Handle defs: if this is an assignment to a variable, bump the version
+    if (n->kind == ND_ASSIGN && n->lhs && n->lhs->kind == ND_LVAR && n->lhs->var) {
+        for (int i = 0; i < rc->nvars; i++) {
+            if (rc->orig[i] == n->lhs->var) {
+                rc->cur_ver[i]++;
+                break;
+            }
+        }
+    }
+    n->lhs = ssa_rename_node(n->lhs, rc);
+    n->rhs = ssa_rename_node(n->rhs, rc);
+    if (n->kind == ND_IF) {
+        n->cond = ssa_rename_node(n->cond, rc);
+        n->then = ssa_rename_node(n->then, rc);
+        n->els = ssa_rename_node(n->els, rc);
+    } else if (n->kind == ND_FOR) {
+        n->init = ssa_rename_node(n->init, rc);
+        n->cond = ssa_rename_node(n->cond, rc);
+        n->body = ssa_rename_node(n->body, rc);
+        n->inc = ssa_rename_node(n->inc, rc);
+    } else if (n->kind == ND_DO) {
+        n->body = ssa_rename_node(n->body, rc);
+        n->cond = ssa_rename_node(n->cond, rc);
+    } else if (n->kind == ND_BLOCK) {
+        Node **pp = &n->body;
+        while (*pp) {
+            *pp = ssa_rename_node(*pp, rc);
+            pp = (*pp) ? &(*pp)->next : NULL;
+        }
+    }
+    return n;
+}
+
+// Un-SSA: replace all versioned LVars with the original variable.
+static Node *ssa_unrename_node(Node *n, SsaRenameCtx *rc) {
+    if (!n) return NULL;
+    if (n->kind == ND_LVAR && n->var) {
+        for (int i = 0; i < rc->nvars; i++) {
+            for (int v = 0; v < rc->nvers[i]; v++) {
+                if (rc->versions[i][v] == n->var) {
+                    n->var = rc->orig[i];
+                    goto done;
+                }
+            }
+        }
+    }
+done:
+    n->lhs = ssa_unrename_node(n->lhs, rc);
+    n->rhs = ssa_unrename_node(n->rhs, rc);
+    if (n->kind == ND_IF) {
+        n->cond = ssa_unrename_node(n->cond, rc);
+        n->then = ssa_unrename_node(n->then, rc);
+        n->els = ssa_unrename_node(n->els, rc);
+    } else if (n->kind == ND_FOR) {
+        n->init = ssa_unrename_node(n->init, rc);
+        n->cond = ssa_unrename_node(n->cond, rc);
+        n->body = ssa_unrename_node(n->body, rc);
+        n->inc = ssa_unrename_node(n->inc, rc);
+    } else if (n->kind == ND_DO) {
+        n->body = ssa_unrename_node(n->body, rc);
+        n->cond = ssa_unrename_node(n->cond, rc);
+    } else if (n->kind == ND_BLOCK) {
+        Node **pp = &n->body;
+        while (*pp) {
+            *pp = ssa_unrename_node(*pp, rc);
+            pp = (*pp) ? &(*pp)->next : NULL;
+        }
+    }
+    return n;
+}
+
+static void ssa_rename(Function *fn) {
+    if (!fn || !fn->body) return;
+    // Collect all locals
+    int nvars = 0;
+    for (LVar *v = fn->locals; v; v = v->next) nvars++;
+    if (nvars == 0) return;
+
+    LVar **var_list = calloc(nvars, sizeof(LVar *));
+    int i = 0;
+    for (LVar *v = fn->locals; v; v = v->next) var_list[i++] = v;
+
+    // Count definitions
+    int *def_count = calloc(nvars, sizeof(int));
+    ssa_count_defs(fn->body, def_count, nvars, var_list);
+
+    // Create versioned LVars
+    SsaRenameCtx rc = {0};
+    rc.nvars = nvars;
+    rc.orig = var_list;
+    rc.cur_ver = calloc(nvars, sizeof(int));
+    rc.nvers = calloc(nvars, sizeof(int));
+    rc.def_count = def_count;
+    rc.versions = calloc(nvars, sizeof(LVar **));
+    for (int vi = 0; vi < nvars; vi++) {
+        int nv = def_count[vi] + 1; // +1 for initial version
+        rc.nvers[vi] = nv;
+        rc.versions[vi] = calloc(nv, sizeof(LVar *));
+        for (int ver = 0; ver < nv; ver++)
+            rc.versions[vi][ver] = ssa_new_version(&rc, vi, ver);
+    }
+
+    // Rename
+    fn->body = ssa_rename_node(fn->body, &rc);
+
+    // Un-SSA: map versions back to original variables
+    fn->body = ssa_unrename_node(fn->body, &rc);
+
+    // Free versioned LVars
+    for (int vi = 0; vi < nvars; vi++) {
+        for (int ver = 0; ver < rc.nvers[vi]; ver++) {
+            free(rc.versions[vi][ver]->name);
+            free(rc.versions[vi][ver]);
+        }
+        free(rc.versions[vi]);
+    }
+    free(rc.versions);
+    free(rc.cur_ver);
+    free(rc.nvers);
+    free(def_count);
+    free(var_list);
+}
+
+// ============================================================================
 // Phase 4: Constant propagation
 // ============================================================================
 // Track constant values for locals, replace uses with the constant.
@@ -3804,7 +4003,7 @@ void ssa_run(Function *fn, char *in_path) {
     ssa_const_prop(fn);
     ssa_dce(fn, in_path);
 
-    // Phase 1-3: CFG + dom tree + DFs (infrastructure validation)
+    // Phase 1-3: CFG + dom tree + DFs + phi + rename
     SsaCFG *cfg = ssa_build_cfg(fn);
     if (!cfg) return;
     SsaDom *dom = ssa_build_dom(cfg);
@@ -3813,6 +4012,9 @@ void ssa_run(Function *fn, char *in_path) {
     SsaRename *r = ssa_rename_init(fn);
     ssa_insert_phis(cfg, dom, df, dfc, r);
     ssa_rename_free(r);
+
+    // Phase 3b: full SSA renaming (validate infra end-to-end)
+    ssa_rename(fn);
 
     // Free all.
     for (int i = 0; i < cfg->nblocks; i++) {
