@@ -3508,6 +3508,17 @@ static Node *cp_transform(Node *n, SsaConstCtx *ctx) {
             } else {
                 cp_clear(ctx, var);
             }
+        } else if (n->lhs && n->lhs->kind == ND_DEREF) {
+            // *p = val: p points to unknown — clear all
+            for (int i = 0; i < ctx->nconsts; i++) {
+                ctx->consts[i].is_const = false;
+                ctx->consts[i].equiv = NULL;
+            }
+        } else if (n->lhs && n->lhs->kind == ND_MEMBER) {
+            // arr[i] = val: clear the base variable
+            Node *base = n->lhs->lhs;
+            if (base && base->kind == ND_LVAR && base->var)
+                cp_clear(ctx, base->var);
         }
         break;
     }
