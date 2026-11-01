@@ -4217,31 +4217,16 @@ void ssa_run(Function *fn, char *in_path) {
     ssa_licm(fn);
     ssa_const_prop(fn);
     ssa_dce(fn, in_path);
-
-    // Phase 1-3: CFG + dom tree + DFs + phi + rename
-    SsaCFG *cfg = ssa_build_cfg(fn);
-    if (!cfg) return;
-    SsaDom *dom = ssa_build_dom(cfg);
-    int **df, *dfc;
-    ssa_compute_df(cfg, dom, &df, &dfc);
-    SsaRename *r = ssa_rename_init(fn);
-    ssa_insert_phis(cfg, dom, df, dfc, r);
-    ssa_rename_free(r);
-
-    // Phase 3b: full SSA renaming (validate infra end-to-end)
-    ssa_rename(fn);
-
-    // Free all.
-    for (int i = 0; i < cfg->nblocks; i++) {
-        free(cfg->blocks[i]);
-        free(dom->anc[i]);
-        free(df[i]);
-    }
-    free(cfg->blocks);
-    free(cfg);
-    free(dom->idom);
-    free(dom->depth);
-    free(dom->anc);
-    free(dom);
-    free(dfc);
+    // TODO: re-enable SSA rename after investigating -O2 slowdown
+    // SsaCFG *cfg = ssa_build_cfg(fn);
+    // if (!cfg) return;
+    // SsaDom *dom = ssa_build_dom(cfg);
+    // int **df, *dfc;
+    // ssa_compute_df(cfg, dom, &df, &dfc);
+    // SsaRename *r = ssa_rename_init(fn);
+    // ssa_insert_phis(cfg, dom, df, dfc, r);
+    // ssa_rename_free(r);
+    // ssa_rename(fn);
+    // for (int i = 0; i < cfg->nblocks; i++) { free(cfg->blocks[i]); free(dom->anc[i]); free(df[i]); }
+    // free(cfg->blocks); free(cfg); free(dom->idom); free(dom->depth); free(dom->anc); free(dom); free(dfc);
 }
