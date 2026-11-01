@@ -3401,6 +3401,123 @@ static void ssa_rename(Function *fn) {
 }
 
 // ============================================================================
+// Phase 4a: Peephole optimization
+// ============================================================================
+// Simplify trivially redundant binary/unary ops in the AST.
+// Safe single pass, no SSA form needed.
+
+static Node *peephole(Node *n) {
+    if (!n) return NULL;
+    // Recurse into children first (bottom-up)
+    n->lhs = peephole(n->lhs);
+    n->rhs = peephole(n->rhs);
+    if (n->kind == ND_IF) {
+        n->cond = peephole(n->cond);
+        n->then = peephole(n->then);
+        n->els = peephole(n->els);
+    } else if (n->kind == ND_FOR) {
+        n->init = peephole(n->init);
+        n->cond = peephole(n->cond);
+        n->body = peephole(n->body);
+        n->inc = peephole(n->inc);
+    } else if (n->kind == ND_DO) {
+        n->body = peephole(n->body);
+        n->cond = peephole(n->cond);
+    } else if (n->kind == ND_BLOCK) {
+        Node **pp = &n->body;
+        while (*pp) {
+            *pp = peephole(*pp);
+            pp = (*pp) ? &(*pp)->next : NULL;
+        }
+    }
+
+    // Now simplify this node if it's a binary/unary op
+    switch (n->kind) {
+    // x + 0 → x, x - 0 → x
+    case ND_ADD:
+    case ND_SUB:
+        if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 0)
+            return n->lhs;
+        if (n->lhs && n->lhs->kind == ND_NUM && n->lhs->val == 0 && n->kind == ND_ADD)
+            return n->rhs;
+        break;
+    // x * 1 → x, x / 1 → x, x * 0 → 0
+    case ND_MUL:
+    case ND_DIV:
+        if (n->rhs && n->rhs->kind == ND_NUM) {
+            if (n->rhs->val == 1 && (n->kind == ND_MUL || n->kind == ND_DIV))
+                return n->lhs;
+            if (n->rhs->val == 0 && n->kind == ND_MUL) {
+                Node *z = malloc(sizeof(Node));
+                memset(z, 0, sizeof(Node));
+                z->kind = ND_NUM;
+                z->val = 0;
+                z->ty = n->ty;
+                return z;
+            }
+        }
+        break;
+    // x & 0 → 0, x | 0 → x, x ^ 0 → x, x & ~0 → x
+    case ND_BITAND:
+        if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 0) {
+            Node *z = malloc(sizeof(Node));
+            memset(z, 0, sizeof(Node));
+            z->kind = ND_NUM;
+            z->val = 0;
+            z->ty = n->ty;
+            return z;
+        }
+        if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == ~0)
+            return n->lhs;
+        break;
+    case ND_BITOR:
+        if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 0)
+            return n->lhs;
+        break;
+    case ND_BITXOR:
+        if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 0)
+            return n->lhs;
+        if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == ~0) {
+            // x ^ ~0 = ~x
+            Node *nn = malloc(sizeof(Node));
+            memset(nn, 0, sizeof(Node));
+            nn->kind = ND_BITNOT;
+            nn->rhs = n->lhs;
+            nn->ty = n->ty;
+            return nn;
+        }
+        break;
+    // x << 0 → x, x >> 0 → x
+    case ND_SHL:
+    case ND_SHR:
+        if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 0)
+            return n->lhs;
+        break;
+    // -(-x) → x, ~(~x) → x, !(!x) → x
+    case ND_NEG:
+        if (n->rhs && n->rhs->kind == ND_NEG)
+            return n->rhs->rhs;
+        break;
+    case ND_BITNOT:
+        if (n->rhs && n->rhs->kind == ND_BITNOT)
+            return n->rhs->rhs;
+        break;
+    case ND_NOT:
+        if (n->rhs && n->rhs->kind == ND_NOT)
+            return n->rhs->rhs;
+        break;
+    default:
+        break;
+    }
+    return n;
+}
+
+static void ssa_peephole(Function *fn) {
+    if (!fn || !fn->body) return;
+    fn->body = peephole(fn->body);
+}
+
+// ============================================================================
 // Phase 4: Constant propagation
 // ============================================================================
 // Track constant values for locals, replace uses with the constant.
@@ -4011,6 +4128,7 @@ static void ssa_dce(Function *fn, char *in_path) {
 }
 
 void ssa_run(Function *fn, char *in_path) {
+    ssa_peephole(fn);
     ssa_const_prop(fn);
     ssa_dce(fn, in_path);
 
