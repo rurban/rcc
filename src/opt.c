@@ -3213,6 +3213,8 @@ typedef struct SsaExpr {
 } SsaExpr;
 
 #define CSE_MAX 64
+#define SSA_MAX_CONSTS 1024
+#define SSA_MAX_STMTS 10000
 
 typedef struct SsaConstCtx {
     SsaConst *consts;
@@ -3220,6 +3222,8 @@ typedef struct SsaConstCtx {
     int cap;
     SsaExpr cse[CSE_MAX]; // ring buffer
     int cse_head;
+    int stmts; // safety counter
+    bool aborted; // set when a limit is exceeded
 } SsaConstCtx;
 
 static SsaConst *cp_find(SsaConstCtx *ctx, LVar *var) {
@@ -3260,8 +3264,13 @@ static void cse_invalidate(SsaConstCtx *ctx, LVar *var) {
 
 static void cp_set(SsaConstCtx *ctx, LVar *var, bool is_float,
                    int64_t val, double fval, Type *ty) {
+    if (ctx->aborted) return;
     SsaConst *c = cp_find(ctx, var);
     if (!c) {
+        if (ctx->nconsts >= SSA_MAX_CONSTS) {
+            ctx->aborted = true;
+            return;
+        }
         if (ctx->nconsts >= ctx->cap) {
             ctx->cap = ctx->cap ? ctx->cap * 2 : 32;
             ctx->consts = realloc(ctx->consts, ctx->cap * sizeof(SsaConst));
@@ -3278,8 +3287,13 @@ static void cp_set(SsaConstCtx *ctx, LVar *var, bool is_float,
 }
 
 static void cp_set_equiv(SsaConstCtx *ctx, LVar *var, LVar *equiv, Type *ty) {
+    if (ctx->aborted) return;
     SsaConst *c = cp_find(ctx, var);
     if (!c) {
+        if (ctx->nconsts >= SSA_MAX_CONSTS) {
+            ctx->aborted = true;
+            return;
+        }
         if (ctx->nconsts >= ctx->cap) {
             ctx->cap = ctx->cap ? ctx->cap * 2 : 32;
             ctx->consts = realloc(ctx->consts, ctx->cap * sizeof(SsaConst));
@@ -3435,6 +3449,14 @@ static bool cp_replace_use(Node **pp, SsaConstCtx *ctx) {
 // Returns the (possibly new) node to assign to the parent's pointer.
 static Node *cp_transform(Node *n, SsaConstCtx *ctx) {
     if (!n) return NULL;
+    if (ctx->aborted) return n;
+
+    // Safety: limit total statements processed
+    ctx->stmts++;
+    if (ctx->stmts > SSA_MAX_STMTS) {
+        ctx->aborted = true;
+        return n;
+    }
 
     // If this is an LVAR use with a known constant or equivalent, replace it
     if (n->kind == ND_LVAR && n->var) {
@@ -3673,6 +3695,8 @@ static void dce_collect_uses(Node *n, LVar ***used, int *nused, int *cap) {
     if (n->kind == ND_LVAR && n->var) {
         for (int i = 0; i < *nused; i++)
             if ((*used)[i] == n->var) return;
+        if (*nused >= SSA_MAX_CONSTS)
+            return; // limit exceeded, stop collecting
         if (*nused >= *cap) {
             *cap = *cap ? *cap * 2 : 32;
             *used = realloc(*used, *cap * sizeof(LVar *));
