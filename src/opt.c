@@ -3518,6 +3518,91 @@ static void ssa_peephole(Function *fn) {
 }
 
 // ============================================================================
+// Phase 4b: Loop-invariant code motion
+// ============================================================================
+// Move loop-invariant assignments out of for-loops.
+// Conservative: only handles `for(i = a; i < b; i += c)` with integer i.
+
+static bool licm_refs_loopvar(Node *n, LVar *loopvar) {
+    if (!n) return false;
+    switch (n->kind) {
+    case ND_LVAR: return n->var == loopvar;
+    case ND_ADDR:
+    case ND_DEREF:
+        return licm_refs_loopvar(n->lhs, loopvar) || licm_refs_loopvar(n->rhs, loopvar);
+    case ND_MEMBER:
+        return licm_refs_loopvar(n->lhs, loopvar);
+    default:
+        return licm_refs_loopvar(n->lhs, loopvar) || licm_refs_loopvar(n->rhs, loopvar);
+    }
+}
+
+static LVar *licm_get_loopvar(Node *init) {
+    // i = 0  →  loopvar = i
+    if (init && init->kind == ND_EXPR_STMT && init->body) {
+        Node *a = init->body;
+        if (a->kind == ND_ASSIGN && a->lhs && a->lhs->kind == ND_LVAR)
+            return a->lhs->var;
+    }
+    return NULL;
+}
+
+static Node *licm(Node *n) {
+    if (!n) return NULL;
+    n->lhs = licm(n->lhs);
+    n->rhs = licm(n->rhs);
+    if (n->kind == ND_IF) {
+        n->cond = licm(n->cond);
+        n->then = licm(n->then);
+        n->els = licm(n->els);
+    } else if (n->kind == ND_FOR) {
+        n->body = licm(n->body);
+        n->inc = licm(n->inc);
+        // Try LICM on this loop
+        LVar *lv = licm_get_loopvar(n->init);
+        if (lv) {
+            Node *body = n->body;
+            // Collect invariant assignments from a block body
+            if (body && body->kind == ND_BLOCK) {
+                Node **pp = &body;
+                while (*pp) {
+                    Node *stmt = *pp;
+                    // Pattern: x = expr (simple assign, no side effects, no loopvar ref)
+                    if (stmt->kind == ND_EXPR_STMT && stmt->body) {
+                        Node *a = stmt->body;
+                        if (a->kind == ND_ASSIGN &&
+                            a->lhs && a->lhs->kind == ND_LVAR &&
+                            a->lhs->var != lv &&
+                            !licm_refs_loopvar(a->rhs, lv)) {
+                            // Hoist: remove from loop, insert before loop
+                            *pp = stmt->next;
+                            stmt->next = n;
+                            n = stmt;
+                            continue;
+                        }
+                    }
+                    pp = &stmt->next;
+                }
+            }
+        }
+    } else if (n->kind == ND_DO) {
+        n->body = licm(n->body);
+    } else if (n->kind == ND_BLOCK) {
+        Node **pp = &n->body;
+        while (*pp) {
+            *pp = licm(*pp);
+            pp = (*pp) ? &(*pp)->next : NULL;
+        }
+    }
+    return n;
+}
+
+static void ssa_licm(Function *fn) {
+    if (!fn || !fn->body) return;
+    fn->body = licm(fn->body);
+}
+
+// ============================================================================
 // Phase 4: Constant propagation
 // ============================================================================
 // Track constant values for locals, replace uses with the constant.
@@ -4129,6 +4214,7 @@ static void ssa_dce(Function *fn, char *in_path) {
 
 void ssa_run(Function *fn, char *in_path) {
     ssa_peephole(fn);
+    ssa_licm(fn);
     ssa_const_prop(fn);
     ssa_dce(fn, in_path);
 
