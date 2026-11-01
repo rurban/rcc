@@ -3469,11 +3469,21 @@ static Node *peephole(Node *n) {
         }
         break;
     // x * 1 → x, x / 1 → x, x * 0 → 0, x * 2^k → x << k
+    // unsigned: x / 2^k → x >> k, x % 2^k → x & (2^k-1)
     case ND_MUL:
     case ND_DIV:
+    case ND_MOD:
         if (n->rhs && n->rhs->kind == ND_NUM) {
             if (n->rhs->val == 1 && (n->kind == ND_MUL || n->kind == ND_DIV))
                 return n->lhs;
+            if (n->rhs->val == 1 && n->kind == ND_MOD) {
+                Node *z = malloc(sizeof(Node));
+                memset(z, 0, sizeof(Node));
+                z->kind = ND_NUM;
+                z->val = 0;
+                z->ty = n->ty;
+                return z;
+            }
             if (n->rhs->val == 0 && n->kind == ND_MUL) {
                 Node *z = malloc(sizeof(Node));
                 memset(z, 0, sizeof(Node));
@@ -3482,9 +3492,9 @@ static Node *peephole(Node *n) {
                 z->ty = n->ty;
                 return z;
             }
-            // x * 2^k → x << k (integer types only, k <= 30)
-            if (n->kind == ND_MUL && n->rhs->val > 1 &&
-                (n->rhs->val & (n->rhs->val - 1)) == 0) {
+            bool is_pow2 = n->rhs->val > 1 &&
+                (n->rhs->val & (n->rhs->val - 1)) == 0;
+            if (is_pow2) {
                 int k = 0;
                 int64_t v = n->rhs->val;
                 while (v > 1) {
@@ -3492,14 +3502,40 @@ static Node *peephole(Node *n) {
                     k++;
                 }
                 if (k <= 30) {
-                    Node *sh = malloc(sizeof(Node));
-                    memset(sh, 0, sizeof(Node));
-                    sh->kind = ND_SHL;
-                    sh->lhs = n->lhs;
-                    sh->rhs = n->rhs;
-                    sh->rhs->val = k;
-                    sh->ty = n->ty;
-                    return sh;
+                    if (n->kind == ND_MUL) {
+                        // x * 2^k → x << k
+                        Node *sh = malloc(sizeof(Node));
+                        memset(sh, 0, sizeof(Node));
+                        sh->kind = ND_SHL;
+                        sh->lhs = n->lhs;
+                        sh->rhs = n->rhs;
+                        sh->rhs->val = k;
+                        sh->ty = n->ty;
+                        return sh;
+                    }
+                    // Unsigned: x / 2^k → x >> k, x % 2^k → x & (2^k-1)
+                    if (n->ty && n->ty->is_unsigned) {
+                        if (n->kind == ND_DIV) {
+                            Node *sh = malloc(sizeof(Node));
+                            memset(sh, 0, sizeof(Node));
+                            sh->kind = ND_SHR;
+                            sh->lhs = n->lhs;
+                            sh->rhs = n->rhs;
+                            sh->rhs->val = k;
+                            sh->ty = n->ty;
+                            return sh;
+                        }
+                        if (n->kind == ND_MOD) {
+                            Node *andn = malloc(sizeof(Node));
+                            memset(andn, 0, sizeof(Node));
+                            andn->kind = ND_BITAND;
+                            andn->lhs = n->lhs;
+                            andn->rhs = n->rhs;
+                            andn->rhs->val = (1 << k) - 1;
+                            andn->ty = n->ty;
+                            return andn;
+                        }
+                    }
                 }
             }
         }
@@ -3554,17 +3590,6 @@ static Node *peephole(Node *n) {
     case ND_SHR:
         if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 0)
             return n->lhs;
-        break;
-    // x % 1 → 0
-    case ND_MOD:
-        if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 1) {
-            Node *z = malloc(sizeof(Node));
-            memset(z, 0, sizeof(Node));
-            z->kind = ND_NUM;
-            z->val = 0;
-            z->ty = n->ty;
-            return z;
-        }
         break;
     // -(-x) → x, ~(~x) → x, !(!x) → x
     case ND_NEG:
