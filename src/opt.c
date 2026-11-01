@@ -3578,6 +3578,14 @@ static Node *peephole(Node *n) {
     case ND_NOT:
         if (n->rhs && n->rhs->kind == ND_NOT)
             return n->rhs->rhs;
+        if (n->rhs && n->rhs->kind == ND_NUM) {
+            Node *z = malloc(sizeof(Node));
+            memset(z, 0, sizeof(Node));
+            z->kind = ND_NUM;
+            z->val = n->rhs->val ? 0 : 1;
+            z->ty = n->ty;
+            return z;
+        }
         break;
     // x==x→1, x!=x→0, x<x→0 (same variable both sides)
     case ND_EQ:
