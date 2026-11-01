@@ -103,4 +103,9 @@ with open(report, 'w') as f:
 print(f"Updated {report}")
 PYEOF
 
+# Format report for CI lint
+if command -v npx >/dev/null 2>&1; then
+    npx prettier --write "$REPORT" >/dev/null 2>&1 || true
+fi
+
 echo "Done."
