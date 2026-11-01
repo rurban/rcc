@@ -429,6 +429,9 @@ tinycc/lib/tcc/include:
 bench: $(TARGET)
 	$(BENCH_RUNNER)
 
+bench-my: $(TARGET)
+	./bench/bench_my.sh ./$(TARGET)
+
 # rcc.1 man page, generated from docs/rcc.pod (see docs/rcc.md for the
 # prose reference both are kept in sync with).
 man: docs/rcc.1
