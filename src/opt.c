@@ -3490,11 +3490,19 @@ static Node *peephole(Node *n) {
             if (n->kind == ND_SUB) {
                 Node *z = malloc(sizeof(Node));
                 memset(z, 0, sizeof(Node));
-                z->kind = ND_NUM;
-                z->val = 0;
+                if (n->ty && (n->ty->kind == TY_FLOAT || n->ty->kind == TY_DOUBLE || n->ty->kind == TY_LDOUBLE)) {
+                    z->kind = ND_FNUM;
+                    z->fval = 0.0;
+                } else {
+                    z->kind = ND_NUM;
+                    z->val = 0;
+                }
                 z->ty = n->ty;
                 return z;
             }
+            // x+x → x<<1 (integer only, shift invalid for float)
+            if (n->ty && (n->ty->kind == TY_FLOAT || n->ty->kind == TY_DOUBLE || n->ty->kind == TY_LDOUBLE))
+                break;
             Node *sh = malloc(sizeof(Node));
             memset(sh, 0, sizeof(Node));
             sh->kind = ND_SHL;
@@ -3524,6 +3532,22 @@ static Node *peephole(Node *n) {
                 z->fval = 0.0;
                 z->ty = n->ty;
                 return z;
+            }
+            // x / 2.0 → x * 0.5 (mul faster than div)
+            if (n->rhs->fval == 2.0 && n->kind == ND_DIV) {
+                n->kind = ND_MUL;
+                n->rhs->fval = 0.5;
+                return n;
+            }
+            // x * 2.0 → x + x
+            if (n->rhs->fval == 2.0 && n->kind == ND_MUL) {
+                Node *x2 = malloc(sizeof(Node));
+                memset(x2, 0, sizeof(Node));
+                *x2 = *n->lhs;
+                x2->next = NULL;
+                n->kind = ND_ADD;
+                n->rhs = x2;
+                return n;
             }
             break;
         }
@@ -4259,6 +4283,10 @@ static void ssa_licm(Function *fn) {
     fn->body = licm(fn->body);
 }
 
+#if 0 // Disabled: try_unroll in optimize_node already fully unrolls
+// constant-trip-count loops at -O2+. This partial 2x unroll for
+// variable-trip-count loops increases code size without measurable
+// speedup (p50 AWFY: -O2 regresses ~5% with this enabled).
 // ============================================================================
 // Phase 4c: Loop unrolling by 2
 // ============================================================================
@@ -4489,6 +4517,7 @@ static void ssa_unroll(Function *fn) {
     if (!fn || !fn->body) return;
     fn->body = unroll_walk(fn->body);
 }
+#endif
 
 // ============================================================================
 // Phase 4: Constant propagation
@@ -5108,7 +5137,7 @@ static void ssa_dce(Function *fn, char *in_path) {
 void ssa_run(Function *fn, char *in_path) {
     ssa_peephole(fn);
     ssa_licm(fn);
-    ssa_unroll(fn);
+    // ssa_unroll(fn); // disabled: see #if 0 block above
     ssa_const_prop(fn);
     ssa_dce(fn, in_path);
 }
