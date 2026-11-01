@@ -3607,7 +3607,7 @@ static void ssa_const_prop(Function *fn) {
 // Remove assignments to locals that are never used. Only removes
 // side-effect-free assignments (simple const or copy). Prints -W warning.
 
-static void dce_collect_uses(Node *n, LVar **used, int *nused, int *cap) {
+static void dce_collect_uses(Node *n, LVar ***used, int *nused, int *cap) {
     if (!n) return;
     if (n->kind == ND_ASSIGN) {
         // LHS is a definition, not a use — only collect uses from RHS
@@ -3616,12 +3616,12 @@ static void dce_collect_uses(Node *n, LVar **used, int *nused, int *cap) {
     }
     if (n->kind == ND_LVAR && n->var) {
         for (int i = 0; i < *nused; i++)
-            if (used[i] == n->var) return;
+            if ((*used)[i] == n->var) return;
         if (*nused >= *cap) {
             *cap = *cap ? *cap * 2 : 32;
-            used = realloc(used, *cap * sizeof(LVar *));
+            *used = realloc(*used, *cap * sizeof(LVar *));
         }
-        used[*nused++] = n->var;
+        (*used)[*nused++] = n->var;
     }
     dce_collect_uses(n->lhs, used, nused, cap);
     dce_collect_uses(n->rhs, used, nused, cap);
@@ -3689,7 +3689,7 @@ static void ssa_dce(Function *fn, char *in_path) {
     if (!fn || !fn->body) return;
     LVar **used = NULL;
     int nused = 0, cap = 0;
-    dce_collect_uses(fn->body, used, &nused, &cap);
+    dce_collect_uses(fn->body, &used, &nused, &cap);
 
     // fn->body is a linked list of statements
     Node **pp = &fn->body;
@@ -3721,9 +3721,7 @@ static void ssa_dce(Function *fn, char *in_path) {
 }
 
 void ssa_run(Function *fn, char *in_path) {
-    // Phase 4: constant propagation + copy prop
     ssa_const_prop(fn);
-    // Phase 4b: dead code elimination
     ssa_dce(fn, in_path);
 
     // Phase 1-3: CFG + dom tree + DFs (infrastructure validation)
