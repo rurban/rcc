@@ -3436,12 +3436,17 @@ static Node *peephole(Node *n) {
 
     // Now simplify this node if it's a binary/unary op
     switch (n->kind) {
-    // x + 0 → x, x - 0 → x, x + x → x << 1, x - x → 0, x - -y → x + y
+    // x + 0 → x, x - 0 → x, x + 0.0 → x, x - 0.0 → x
+    // x + x → x << 1, x - x → 0, x - -y → x + y
     case ND_ADD:
     case ND_SUB:
         if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 0)
             return n->lhs;
+        if (n->rhs && n->rhs->kind == ND_FNUM && n->rhs->fval == 0.0)
+            return n->lhs;
         if (n->lhs && n->lhs->kind == ND_NUM && n->lhs->val == 0 && n->kind == ND_ADD)
+            return n->rhs;
+        if (n->lhs && n->lhs->kind == ND_FNUM && n->lhs->fval == 0.0 && n->kind == ND_ADD)
             return n->rhs;
         // x - -y → x + y
         if (n->kind == ND_SUB && n->rhs && n->rhs->kind == ND_NEG) {
@@ -3475,10 +3480,24 @@ static Node *peephole(Node *n) {
         }
         break;
     // x * 1 → x, x / 1 → x, x * 0 → 0, x * 2^k → x << k
+    // x * 1.0 → x, x / 1.0 → x, x * 0.0 → 0.0
     // unsigned: x / 2^k → x >> k, x % 2^k → x & (2^k-1)
     case ND_MUL:
     case ND_DIV:
     case ND_MOD:
+        if (n->rhs && n->rhs->kind == ND_FNUM) {
+            if (n->rhs->fval == 1.0 && (n->kind == ND_MUL || n->kind == ND_DIV))
+                return n->lhs;
+            if (n->rhs->fval == 0.0 && n->kind == ND_MUL) {
+                Node *z = malloc(sizeof(Node));
+                memset(z, 0, sizeof(Node));
+                z->kind = ND_FNUM;
+                z->fval = 0.0;
+                z->ty = n->ty;
+                return z;
+            }
+            break;
+        }
         if (n->rhs && n->rhs->kind == ND_NUM) {
             if (n->rhs->val == 1 && (n->kind == ND_MUL || n->kind == ND_DIV))
                 return n->lhs;
