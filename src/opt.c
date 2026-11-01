@@ -3726,6 +3726,7 @@ static void cse_invalidate(SsaConstCtx *ctx, LVar *var) {
 static void cp_set(SsaConstCtx *ctx, LVar *var, bool is_float,
                    int64_t val, double fval, Type *ty) {
     if (ctx->aborted) return;
+    if (var->ty && ty_volatile(var->ty)) return; // volatile: never constant
     SsaConst *c = cp_find(ctx, var);
     if (!c) {
         if (ctx->nconsts >= SSA_MAX_CONSTS) {
@@ -4242,13 +4243,17 @@ static void ssa_dce(Function *fn, char *in_path) {
             n->rhs->lhs && n->rhs->lhs->kind == ND_LVAR &&
             n->rhs->lhs->var) {
             LVar *var = n->rhs->lhs->var;
-            const char *op = (n->rhs->tok && n->rhs->tok->name) ? n->rhs->tok->name : "";
-            if (op[0] == '=' && op[1] == '\0' &&
-                !dce_var_used(var, used, nused) &&
-                dce_rhs_no_side_effects(n->rhs->rhs)) {
-                dead = true;
-                if (opt_v && opt_W)
-                    fprintf(stderr, "%s note: eliminate dead assignment to %s\n", in_path, var->name);
+            if (var->ty && ty_volatile(var->ty)) {
+                // volatile: never dead
+            } else {
+                const char *op = (n->rhs->tok && n->rhs->tok->name) ? n->rhs->tok->name : "";
+                if (op[0] == '=' && op[1] == '\0' &&
+                    !dce_var_used(var, used, nused) &&
+                    dce_rhs_no_side_effects(n->rhs->rhs)) {
+                    dead = true;
+                    if (opt_v && opt_W)
+                        fprintf(stderr, "%s note: eliminate dead assignment to %s\n", in_path, var->name);
+                }
             }
         }
         if (dead) {
