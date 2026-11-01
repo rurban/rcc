@@ -3,12 +3,14 @@ set -eu
 
 force_push=
 force_plain=
+last_run=
 while [ $# -gt 0 ]; do
     case "$1" in
         -ff) force_push=1; force_plain=1; shift ;;
         -f) force_push=1; shift ;;
+        -l|--last) last_run=1; shift ;;
         --) shift; break ;;
-        -*) echo "Usage: $0 [-f|-ff]" >&2; exit 1 ;;
+        -*) echo "Usage: $0 [-f|-ff] [-l|--last]" >&2; exit 1 ;;
         *) break ;;
     esac
 done
@@ -25,28 +27,38 @@ if [ "$branch" = "main" ]; then
     exit 1
 fi
 
-if [ -n "$force_push" ]; then
-    echo "Force-pushing branch '$branch' to trigger CI..."
-    git push origin "$branch" "$force_flag"
+if [ -n "$last_run" ]; then
+    echo "Finding last CI run for branch '$branch'..."
+    run_id=$(gh run list --branch "$branch" --limit 1 --json databaseId --jq '.[0].databaseId')
+    if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+        echo "Error: no CI run found for branch '$branch'" >&2
+        exit 1
+    fi
+    echo "Using CI run $run_id..."
 else
-    echo "Pushing branch '$branch' to trigger CI..."
-    git push origin "$branch"
+    if [ -n "$force_push" ]; then
+        echo "Force-pushing branch '$branch' to trigger CI..."
+        git push origin "$branch" "$force_flag"
+    else
+        echo "Pushing branch '$branch' to trigger CI..."
+        git push origin "$branch"
+    fi
+
+    echo "Waiting for CI run to appear..."
+    sleep 5
+
+    run_id=$(gh run list --branch "$branch" --limit 1 --json databaseId --jq '.[0].databaseId')
+    if [ -z "$run_id" ]; then
+        echo "Error: could not find CI run for branch '$branch'" >&2
+        exit 1
+    fi
+
+    echo "Watching CI run $run_id..."
+    gh run watch --exit-status "$run_id" || {
+        rc=$?
+        echo "Warning: CI run $run_id failed or was cancelled (exit $rc)" >&2
+    }
 fi
-
-echo "Waiting for CI run to appear..."
-sleep 5
-
-run_id=$(gh run list --branch "$branch" --limit 1 --json databaseId --jq '.[0].databaseId')
-if [ -z "$run_id" ]; then
-    echo "Error: could not find CI run for branch '$branch'" >&2
-    exit 1
-fi
-
-echo "Watching CI run $run_id..."
-gh run watch --exit-status "$run_id" || {
-    rc=$?
-    echo "Warning: CI run $run_id failed or was cancelled (exit $rc)" >&2
-}
 
 echo "Downloading artifacts..."
 downloaded=
