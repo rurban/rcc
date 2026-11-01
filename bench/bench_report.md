@@ -4,9 +4,9 @@ _Generated: November 2026_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) | Spread |
 | :-------- | -----------: | -----------: | ---------: | -----: |
-| RCC       |        18 |       842 |       860 |    -  |
-| RCC -O1   |        17 |       851 |       868 |    -  |
-| RCC -O2   |        17 |       851 |       868 |    -  |
+| RCC       |           18 |          842 |        860 |      - |
+| RCC -O1   |           17 |          851 |        868 |      - |
+| RCC -O2   |           17 |          851 |        868 |      - |
 | TCC       |            5 |          548 |        553 |    20% |
 | SLIMCC    |           34 |          557 |        591 |     2% |
 | XCC       |            8 |          398 |        406 |    12% |
@@ -27,9 +27,9 @@ _Generated: November 2026_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) | Spread |
 | :-------- | -----------: | -----------: | ---------: | -----: |
-| RCC       |        18 |       842 |       860 |    -  |
-| RCC -O1   |        17 |       851 |       868 |    -  |
-| RCC -O2   |        17 |       851 |       868 |    -  |
+| RCC       |           18 |          842 |        860 |      - |
+| RCC -O1   |           17 |          851 |        868 |      - |
+| RCC -O2   |           17 |          851 |        868 |      - |
 | TCC       |           71 |         5837 |       5908 |     2% |
 | SLIMCC    |          290 |         5681 |       5971 |     7% |
 | KEFIR     |         4992 |         6130 |      11122 |    71% |
@@ -98,18 +98,18 @@ RCC -O2:
 
 ## Large File Compile-Only (sqlite3.c)
 
-| Compiler  | Compile (ms) | Spread |
+| Compiler | Compile (ms) | Spread |
 | :-------- | -----------: | -----: | ---- | --- |
-| RCC       |        18 |       842 |       860 |    -  |
-| RCC -O1   |        17 |       851 |       868 |    -  |
-| RCC -O2   |        17 |       851 |       868 |    -  |
-| TCC       |       116 ms |     0% |
-| SLIMCC    |       776 ms |     0% |
-| KEFIR     |     20966 ms |     0% |
-| KEFIR -O1 |     39080 ms |     2% |
-| ANTCC     |       454 ms |     0% |
-| CCC       |     14753 ms |     6% |
-| GCC -O0   |      4869 ms |     0% |
-| GCC -O2   |     30896 ms |     0% |
-| Clang -O0 |      2018 ms |     5% |
-| Clang -O2 |     25578 ms |    35% |
+| RCC | 18 | 842 | 860 | - |
+| RCC -O1 | 17 | 851 | 868 | - |
+| RCC -O2 | 17 | 851 | 868 | - |
+| TCC | 116 ms | 0% |
+| SLIMCC | 776 ms | 0% |
+| KEFIR | 20966 ms | 0% |
+| KEFIR -O1 | 39080 ms | 2% |
+| ANTCC | 454 ms | 0% |
+| CCC | 14753 ms | 6% |
+| GCC -O0 | 4869 ms | 0% |
+| GCC -O2 | 30896 ms | 0% |
+| Clang -O0 | 2018 ms | 5% |
+| Clang -O2 | 25578 ms | 35% |
