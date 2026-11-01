@@ -30,16 +30,20 @@ time_ms() {
 bench_one() {
     local label="$1" flags="$2" exe="bench/bench_my"
     local best_c=999999 best_e=999999 c e
-    for i in $(seq 1 $RUNS); do
-        c=$(time_ms $PIN $RCC $flags $SRC -o $exe)
-        e=$(time_ms $PIN $exe)
-        [ $c -lt $best_c ] && best_c=$c
-        [ $e -lt $best_e ] && best_e=$e
+    local pin=()
+    read -ra pin <<< "$PIN"
+    local fl=()
+    read -ra fl <<< "$flags"
+    for _ in $(seq 1 "$RUNS"); do
+        c=$(time_ms "${pin[@]}" "$RCC" "${fl[@]}" "$SRC" -o "$exe")
+        e=$(time_ms "${pin[@]}" "$exe")
+        [ "$c" -lt "$best_c" ] && best_c=$c
+        [ "$e" -lt "$best_e" ] && best_e=$e
     done
     local size
-    size=$(stat -c%s $exe 2>/dev/null || stat -f%z $exe 2>/dev/null)
-    rm -f $exe
-    echo "$label|$best_c|$best_e|$(($best_c + $best_e))|$size"
+    size=$(stat -c%s "$exe" 2>/dev/null || stat -f%z "$exe" 2>/dev/null)
+    rm -f "$exe"
+    echo "$label|$best_c|$best_e|$((best_c + best_e))|$size"
 }
 
 echo "Running quick RCC bench ($RUNS runs each)..."
