@@ -3803,5 +3803,28 @@ static void ssa_dce(Function *fn, char *in_path) {
 void ssa_run(Function *fn, char *in_path) {
     ssa_const_prop(fn);
     ssa_dce(fn, in_path);
-    // Phase 1-3 (CFG/dom/DFs/phi) disabled until SSA renaming is complete
+
+    // Phase 1-3: CFG + dom tree + DFs (infrastructure validation)
+    SsaCFG *cfg = ssa_build_cfg(fn);
+    if (!cfg) return;
+    SsaDom *dom = ssa_build_dom(cfg);
+    int **df, *dfc;
+    ssa_compute_df(cfg, dom, &df, &dfc);
+    SsaRename *r = ssa_rename_init(fn);
+    ssa_insert_phis(cfg, dom, df, dfc, r);
+    ssa_rename_free(r);
+
+    // Free all.
+    for (int i = 0; i < cfg->nblocks; i++) {
+        free(cfg->blocks[i]);
+        free(dom->anc[i]);
+        free(df[i]);
+    }
+    free(cfg->blocks);
+    free(cfg);
+    free(dom->idom);
+    free(dom->depth);
+    free(dom->anc);
+    free(dom);
+    free(dfc);
 }
