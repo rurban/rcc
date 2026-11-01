@@ -3441,7 +3441,7 @@ static Node *peephole(Node *n) {
         if (n->lhs && n->lhs->kind == ND_NUM && n->lhs->val == 0 && n->kind == ND_ADD)
             return n->rhs;
         break;
-    // x * 1 → x, x / 1 → x, x * 0 → 0
+    // x * 1 → x, x / 1 → x, x * 0 → 0, x * 2^k → x << k
     case ND_MUL:
     case ND_DIV:
         if (n->rhs && n->rhs->kind == ND_NUM) {
@@ -3454,6 +3454,26 @@ static Node *peephole(Node *n) {
                 z->val = 0;
                 z->ty = n->ty;
                 return z;
+            }
+            // x * 2^k → x << k (integer types only, k <= 30)
+            if (n->kind == ND_MUL && n->rhs->val > 1 &&
+                (n->rhs->val & (n->rhs->val - 1)) == 0) {
+                int k = 0;
+                int64_t v = n->rhs->val;
+                while (v > 1) {
+                    v >>= 1;
+                    k++;
+                }
+                if (k <= 30) {
+                    Node *sh = malloc(sizeof(Node));
+                    memset(sh, 0, sizeof(Node));
+                    sh->kind = ND_SHL;
+                    sh->lhs = n->lhs;
+                    sh->rhs = n->rhs;
+                    sh->rhs->val = k;
+                    sh->ty = n->ty;
+                    return sh;
+                }
             }
         }
         break;
