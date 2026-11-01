@@ -120,6 +120,7 @@ fi
 RCC_EXE="bench/bench_rcc"
 RCC_O1_EXE="bench/bench_o1"
 RCC_O2_EXE="bench/bench_o2"
+RCC_O3_EXE="bench/bench_o3"
 TCC_EXE="bench/bench_tcc"
 SLIMCC_EXE="bench/bench_slimcc"
 XCC_EXE="bench/bench_xcc"
@@ -201,7 +202,7 @@ resume_gortex() {
 }
 
 cleanup() {
-	rm -f "$RCC_EXE" "$RCC_O1_EXE" "$RCC_O2_EXE" "$TCC_EXE" "$GCC_EXE" "$GCC_O2_EXE" "$CLANG_EXE" "$CLANG_O2_EXE" "$CPROC_EXE" "$SCC_EXE" "$LACC_EXE" "$ANTCC_EXE" "$CAKE_EXE"
+	rm -f "$RCC_EXE" "$RCC_O1_EXE" "$RCC_O2_EXE" "$RCC_O3_EXE" "$TCC_EXE" "$GCC_EXE" "$GCC_O2_EXE" "$CLANG_EXE" "$CLANG_O2_EXE" "$CPROC_EXE" "$SCC_EXE" "$LACC_EXE" "$ANTCC_EXE" "$CAKE_EXE"
 
 	rm -f "$KEFIR_EXE" "$SLIMCC_EXE" "$XCC_EXE" "$CCC_EXE" "$BCC_EXE" "$LARGE_SO"
 	# Must run on every exit path: a paused daemon left behind is worse than a
@@ -421,6 +422,10 @@ printf "\n--- RCC -O2 ---\n"
 rcc_o2_time=$($PIN "$RCC" -time -O2 "$SRC" -o "$RCC_O2_EXE" 2>&1 >/dev/null) || true
 printf '%s\n' "$rcc_o2_time" | column -t
 rm -f "$RCC_O2_EXE"
+printf "\n--- RCC -O3 ---\n"
+rcc_o3_time=$($PIN "$RCC" -time -O3 "$SRC" -o "$RCC_O3_EXE" 2>&1 >/dev/null) || true
+printf '%s\n' "$rcc_o3_time" | column -t
+rm -f "$RCC_O3_EXE"
 
 # ---- Large file substep timing ----
 if download_sqlite; then
@@ -441,6 +446,10 @@ if download_sqlite; then
     # shellcheck disable=SC2086
     rcc_large_o2_time=$($PIN "$RCC" -time -O2 $LARGE_CFLAGS 2>&1 >/dev/null) || true
     printf '%s\n' "$rcc_large_o2_time" | column -t
+    printf "\n--- RCC -O3 ---\n"
+    # shellcheck disable=SC2086
+    rcc_large_o3_time=$($PIN "$RCC" -time -O3 $LARGE_CFLAGS 2>&1 >/dev/null) || true
+    printf '%s\n' "$rcc_large_o3_time" | column -t
 fi
 
 echo ""
@@ -451,6 +460,7 @@ echo "======================================"
 run_bench "RCC" "$RCC" "$SRC -o $RCC_EXE" "$RCC_EXE"
 run_bench "RCC -O1" "$RCC" "-O1 $SRC -o $RCC_O1_EXE" "$RCC_O1_EXE"
 run_bench "RCC -O2" "$RCC" "-O2 $SRC -o $RCC_O2_EXE" "$RCC_O2_EXE"
+run_bench "RCC -O3" "$RCC" "-O3 $SRC -o $RCC_O3_EXE" "$RCC_O3_EXE"
 if [ -n "$TCC" ]; then
     run_bench "TCC" "$TCC" "$SRC -o $TCC_EXE" "$TCC_EXE" || true
 fi
@@ -528,6 +538,7 @@ echo "======================================"
 run_bench_awfy "RCC" "$RCC" "-std=c99" "bench/awfy_rcc"
 run_bench_awfy "RCC -O1" "$RCC" "-O1 -std=c99" "bench/awfy_rcc_o1"
 run_bench_awfy "RCC -O2" "$RCC" "-O2 -std=c99" "bench/awfy_rcc_o2"
+run_bench_awfy "RCC -O3" "$RCC" "-O3 -std=c99" "bench/awfy_rcc_o3"
 if [ -n "$TCC" ]; then
     run_bench_awfy "TCC" "$TCC" "-std=c99" "bench/awfy_tcc" || true
 fi
@@ -641,6 +652,8 @@ if [ -f "$LARGE_SRC" ]; then
     _compile_large "RCC -O1" "$RCC" -O1 $LARGE_CFLAGS
     # shellcheck disable=SC2086
     _compile_large "RCC -O2" "$RCC" -O2 $LARGE_CFLAGS
+    # shellcheck disable=SC2086
+    _compile_large "RCC -O3" "$RCC" -O3 $LARGE_CFLAGS
     if [ -n "$TCC" ]; then
 	# TCC defines __GNUC__ but doesn't support __uint128_t casts on ARM64
         # shellcheck disable=SC2086
@@ -748,6 +761,8 @@ printf "\nRCC -O1:\n"
 printf '%s\n' "$rcc_o1_time" | sed 's|[^ ]*/||g'
 printf "\nRCC -O2:\n"
 printf '%s\n' "$rcc_o2_time" | sed 's|[^ ]*/||g'
+printf "\nRCC -O3:\n"
+printf '%s\n' "$rcc_o3_time" | sed 's|[^ ]*/||g'
 printf '```\n'
 if [ -n "${rcc_large_time:-}" ]; then
 	printf "\n## RCC Substep Timing -- sqlite3.c\n\n"
@@ -758,6 +773,8 @@ if [ -n "${rcc_large_time:-}" ]; then
 	printf '%s\n' "$rcc_large_o1_time" | sed 's|[^ ]*/||g'
 	printf "\nRCC -O2:\n"
 	printf '%s\n' "$rcc_large_o2_time" | sed 's|[^ ]*/||g'
+	printf "\nRCC -O3:\n"
+	printf '%s\n' "$rcc_large_o3_time" | sed 's|[^ ]*/||g'
 	printf '```\n'
 fi
 if [ -n "${large_results:-}" ]; then

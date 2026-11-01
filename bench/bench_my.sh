@@ -29,9 +29,9 @@ for v in RUNS AWFY_RUNS COMPILE_RUNS LARGE_RUNS; do
     case "${!v}" in ''|*[!0-9]*|0) eval "$v=1" ;; esac
 done
 
-LABELS=("RCC" "RCC -O1" "RCC -O2")
-FLAGS=("" "-O1" "-O2")
-TAGS=("rcc" "o1" "o2")
+LABELS=("RCC" "RCC -O1" "RCC -O2" "RCC -O3")
+FLAGS=("" "-O1" "-O2" "-O3")
+TAGS=("rcc" "o1" "o2" "o3")
 
 [ -x "$RCC" ] || { echo "rcc not found: $RCC" >&2; exit 1; }
 
@@ -122,17 +122,17 @@ download_sqlite() {
 }
 
 echo "== Small file (bench.c), $RUNS exec / $COMPILE_RUNS compile runs =="
-for i in 0 1 2; do
+for i in 0 1 2 3; do
     bench_suite small "${LABELS[$i]}" "${FLAGS[$i]}" "bench/bench_${TAGS[$i]}" "$RUNS" "$SRC"
 done
 
 echo "== Are-We-Fast-Yet, $AWFY_RUNS exec / $COMPILE_RUNS compile runs =="
-for i in 0 1 2; do
+for i in 0 1 2 3; do
     bench_suite awfy "${LABELS[$i]}" "-std=c99 ${FLAGS[$i]}" "bench/awfy_my_${TAGS[$i]}" "$AWFY_RUNS" "$AWFY_SRCS"
 done
 
 echo "== Substep timing (-time) =="
-for i in 0 1 2; do
+for i in 0 1 2 3; do
     exe="bench/bench_${TAGS[$i]}"
     fl=()
     read -ra fl <<< "${FLAGS[$i]}"
@@ -144,7 +144,7 @@ done
 
 if download_sqlite; then
     echo "== sqlite3.c substeps =="
-    for i in 0 1 2; do
+    for i in 0 1 2 3; do
         fl=()
         read -ra fl <<< "${FLAGS[$i]}"
         # shellcheck disable=SC2086
@@ -154,7 +154,7 @@ if download_sqlite; then
     done
 
     echo "== sqlite3.c compile-only, $LARGE_RUNS runs =="
-    for i in 0 1 2; do
+    for i in 0 1 2 3; do
         fl=()
         read -ra fl <<< "${FLAGS[$i]}"
         # shellcheck disable=SC2086
@@ -186,7 +186,7 @@ def rows(name):
 
 def timing(kind):
     res = {}
-    for label, tag in (('RCC', 'rcc'), ('RCC -O1', 'o1'), ('RCC -O2', 'o2')):
+    for label, tag in (('RCC', 'rcc'), ('RCC -O1', 'o1'), ('RCC -O2', 'o2'), ('RCC -O3', 'o3')):
         p = os.path.join(out, f'time_{kind}_{tag}')
         if os.path.exists(p):
             res[label] = re.sub(r'[^ ]*/', '', open(p).read().rstrip('\n'))
@@ -202,7 +202,7 @@ def full_row(label, v):
 def large_row(label, v):
     return f'| {label:<9} | {v[0] + " ms":>12} | {v[1] + "%":>6} |'
 
-row_re = re.compile(r'\| (RCC(?: -O[12])?)\s*\|')
+row_re = re.compile(r'\| (RCC(?: -O[123])?)\s*\|')
 lines = open(report).read().split('\n')
 res = []
 section = ''
@@ -225,7 +225,7 @@ while i < len(lines):
         while lines[j] != '```':
             j += 1
         body = []
-        for label in ('RCC', 'RCC -O1', 'RCC -O2'):
+        for label in ('RCC', 'RCC -O1', 'RCC -O2', 'RCC -O3'):
             if label in block_for:
                 body.append(f'{label}:\n{block_for[label]}')
         res.append('```')
