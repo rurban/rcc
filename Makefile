@@ -383,6 +383,8 @@ test-musl check-musl:
 	-$(MAKE) CC=musl-gcc && ./run_tests_musl ./rcc-musl --all --parallel
 test-gcc-bugs check-gcc-bugs: $(TARGET) $(RUN_TESTS)
 	ulimit -f 2097152; $(TEST_RUNNER) --gcc-bugs --parallel
+test-o2 check-o2: $(TARGET) $(RUN_TESTS)
+	ulimit -f 2097152; $(TEST_RUNNER_O2) --all --parallel
 test-full check-full:
 	$(MAKE) clean && $(MAKE) check-all && $(MAKE) check-musl
 	ulimit -f 2097152; $(TEST_RUNNER_O1) --parallel && $(TEST_RUNNER_O2) --parallel
@@ -537,6 +539,7 @@ TAGS: $(SRCS) src/rcc.h
 
 .PHONY: all clean leanclean test check check-full check-torture check-all test-all
 .PHONY: test-full test-torture test-unit check-unit test-compliance check-compliance test-ctest check-ctest test-link check-link
+.PHONY: test-o2 check-o2
 .PHONY: test-thirdparty check-thirdparty thirdparty-list
 .PHONY: lint lint-changed bench install dist release prof man tcc FORCE
 FORCE:
