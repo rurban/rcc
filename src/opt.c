@@ -3436,17 +3436,25 @@ static Node *peephole(Node *n) {
 
     // Now simplify this node if it's a binary/unary op
     switch (n->kind) {
-    // x + 0 → x, x - 0 → x, x + x → x << 1
+    // x + 0 → x, x - 0 → x, x + x → x << 1, x - x → 0
     case ND_ADD:
     case ND_SUB:
         if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 0)
             return n->lhs;
         if (n->lhs && n->lhs->kind == ND_NUM && n->lhs->val == 0 && n->kind == ND_ADD)
             return n->rhs;
-        // x + x → x << 1 (same LVar both sides)
-        if (n->kind == ND_ADD && n->lhs && n->rhs &&
+        // x + x → x << 1, x - x → 0 (same LVar both sides)
+        if (n->lhs && n->rhs &&
             n->lhs->kind == ND_LVAR && n->rhs->kind == ND_LVAR &&
             n->lhs->var == n->rhs->var) {
+            if (n->kind == ND_SUB) {
+                Node *z = malloc(sizeof(Node));
+                memset(z, 0, sizeof(Node));
+                z->kind = ND_NUM;
+                z->val = 0;
+                z->ty = n->ty;
+                return z;
+            }
             Node *sh = malloc(sizeof(Node));
             memset(sh, 0, sizeof(Node));
             sh->kind = ND_SHL;
@@ -3508,10 +3516,16 @@ static Node *peephole(Node *n) {
         }
         if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == ~0)
             return n->lhs;
+        if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR && n->rhs->kind == ND_LVAR &&
+            n->lhs->var == n->rhs->var)
+            return n->lhs; // x & x = x
         break;
     case ND_BITOR:
         if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 0)
             return n->lhs;
+        if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR && n->rhs->kind == ND_LVAR &&
+            n->lhs->var == n->rhs->var)
+            return n->lhs; // x | x = x
         break;
     case ND_BITXOR:
         if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 0)
@@ -3525,6 +3539,15 @@ static Node *peephole(Node *n) {
             nn->ty = n->ty;
             return nn;
         }
+        if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR && n->rhs->kind == ND_LVAR &&
+            n->lhs->var == n->rhs->var) {
+            Node *z = malloc(sizeof(Node));
+            memset(z, 0, sizeof(Node));
+            z->kind = ND_NUM;
+            z->val = 0;
+            z->ty = n->ty;
+            return z;
+        } // x ^ x = 0
         break;
     // x << 0 → x, x >> 0 → x
     case ND_SHL:
