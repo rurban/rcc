@@ -3350,20 +3350,109 @@ static Node *cp_transform(Node *n, SsaConstCtx *ctx) {
         n->rhs = cp_transform(n->rhs, ctx);
         if (n->lhs && n->lhs->kind == ND_LVAR && n->lhs->var) {
             LVar *var = n->lhs->var;
-            if (n->tok && n->tok->name && n->tok->name[0] == '=' && n->tok->name[1] == '\0') {
+            const char *op = (n->tok && n->tok->name) ? n->tok->name : "";
+            if (op[0] == '=' && op[1] == '\0') {
+                // Simple assignment: x = expr
                 int64_t v;
                 double f;
-                if (cp_is_const(n->rhs, &v, &f)) {
+                if (cp_is_const(n->rhs, &v, &f))
                     cp_set(ctx, var, (n->rhs->ty && n->rhs->ty->kind >= TY_FLOAT), v, f, n->lhs->ty);
-                } else if (n->rhs && n->rhs->kind == ND_LVAR && n->rhs->var) {
-                    // Copy prop: x = y
+                else if (n->rhs && n->rhs->kind == ND_LVAR && n->rhs->var)
                     cp_set_equiv(ctx, var, n->rhs->var, n->lhs->ty);
+                else
+                    cp_clear(ctx, var);
+            } else if (op[1] == '=' && op[2] == '\0' && op[0] != '=' && op[0] != '!' && op[0] != '<' && op[0] != '>' && op[0] != '&' && op[0] != '|') {
+                // Compound assignment: x op= expr (only single-char ops: +=, -=, *=, /=, %=)
+                SsaConst *c = cp_find(ctx, var);
+                int64_t rv;
+                double rf;
+                if (c && (c->is_const || c->equiv) && cp_is_const(n->rhs, &rv, &rf)) {
+                    // Resolve current value
+                    int64_t lv = c->val;
+                    double lf = c->fval;
+                    bool is_float = c->is_float;
+                    if (c->equiv && !c->is_const) {
+                        SsaConst *ec = cp_find(ctx, c->equiv);
+                        if (ec && ec->is_const) {
+                            lv = ec->val;
+                            lf = ec->fval;
+                            is_float = ec->is_float;
+                        } else {
+                            cp_clear(ctx, var);
+                            break;
+                        }
+                    }
+                    int64_t r = 0;
+                    double rf2 = 0;
+                    bool ok = true;
+                    switch (op[0]) {
+                    case '+':
+                        if (is_float) rf2 = lf + rf;
+                        else
+                            r = lv + rv;
+                        break;
+                    case '-':
+                        if (is_float) rf2 = lf - rf;
+                        else
+                            r = lv - rv;
+                        break;
+                    case '*':
+                        if (is_float) rf2 = lf * rf;
+                        else
+                            r = lv * rv;
+                        break;
+                    case '/':
+                        if (is_float) {
+                            if (rf == 0) ok = false;
+                            else
+                                rf2 = lf / rf;
+                        } else {
+                            if (rv == 0) ok = false;
+                            else
+                                r = lv / rv;
+                        }
+                        break;
+                    case '%':
+                        if (!is_float) {
+                            if (rv == 0) ok = false;
+                            else
+                                r = lv % rv;
+                        } else
+                            ok = false;
+                        break;
+                    default: ok = false;
+                    }
+                    if (ok)
+                        cp_set(ctx, var, is_float, r, rf2, n->lhs->ty);
+                    else
+                        cp_clear(ctx, var);
                 } else {
                     cp_clear(ctx, var);
                 }
             } else {
                 cp_clear(ctx, var);
             }
+        }
+        break;
+    }
+    case ND_ADDR: {
+        // &x: x's address was taken — clear x's constant
+        if (n->rhs && n->rhs->kind == ND_LVAR && n->rhs->var)
+            cp_clear(ctx, n->rhs->var);
+        n->rhs = cp_transform(n->rhs, ctx);
+        break;
+    }
+    case ND_FUNCALL: {
+        // Function call: potential side effects — clear all constants
+        for (int i = 0; i < ctx->nconsts; i++) {
+            ctx->consts[i].is_const = false;
+            ctx->consts[i].equiv = NULL;
+        }
+        // Transform args
+        Node **ap = &n->args;
+        while (*ap) {
+            (*ap)->rhs = cp_transform((*ap)->rhs, ctx);
+            ap = &(*ap)->next;
         }
         break;
     }
@@ -3400,14 +3489,6 @@ static Node *cp_transform(Node *n, SsaConstCtx *ctx) {
     case ND_EXPR_STMT:
         n->rhs = cp_transform(n->rhs, ctx);
         break;
-    case ND_FUNCALL: {
-        Node **ap = &n->args;
-        while (*ap) {
-            (*ap)->rhs = cp_transform((*ap)->rhs, ctx);
-            ap = &(*ap)->next;
-        }
-        break;
-    }
     default:
         n->lhs = cp_transform(n->lhs, ctx);
         n->rhs = cp_transform(n->rhs, ctx);
