@@ -2921,6 +2921,18 @@ SsaCFG *ssa_build_cfg(Function *fn) {
     else
         ssa_edge(cfg, cfg->entry, cfg->exit);
 
+    // Fixup: create edges for forward gotos (label not yet registered
+    // when the goto was processed). Walk all blocks for ND_GOTO nodes.
+    for (int b = 0; b < cfg->nblocks; b++) {
+        SsaBlock *bb = cfg->blocks[b];
+        for (Node *n = bb->first; n; n = n->next) {
+            if (n->kind != ND_GOTO || !n->label_name) continue;
+            int target = ssa_find_label(ctx, n->label_name);
+            if (target >= 0 && target != b)
+                ssa_edge(cfg, b, target);
+        }
+    }
+
     // Free build context
     free(ctx->loop_exit);
     free(ctx->loop_cond);
