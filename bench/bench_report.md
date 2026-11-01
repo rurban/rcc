@@ -98,18 +98,18 @@ RCC -O2:
 
 ## Large File Compile-Only (sqlite3.c)
 
-| Compiler | Compile (ms) | Spread |
+| Compiler  | Compile (ms) | Spread |
 | :-------- | -----------: | -----: | ---- | --- |
-| RCC | 65 | 2867 | 2932 | - |
-| RCC -O1 | 32 | 1540 | 1572 | - |
-| RCC -O2 | 64 | 3425 | 3489 | - |
-| TCC | 116 ms | 0% |
-| SLIMCC | 776 ms | 0% |
-| KEFIR | 20966 ms | 0% |
-| KEFIR -O1 | 39080 ms | 2% |
-| ANTCC | 454 ms | 0% |
-| CCC | 14753 ms | 6% |
-| GCC -O0 | 4869 ms | 0% |
-| GCC -O2 | 30896 ms | 0% |
-| Clang -O0 | 2018 ms | 5% |
-| Clang -O2 | 25578 ms | 35% |
+| RCC       |           65 |   2867 | 2932 | -   |
+| RCC -O1   |           32 |   1540 | 1572 | -   |
+| RCC -O2   |           64 |   3425 | 3489 | -   |
+| TCC       |       116 ms |     0% |
+| SLIMCC    |       776 ms |     0% |
+| KEFIR     |     20966 ms |     0% |
+| KEFIR -O1 |     39080 ms |     2% |
+| ANTCC     |       454 ms |     0% |
+| CCC       |     14753 ms |     6% |
+| GCC -O0   |      4869 ms |     0% |
+| GCC -O2   |     30896 ms |     0% |
+| Clang -O0 |      2018 ms |     5% |
+| Clang -O2 |     25578 ms |    35% |
