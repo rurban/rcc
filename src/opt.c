@@ -3468,6 +3468,15 @@ static Node *peephole(Node *n) {
             n->ty = n->lhs->ty;
             return n->lhs;
         }
+        // x + 1.0 + 2.0 → x + 3.0
+        if (n->rhs && n->rhs->kind == ND_FNUM &&
+            n->lhs && (n->lhs->kind == ND_ADD || n->lhs->kind == ND_SUB) &&
+            n->lhs->kind == n->kind &&
+            n->lhs->rhs && n->lhs->rhs->kind == ND_FNUM) {
+            n->lhs->rhs->fval += n->rhs->fval;
+            n->ty = n->lhs->ty;
+            return n->lhs;
+        }
         // x - -y → x + y
         if (n->kind == ND_SUB && n->rhs && n->rhs->kind == ND_NEG) {
             n->kind = ND_ADD;
@@ -3523,6 +3532,14 @@ static Node *peephole(Node *n) {
             n->lhs && n->lhs->kind == ND_MUL &&
             n->lhs->rhs && n->lhs->rhs->kind == ND_NUM) {
             n->lhs->rhs->val *= n->rhs->val;
+            n->ty = n->lhs->ty;
+            return n->lhs;
+        }
+        // x * 2.0 * 3.0 → x * 6.0
+        if (n->kind == ND_MUL && n->rhs && n->rhs->kind == ND_FNUM &&
+            n->lhs && n->lhs->kind == ND_MUL &&
+            n->lhs->rhs && n->lhs->rhs->kind == ND_FNUM) {
+            n->lhs->rhs->fval *= n->rhs->fval;
             n->ty = n->lhs->ty;
             return n->lhs;
         }
