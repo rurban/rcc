@@ -3434,6 +3434,17 @@ static Node *peephole(Node *n) {
         }
     }
 
+    // Commutative normalization: swap so constant is on RHS
+    if ((n->kind == ND_ADD || n->kind == ND_MUL ||
+         n->kind == ND_BITAND || n->kind == ND_BITOR || n->kind == ND_BITXOR) &&
+        n->lhs && n->rhs &&
+        (n->lhs->kind == ND_NUM || n->lhs->kind == ND_FNUM) &&
+        n->rhs->kind != ND_NUM && n->rhs->kind != ND_FNUM) {
+        Node *tmp = n->lhs;
+        n->lhs = n->rhs;
+        n->rhs = tmp;
+    }
+
     // Now simplify this node if it's a binary/unary op
     switch (n->kind) {
     // x + 0 → x, x - 0 → x, x + 0.0 → x, x - 0.0 → x
@@ -3920,6 +3931,33 @@ static Node *peephole(Node *n) {
     case ND_NOT:
         if (n->rhs && n->rhs->kind == ND_NOT)
             return n->rhs->rhs;
+        // !(x<y)→y<=x, !(x<=y)→y<x, !(x==y)→x!=y, !(x!=y)→x==y
+        if (n->rhs &&
+            (n->rhs->kind == ND_LT || n->rhs->kind == ND_LE ||
+             n->rhs->kind == ND_EQ || n->rhs->kind == ND_NE)) {
+            Node *cmp = n->rhs;
+            int new_kind;
+            if (cmp->kind == ND_LT) new_kind = ND_LE;
+            else if (cmp->kind == ND_LE)
+                new_kind = ND_LT;
+            else if (cmp->kind == ND_EQ)
+                new_kind = ND_NE;
+            else
+                new_kind = ND_EQ;
+            Node *r = malloc(sizeof(Node));
+            memset(r, 0, sizeof(Node));
+            r->kind = new_kind;
+            // swap for < and <=: !(x<y) = y<=x, !(x<=y) = y<x
+            if (cmp->kind == ND_LT || cmp->kind == ND_LE) {
+                r->lhs = cmp->rhs;
+                r->rhs = cmp->lhs;
+            } else {
+                r->lhs = cmp->lhs;
+                r->rhs = cmp->rhs;
+            }
+            r->ty = n->ty;
+            return r;
+        }
         if (n->rhs && n->rhs->kind == ND_NUM) {
             Node *z = malloc(sizeof(Node));
             memset(z, 0, sizeof(Node));
@@ -3950,6 +3988,31 @@ static Node *peephole(Node *n) {
             z->val = (n->kind == ND_EQ || n->kind == ND_LE) ? 1 : 0;
             z->ty = n->ty;
             return z;
+        }
+        break;
+    // x ? 1 : 0 → x != 0
+    case ND_COND:
+        if (n->cond && n->then && n->els &&
+            n->then->kind == ND_NUM && n->then->val == 1 &&
+            n->els->kind == ND_NUM && n->els->val == 0) {
+            Node *ne = malloc(sizeof(Node));
+            memset(ne, 0, sizeof(Node));
+            ne->kind = ND_NE;
+            ne->lhs = n->cond;
+            Node *z0 = malloc(sizeof(Node));
+            memset(z0, 0, sizeof(Node));
+            z0->kind = ND_NUM;
+            z0->val = 0;
+            z0->ty = n->ty;
+            ne->rhs = z0;
+            ne->ty = n->ty;
+            return ne;
+        }
+        // x ? x : x → x (both branches same LVar)
+        if (n->cond && n->then && n->els &&
+            n->then->kind == ND_LVAR && n->els->kind == ND_LVAR &&
+            n->then->var == n->els->var) {
+            return n->then;
         }
         break;
     default:
