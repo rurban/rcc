@@ -2093,7 +2093,6 @@ void optimize(Program *prog) {
             local_opt_stmt_list(fn->body, true);
         if (opt_O >= 1)
             local_opt_clear_addrs();
-        // SSA pass disabled until Phase 4 (actual optimizations) is ready
         if (opt_O >= 2)
             ssa_run(fn);
     }
@@ -3191,18 +3190,195 @@ static void ssa_insert_phis(SsaCFG *cfg, SsaDom *dom, int **df, int *dfc,
     free(use_mask);
 }
 
+// ============================================================================
+// Phase 4: Constant propagation
+// ============================================================================
+// Track constant values for locals, replace uses with the constant.
+
+typedef struct SsaConst {
+    LVar *var;
+    bool is_const;
+    bool is_float;
+    int64_t val;
+    double fval;
+    Type *ty;
+} SsaConst;
+
+typedef struct SsaConstCtx {
+    SsaConst *consts;
+    int nconsts;
+    int cap;
+} SsaConstCtx;
+
+static SsaConst *cp_find(SsaConstCtx *ctx, LVar *var) {
+    for (int i = 0; i < ctx->nconsts; i++)
+        if (ctx->consts[i].var == var)
+            return &ctx->consts[i];
+    return NULL;
+}
+
+static void cp_set(SsaConstCtx *ctx, LVar *var, bool is_float,
+                   int64_t val, double fval, Type *ty) {
+    SsaConst *c = cp_find(ctx, var);
+    if (!c) {
+        if (ctx->nconsts >= ctx->cap) {
+            ctx->cap = ctx->cap ? ctx->cap * 2 : 32;
+            ctx->consts = realloc(ctx->consts, ctx->cap * sizeof(SsaConst));
+        }
+        c = &ctx->consts[ctx->nconsts++];
+        c->var = var;
+    }
+    c->is_const = true;
+    c->is_float = is_float;
+    c->val = val;
+    c->fval = fval;
+    c->ty = ty;
+}
+
+static void cp_clear(SsaConstCtx *ctx, LVar *var) {
+    SsaConst *c = cp_find(ctx, var);
+    if (c) c->is_const = false;
+}
+
+// Check if a node is a compile-time constant
+static bool cp_is_const(Node *n, int64_t *val, double *fval) {
+    if (!n) return false;
+    if (n->kind == ND_NUM) {
+        *val = n->val;
+        *fval = 0;
+        return true;
+    }
+    if (n->kind == ND_FNUM) {
+        *val = 0;
+        *fval = n->fval;
+        return true;
+    }
+    // Unary minus of a constant
+    if (n->kind == ND_NEG && n->rhs) {
+        if (cp_is_const(n->rhs, val, fval)) {
+            if (*fval != 0 || (n->ty && n->ty->kind >= TY_FLOAT))
+                *fval = -*fval;
+            else
+                *val = -*val;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Replace a Node* in-place if it's an ND_LVAR with a known constant.
+// Returns true if the node was replaced (caller must update pointer).
+static bool cp_replace_use(Node **pp, SsaConstCtx *ctx) {
+    Node *n = *pp;
+    if (!n || n->kind != ND_LVAR || !n->var) return false;
+    SsaConst *c = cp_find(ctx, n->var);
+    if (!c || !c->is_const) return false;
+    // Create a new constant node
+    Node *cn = malloc(sizeof(Node));
+    memset(cn, 0, sizeof(Node));
+    if (c->is_float) {
+        cn->kind = ND_FNUM;
+        cn->fval = c->fval;
+    } else {
+        cn->kind = ND_NUM;
+        cn->val = c->val;
+    }
+    cn->ty = c->ty;
+    cn->tok = n->tok;
+    *pp = cn;
+    return true;
+}
+
+// Walk a single node, updating const map and replacing uses.
+static void cp_walk_node(Node *n, SsaConstCtx *ctx) {
+    if (!n) return;
+
+    switch (n->kind) {
+    case ND_ASSIGN: {
+        if (n->lhs && n->lhs->kind == ND_LVAR && n->lhs->var) {
+            LVar *var = n->lhs->var;
+            // Only handle simple '=' (not compound ops)
+            if (n->tok && n->tok->name && n->tok->name[0] == '=' && n->tok->name[1] == '\0') {
+                int64_t v;
+                double f;
+                if (cp_is_const(n->rhs, &v, &f))
+                    cp_set(ctx, var, (n->rhs->ty && n->rhs->ty->kind >= TY_FLOAT), v, f, n->lhs->ty);
+                else
+                    cp_clear(ctx, var);
+            } else {
+                cp_clear(ctx, var);
+            }
+        }
+        cp_walk_node(n->lhs, ctx);
+        cp_walk_node(n->rhs, ctx);
+        break;
+    }
+    case ND_LVAR:
+        // Uses are handled by cp_replace_use at the parent level
+        break;
+    case ND_IF:
+        cp_walk_node(n->cond, ctx);
+        cp_walk_node(n->then, ctx);
+        cp_walk_node(n->els, ctx);
+        break;
+    case ND_FOR:
+        cp_walk_node(n->init, ctx);
+        cp_walk_node(n->cond, ctx);
+        cp_walk_node(n->body, ctx);
+        cp_walk_node(n->inc, ctx);
+        break;
+    case ND_DO:
+        cp_walk_node(n->body, ctx);
+        cp_walk_node(n->cond, ctx);
+        break;
+    case ND_SWITCH:
+        cp_walk_node(n->cond, ctx);
+        cp_walk_node(n->body, ctx);
+        break;
+    case ND_BLOCK:
+        for (Node *s = n->body; s; s = s->next)
+            cp_walk_node(s, ctx);
+        break;
+    case ND_RETURN:
+        cp_walk_node(n->rhs, ctx);
+        break;
+    case ND_EXPR_STMT:
+        cp_walk_node(n->rhs, ctx);
+        break;
+    case ND_FUNCALL:
+        for (Node *a = n->args; a; a = a->next)
+            cp_walk_node(a->rhs, ctx);
+        break;
+    default:
+        // Walk binary/unary operands
+        cp_walk_node(n->lhs, ctx);
+        cp_walk_node(n->rhs, ctx);
+        break;
+    }
+}
+
+// Constant propagation: walk the function body, track constants, replace uses.
+static void ssa_const_prop(Function *fn) {
+    if (!fn || !fn->body) return;
+    SsaConstCtx ctx = {0};
+    cp_walk_node(fn->body, &ctx);
+    free(ctx.consts);
+}
+
 void ssa_run(Function *fn) {
+    // Phase 4: constant propagation
+    ssa_const_prop(fn);
+
+    // Phase 1-3: CFG + dom tree + DFs (infrastructure validation)
     SsaCFG *cfg = ssa_build_cfg(fn);
     if (!cfg) return;
     SsaDom *dom = ssa_build_dom(cfg);
     int **df, *dfc;
     ssa_compute_df(cfg, dom, &df, &dfc);
-    // Phase 3: phi insertion
     SsaRename *r = ssa_rename_init(fn);
     ssa_insert_phis(cfg, dom, df, dfc, r);
     ssa_rename_free(r);
 
-    // Phase 4-5: optimize, unconvert.
     // Free all.
     for (int i = 0; i < cfg->nblocks; i++) {
         free(cfg->blocks[i]);
