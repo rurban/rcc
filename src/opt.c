@@ -3796,6 +3796,36 @@ static Node *licm(Node *n) {
         }
     } else if (n->kind == ND_DO) {
         n->body = licm(n->body);
+        // LICM for do-while: collect modified vars, hoist invariant assigns
+        Node *body = n->body;
+        if (body && body->kind == ND_BLOCK) {
+            LVar **modified = NULL;
+            int nmod = 0, modcap = 0;
+            licm_collect_modified(body, &modified, &nmod, &modcap);
+            Node **pp = &body;
+            while (*pp) {
+                Node *stmt = *pp;
+                if (stmt->kind == ND_EXPR_STMT && stmt->body) {
+                    Node *a = stmt->body;
+                    if (a->kind == ND_ASSIGN &&
+                        a->lhs && a->lhs->kind == ND_LVAR &&
+                        !licm_var_modified(a->lhs->var, modified, nmod)) {
+                        bool refs_mod = false;
+                        for (int i = 0; i < nmod && !refs_mod; i++)
+                            if (licm_refs_loopvar(a->rhs, modified[i]))
+                                refs_mod = true;
+                        if (!refs_mod) {
+                            *pp = stmt->next;
+                            stmt->next = n;
+                            n = stmt;
+                            continue;
+                        }
+                    }
+                }
+                pp = &stmt->next;
+            }
+            free(modified);
+        }
     } else if (n->kind == ND_BLOCK) {
         Node **pp = &n->body;
         while (*pp) {
