@@ -3436,13 +3436,19 @@ static Node *peephole(Node *n) {
 
     // Now simplify this node if it's a binary/unary op
     switch (n->kind) {
-    // x + 0 → x, x - 0 → x, x + x → x << 1, x - x → 0
+    // x + 0 → x, x - 0 → x, x + x → x << 1, x - x → 0, x - -y → x + y
     case ND_ADD:
     case ND_SUB:
         if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 0)
             return n->lhs;
         if (n->lhs && n->lhs->kind == ND_NUM && n->lhs->val == 0 && n->kind == ND_ADD)
             return n->rhs;
+        // x - -y → x + y
+        if (n->kind == ND_SUB && n->rhs && n->rhs->kind == ND_NEG) {
+            n->kind = ND_ADD;
+            n->rhs = n->rhs->rhs;
+            return n;
+        }
         // x + x → x << 1, x - x → 0 (same LVar both sides)
         if (n->lhs && n->rhs &&
             n->lhs->kind == ND_LVAR && n->rhs->kind == ND_LVAR &&
