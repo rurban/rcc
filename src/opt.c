@@ -9,6 +9,7 @@
 #define CF_RETURN 1
 
 void ssa_run(Function *fn, char *in_path); // SSA section below
+static void ssa_rename_pass(Function *fn); // -O3: full SSA rename
 
 // Known pure/const library functions that can be folded at compile time.
 // "const" = result depends only on args, no side effects, no global state, no IO.
@@ -2095,6 +2096,8 @@ void optimize(Program *prog) {
             local_opt_clear_addrs();
         if (opt_O >= 2)
             ssa_run(fn, prog->in_path);
+        if (opt_O >= 3)
+            ssa_rename_pass(fn);
     }
 }
 
@@ -4237,16 +4240,29 @@ void ssa_run(Function *fn, char *in_path) {
     ssa_licm(fn);
     ssa_const_prop(fn);
     ssa_dce(fn, in_path);
-    // TODO: re-enable SSA rename after investigating -O2 slowdown
-    // SsaCFG *cfg = ssa_build_cfg(fn);
-    // if (!cfg) return;
-    // SsaDom *dom = ssa_build_dom(cfg);
-    // int **df, *dfc;
-    // ssa_compute_df(cfg, dom, &df, &dfc);
-    // SsaRename *r = ssa_rename_init(fn);
-    // ssa_insert_phis(cfg, dom, df, dfc, r);
-    // ssa_rename_free(r);
-    // ssa_rename(fn);
-    // for (int i = 0; i < cfg->nblocks; i++) { free(cfg->blocks[i]); free(dom->anc[i]); free(df[i]); }
-    // free(cfg->blocks); free(cfg); free(dom->idom); free(dom->depth); free(dom->anc); free(dom); free(dfc);
+}
+
+// -O3: full SSA renaming (CFG + dom + DFs + phi + rename)
+static void ssa_rename_pass(Function *fn) {
+    SsaCFG *cfg = ssa_build_cfg(fn);
+    if (!cfg) return;
+    SsaDom *dom = ssa_build_dom(cfg);
+    int **df, *dfc;
+    ssa_compute_df(cfg, dom, &df, &dfc);
+    SsaRename *r = ssa_rename_init(fn);
+    ssa_insert_phis(cfg, dom, df, dfc, r);
+    ssa_rename_free(r);
+    ssa_rename(fn);
+    for (int i = 0; i < cfg->nblocks; i++) {
+        free(cfg->blocks[i]);
+        free(dom->anc[i]);
+        free(df[i]);
+    }
+    free(cfg->blocks);
+    free(cfg);
+    free(dom->idom);
+    free(dom->depth);
+    free(dom->anc);
+    free(dom);
+    free(dfc);
 }
