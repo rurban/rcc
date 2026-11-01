@@ -8,7 +8,7 @@
 #define CF_NEXT 0
 #define CF_RETURN 1
 
-void ssa_run(Function *fn); // SSA section below
+void ssa_run(Function *fn, char *in_path); // SSA section below
 
 // Known pure/const library functions that can be folded at compile time.
 // "const" = result depends only on args, no side effects, no global state, no IO.
@@ -2094,7 +2094,7 @@ void optimize(Program *prog) {
         if (opt_O >= 1)
             local_opt_clear_addrs();
         if (opt_O >= 2)
-            ssa_run(fn);
+            ssa_run(fn, prog->in_path);
     }
 }
 
@@ -3287,6 +3287,25 @@ static bool cp_is_const(Node *n, int64_t *val, double *fval) {
             return true;
         }
     }
+    // Bitwise not of a constant
+    if (n->kind == ND_BITNOT && n->rhs) {
+        if (cp_is_const(n->rhs, val, fval)) {
+            if (*fval == 0)
+                *val = ~*val;
+            else
+                return false; // float ~ is undefined
+            return true;
+        }
+    }
+    // Logical not of a constant
+    if (n->kind == ND_NOT && n->rhs) {
+        if (cp_is_const(n->rhs, val, fval)) {
+            if (*fval != 0)
+                return false; // float logical not
+            *val = (*val == 0) ? 1 : 0;
+            return true;
+        }
+    }
     // Binary op on two constants
     int64_t lv, rv;
     double lf, rf;
@@ -3484,6 +3503,14 @@ static Node *cp_transform(Node *n, SsaConstCtx *ctx) {
         n->rhs = cp_transform(n->rhs, ctx);
         break;
     }
+    case ND_POST_INC:
+    case ND_POST_DEC:
+    case ND_PRE_INC:
+    case ND_PRE_DEC:
+        if (n->rhs && n->rhs->kind == ND_LVAR && n->rhs->var)
+            cp_clear(ctx, n->rhs->var);
+        n->rhs = cp_transform(n->rhs, ctx);
+        break;
     case ND_FUNCALL: {
         // Function call: potential side effects — clear all constants
         for (int i = 0; i < ctx->nconsts; i++) {
@@ -3548,9 +3575,116 @@ static void ssa_const_prop(Function *fn) {
     free(ctx.consts);
 }
 
-void ssa_run(Function *fn) {
-    // Phase 4: constant propagation
+// ============================================================================
+// Phase 4b: Dead Code Elimination
+// ============================================================================
+// Remove assignments to locals that are never used. Only removes
+// side-effect-free assignments (simple const or copy). Prints -W warning.
+
+static void dce_collect_uses(Node *n, LVar **used, int *nused, int *cap) {
+    if (!n) return;
+    if (n->kind == ND_ASSIGN) {
+        // LHS is a definition, not a use — only collect uses from RHS
+        dce_collect_uses(n->rhs, used, nused, cap);
+        return;
+    }
+    if (n->kind == ND_LVAR && n->var) {
+        for (int i = 0; i < *nused; i++)
+            if (used[i] == n->var) return;
+        if (*nused >= *cap) {
+            *cap = *cap ? *cap * 2 : 32;
+            used = realloc(used, *cap * sizeof(LVar *));
+        }
+        used[*nused++] = n->var;
+    }
+    dce_collect_uses(n->lhs, used, nused, cap);
+    dce_collect_uses(n->rhs, used, nused, cap);
+    if (n->kind == ND_IF) {
+        dce_collect_uses(n->cond, used, nused, cap);
+        dce_collect_uses(n->then, used, nused, cap);
+        dce_collect_uses(n->els, used, nused, cap);
+    } else if (n->kind == ND_FOR) {
+        dce_collect_uses(n->init, used, nused, cap);
+        dce_collect_uses(n->cond, used, nused, cap);
+        dce_collect_uses(n->body, used, nused, cap);
+        dce_collect_uses(n->inc, used, nused, cap);
+    } else if (n->kind == ND_DO) {
+        dce_collect_uses(n->body, used, nused, cap);
+        dce_collect_uses(n->cond, used, nused, cap);
+    } else if (n->kind == ND_BLOCK) {
+        for (Node *s = n->body; s; s = s->next)
+            dce_collect_uses(s, used, nused, cap);
+    } else if (n->kind == ND_FUNCALL) {
+        for (Node *a = n->args; a; a = a->next)
+            dce_collect_uses(a->rhs, used, nused, cap);
+    }
+}
+
+static bool dce_var_used(LVar *var, LVar **used, int nused) {
+    for (int i = 0; i < nused; i++)
+        if (used[i] == var) return true;
+    return false;
+}
+
+static bool dce_rhs_no_side_effects(Node *n) {
+    if (!n) return true;
+    switch (n->kind) {
+    case ND_NUM: case ND_FNUM: case ND_LVAR: case ND_NEG:
+        return true;
+    case ND_ASSIGN:
+        return false; // assignment has side effects
+    case ND_FUNCALL:
+        return false; // call has side effects
+    case ND_PRE_INC: case ND_PRE_DEC: case ND_POST_INC: case ND_POST_DEC:
+        return false; // increment/decrement has side effects
+    case ND_ADD: case ND_SUB: case ND_MUL: case ND_DIV: case ND_MOD:
+    case ND_SHL: case ND_SHR: case ND_BITAND: case ND_BITOR: case ND_BITXOR:
+        return dce_rhs_no_side_effects(n->lhs) && dce_rhs_no_side_effects(n->rhs);
+    default:
+        return false; // conservative: assume side effects
+    }
+}
+
+static void ssa_dce(Function *fn, char *in_path) {
+    if (!fn || !fn->body) return;
+    LVar **used = NULL;
+    int nused = 0, cap = 0;
+    dce_collect_uses(fn->body, used, &nused, &cap);
+
+    // fn->body is a linked list of statements
+    Node **pp = &fn->body;
+    while (*pp) {
+        Node *n = *pp;
+        bool dead = false;
+        if (n->kind == ND_EXPR_STMT && n->rhs &&
+            n->rhs->kind == ND_ASSIGN &&
+            n->rhs->lhs && n->rhs->lhs->kind == ND_LVAR &&
+            n->rhs->lhs->var) {
+            LVar *var = n->rhs->lhs->var;
+            const char *op = (n->rhs->tok && n->rhs->tok->name) ? n->rhs->tok->name : "";
+            if (op[0] == '=' && op[1] == '\0' &&
+                !dce_var_used(var, used, nused) &&
+                dce_rhs_no_side_effects(n->rhs->rhs)) {
+                dead = true;
+                if (opt_v && opt_W)
+                    fprintf(stderr, "%s note: eliminate dead assignment to %s\n", in_path, var->name);
+            }
+        }
+        if (dead) {
+            *pp = n->next;
+            free(n);
+        } else {
+            pp = &n->next;
+        }
+    }
+    free(used);
+}
+
+void ssa_run(Function *fn, char *in_path) {
+    // Phase 4: constant propagation + copy prop
     ssa_const_prop(fn);
+    // Phase 4b: dead code elimination
+    ssa_dce(fn, in_path);
 
     // Phase 1-3: CFG + dom tree + DFs (infrastructure validation)
     SsaCFG *cfg = ssa_build_cfg(fn);
