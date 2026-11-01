@@ -3459,6 +3459,15 @@ static Node *peephole(Node *n) {
             return n->rhs;
         if (n->lhs && n->lhs->kind == ND_FNUM && n->lhs->fval == 0.0 && n->kind == ND_ADD)
             return n->rhs;
+        // x + c1 + c2 → x + (c1+c2), x - c1 - c2 → x - (c1+c2)
+        if (n->rhs && n->rhs->kind == ND_NUM &&
+            n->lhs && (n->lhs->kind == ND_ADD || n->lhs->kind == ND_SUB) &&
+            n->lhs->kind == n->kind &&
+            n->lhs->rhs && n->lhs->rhs->kind == ND_NUM) {
+            n->lhs->rhs->val += n->rhs->val;
+            n->ty = n->lhs->ty;
+            return n->lhs;
+        }
         // x - -y → x + y
         if (n->kind == ND_SUB && n->rhs && n->rhs->kind == ND_NEG) {
             n->kind = ND_ADD;
@@ -3508,6 +3517,14 @@ static Node *peephole(Node *n) {
                 return z;
             }
             break;
+        }
+        // x * c1 * c2 → x * (c1*c2)
+        if (n->kind == ND_MUL && n->rhs && n->rhs->kind == ND_NUM &&
+            n->lhs && n->lhs->kind == ND_MUL &&
+            n->lhs->rhs && n->lhs->rhs->kind == ND_NUM) {
+            n->lhs->rhs->val *= n->rhs->val;
+            n->ty = n->lhs->ty;
+            return n->lhs;
         }
         if (n->rhs && n->rhs->kind == ND_NUM) {
             if (n->rhs->val == 1 && (n->kind == ND_MUL || n->kind == ND_DIV))
@@ -3867,6 +3884,18 @@ static Node *peephole(Node *n) {
                 }
             }
         }
+        // x/x→1, x%x→0 (x=0 is UB, so safe)
+        if ((n->kind == ND_DIV || n->kind == ND_MOD) &&
+            n->lhs && n->rhs &&
+            n->lhs->kind == ND_LVAR && n->rhs->kind == ND_LVAR &&
+            n->lhs->var == n->rhs->var) {
+            Node *z = malloc(sizeof(Node));
+            memset(z, 0, sizeof(Node));
+            z->kind = ND_NUM;
+            z->val = (n->kind == ND_DIV) ? 1 : 0;
+            z->ty = n->ty;
+            return z;
+        }
         break;
     // x & 0 → 0, x | 0 → x, x ^ 0 → x, x & ~0 → x
     case ND_BITAND:
@@ -4211,6 +4240,237 @@ static Node *licm(Node *n) {
 static void ssa_licm(Function *fn) {
     if (!fn || !fn->body) return;
     fn->body = licm(fn->body);
+}
+
+// ============================================================================
+// Phase 4c: Loop unrolling by 2
+// ============================================================================
+// Unroll for(i=a; i<b; i++) { body } into:
+//   for(i=a; i+1<b; i+=2) { body; body[i→i+1]; }
+//   if(i<b) { body; }
+// Only for single-statement bodies without break/continue/goto.
+
+static bool body_has_jumps(Node *n) {
+    if (!n) return false;
+    switch (n->kind) {
+    case ND_BREAK:
+    case ND_CONTINUE:
+    case ND_GOTO:
+        return true;
+    default:
+        break;
+    }
+    if (n->lhs && body_has_jumps(n->lhs)) return true;
+    if (n->rhs && body_has_jumps(n->rhs)) return true;
+    if (n->kind == ND_IF) {
+        if (body_has_jumps(n->cond)) return true;
+        if (body_has_jumps(n->then)) return true;
+        if (body_has_jumps(n->els)) return true;
+    }
+    if (n->kind == ND_FOR || n->kind == ND_DO) {
+        if (body_has_jumps(n->body)) return true;
+        if (body_has_jumps(n->cond)) return true;
+        if (body_has_jumps(n->init)) return true;
+        if (body_has_jumps(n->inc)) return true;
+    }
+    if (n->kind == ND_BLOCK) {
+        for (Node *s = n->body; s; s = s->next)
+            if (body_has_jumps(s)) return true;
+    }
+    return false;
+}
+
+// Deep-clone an expression tree (not statements/blocks).
+static Node *deep_clone(Node *n) {
+    if (!n) return NULL;
+    Node *c = malloc(sizeof(Node));
+    memcpy(c, n, sizeof(Node));
+    c->next = NULL;
+    c->lhs = deep_clone(n->lhs);
+    c->rhs = deep_clone(n->rhs);
+    c->cond = deep_clone(n->cond);
+    c->then = deep_clone(n->then);
+    c->els = deep_clone(n->els);
+    c->init = deep_clone(n->init);
+    c->inc = deep_clone(n->inc);
+    if (n->kind == ND_BLOCK) {
+        c->body = NULL;
+        Node **pp = &c->body;
+        for (Node *s = n->body; s; s = s->next) {
+            Node *sc = deep_clone(s);
+            *pp = sc;
+            pp = &sc->next;
+        }
+    } else {
+        c->body = deep_clone(n->body);
+    }
+    c->args = deep_clone(n->args);
+    return c;
+}
+
+// Replace all ND_LVAR refs to `var` with `var + delta`.
+static void shift_lvar(Node *n, LVar *var, int64_t delta) {
+    if (!n) return;
+    if (n->kind == ND_LVAR && n->var == var && delta != 0) {
+        Node *add = malloc(sizeof(Node));
+        memset(add, 0, sizeof(Node));
+        add->kind = ND_ADD;
+        add->lhs = deep_clone(n);
+        Node *c = malloc(sizeof(Node));
+        memset(c, 0, sizeof(Node));
+        c->kind = ND_NUM;
+        c->val = delta;
+        c->ty = n->ty;
+        add->rhs = c;
+        add->ty = n->ty;
+        // Replace in parent: caller handles pointer swap
+        *n = *add;
+        return;
+    }
+    shift_lvar(n->lhs, var, delta);
+    shift_lvar(n->rhs, var, delta);
+    if (n->kind == ND_IF) {
+        shift_lvar(n->cond, var, delta);
+        shift_lvar(n->then, var, delta);
+        shift_lvar(n->els, var, delta);
+    }
+    if (n->kind == ND_FOR || n->kind == ND_DO) {
+        shift_lvar(n->body, var, delta);
+        shift_lvar(n->cond, var, delta);
+        shift_lvar(n->init, var, delta);
+        shift_lvar(n->inc, var, delta);
+    }
+    if (n->kind == ND_BLOCK) {
+        for (Node *s = n->body; s; s = s->next)
+            shift_lvar(s, var, delta);
+    }
+}
+
+// Try to unroll a for-loop by 2. Returns new ND_BLOCK or NULL.
+static Node *try_unroll_by2(Node *n) {
+    if (n->kind != ND_FOR) return NULL;
+    // Check increment: i++ (ND_POST_INC on loop var)
+    if (!n->inc || n->inc->kind != ND_POST_INC ||
+        !n->inc->lhs || n->inc->lhs->kind != ND_LVAR)
+        return NULL;
+    LVar *iv = n->inc->lhs->var;
+    // Check condition: i < limit (ND_LT)
+    if (!n->cond || n->cond->kind != ND_LT) return NULL;
+    if (!n->cond->lhs || n->cond->lhs->kind != ND_LVAR ||
+        n->cond->lhs->var != iv)
+        return NULL;
+    // Check body: single statement, no jumps
+    if (!n->body) return NULL;
+    if (n->body->next) return NULL;
+    if (body_has_jumps(n->body)) return NULL;
+
+    // Build unrolled loop
+    Node *new_for = malloc(sizeof(Node));
+    memset(new_for, 0, sizeof(Node));
+    new_for->kind = ND_FOR;
+    new_for->init = deep_clone(n->init);
+    // New condition: i+1 < limit
+    Node *ivp1 = malloc(sizeof(Node));
+    memset(ivp1, 0, sizeof(Node));
+    ivp1->kind = ND_ADD;
+    ivp1->lhs = deep_clone(n->cond->lhs);
+    Node *one = malloc(sizeof(Node));
+    memset(one, 0, sizeof(Node));
+    one->kind = ND_NUM;
+    one->val = 1;
+    one->ty = iv->ty;
+    ivp1->rhs = one;
+    ivp1->ty = n->cond->ty;
+    new_for->cond = malloc(sizeof(Node));
+    memset(new_for->cond, 0, sizeof(Node));
+    new_for->cond->kind = ND_LT;
+    new_for->cond->lhs = ivp1;
+    new_for->cond->rhs = deep_clone(n->cond->rhs);
+    new_for->cond->ty = n->cond->ty;
+    // New increment: i += 2
+    Node *inc2 = malloc(sizeof(Node));
+    memset(inc2, 0, sizeof(Node));
+    inc2->kind = ND_ASSIGN;
+    inc2->lhs = deep_clone(n->inc->lhs);
+    Node *add2 = malloc(sizeof(Node));
+    memset(add2, 0, sizeof(Node));
+    add2->kind = ND_ADD;
+    add2->lhs = deep_clone(n->inc->lhs);
+    Node *two = malloc(sizeof(Node));
+    memset(two, 0, sizeof(Node));
+    two->kind = ND_NUM;
+    two->val = 2;
+    two->ty = iv->ty;
+    add2->rhs = two;
+    add2->ty = iv->ty;
+    inc2->rhs = add2;
+    inc2->ty = iv->ty;
+    new_for->inc = inc2;
+    // Body: { orig; shifted; }
+    Node *body1 = deep_clone(n->body);
+    Node *body2 = deep_clone(n->body);
+    shift_lvar(body2, iv, 1);
+    Node *new_body = malloc(sizeof(Node));
+    memset(new_body, 0, sizeof(Node));
+    new_body->kind = ND_BLOCK;
+    new_body->body = body1;
+    body1->next = body2;
+    new_for->body = new_body;
+
+    // Remainder: if (i < limit) { body; }
+    Node *rem = malloc(sizeof(Node));
+    memset(rem, 0, sizeof(Node));
+    rem->kind = ND_IF;
+    rem->cond = malloc(sizeof(Node));
+    memset(rem->cond, 0, sizeof(Node));
+    rem->cond->kind = ND_LT;
+    rem->cond->lhs = deep_clone(n->inc->lhs);
+    rem->cond->rhs = deep_clone(n->cond->rhs);
+    rem->cond->ty = n->cond->ty;
+    Node *rem_body = deep_clone(n->body);
+    rem->then = malloc(sizeof(Node));
+    memset(rem->then, 0, sizeof(Node));
+    rem->then->kind = ND_BLOCK;
+    rem->then->body = rem_body;
+
+    // Wrap: { new_for; rem; }
+    Node *block = malloc(sizeof(Node));
+    memset(block, 0, sizeof(Node));
+    block->kind = ND_BLOCK;
+    block->body = new_for;
+    new_for->next = rem;
+    return block;
+}
+
+static Node *unroll_walk(Node *n) {
+    if (!n) return NULL;
+    Node *result = try_unroll_by2(n);
+    if (result) return result;
+    if (n->kind == ND_BLOCK) {
+        Node **pp = &n->body;
+        while (*pp) {
+            *pp = unroll_walk(*pp);
+            pp = (*pp) ? &(*pp)->next : NULL;
+        }
+    } else if (n->kind == ND_IF) {
+        n->cond = unroll_walk(n->cond);
+        n->then = unroll_walk(n->then);
+        n->els = unroll_walk(n->els);
+    } else if (n->kind == ND_FOR) {
+        n->init = unroll_walk(n->init);
+        n->cond = unroll_walk(n->cond);
+        n->body = unroll_walk(n->body);
+        n->inc = unroll_walk(n->inc);
+    } else if (n->kind == ND_DO) {
+        n->body = unroll_walk(n->body);
+        n->cond = unroll_walk(n->cond);
+    }
+    return n;
+}
+
+static void ssa_unroll(Function *fn) {
+    if (!fn || !fn->body) return;
+    fn->body = unroll_walk(fn->body);
 }
 
 // ============================================================================
@@ -4831,6 +5091,7 @@ static void ssa_dce(Function *fn, char *in_path) {
 void ssa_run(Function *fn, char *in_path) {
     ssa_peephole(fn);
     ssa_licm(fn);
+    ssa_unroll(fn);
     ssa_const_prop(fn);
     ssa_dce(fn, in_path);
 }
