@@ -3287,6 +3287,48 @@ static bool cp_is_const(Node *n, int64_t *val, double *fval) {
             return true;
         }
     }
+    // Binary op on two constants
+    int64_t lv, rv;
+    double lf, rf;
+    if (cp_is_const(n->lhs, &lv, &lf) && cp_is_const(n->rhs, &rv, &rf)) {
+        bool is_float = (lf != 0 || rf != 0 || (n->ty && n->ty->kind >= TY_FLOAT));
+        switch (n->kind) {
+        case ND_ADD:
+            if (is_float) *fval = lf + rf;
+            else
+                *val = lv + rv;
+            return true;
+        case ND_SUB:
+            if (is_float) *fval = lf - rf;
+            else
+                *val = lv - rv;
+            return true;
+        case ND_MUL:
+            if (is_float) *fval = lf * rf;
+            else
+                *val = lv * rv;
+            return true;
+        case ND_DIV:
+            if (is_float) {
+                if (rf == 0) return false;
+                *fval = lf / rf;
+            } else {
+                if (rv == 0) return false;
+                *val = lv / rv;
+            }
+            return true;
+        case ND_MOD:
+            if (is_float || rv == 0) return false;
+            *val = lv % rv;
+            return true;
+        case ND_SHL: *val = lv << (rv & 63); return true;
+        case ND_SHR: *val = lv >> (rv & 63); return true;
+        case ND_BITAND: *val = lv & rv; return true;
+        case ND_BITOR: *val = lv | rv; return true;
+        case ND_BITXOR: *val = lv ^ rv; return true;
+        default: break;
+        }
+    }
     return false;
 }
 
