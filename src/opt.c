@@ -3476,6 +3476,22 @@ static Node *peephole(Node *n) {
         if (n->rhs && n->rhs->kind == ND_NUM) {
             if (n->rhs->val == 1 && (n->kind == ND_MUL || n->kind == ND_DIV))
                 return n->lhs;
+            if (n->rhs->val == -1 && n->kind == ND_DIV) {
+                Node *nn = malloc(sizeof(Node));
+                memset(nn, 0, sizeof(Node));
+                nn->kind = ND_NEG;
+                nn->rhs = n->lhs;
+                nn->ty = n->ty;
+                return nn;
+            }
+            if (n->rhs->val == -1 && n->kind == ND_MOD) {
+                Node *z = malloc(sizeof(Node));
+                memset(z, 0, sizeof(Node));
+                z->kind = ND_NUM;
+                z->val = 0;
+                z->ty = n->ty;
+                return z;
+            }
             if (n->rhs->val == 1 && n->kind == ND_MOD) {
                 Node *z = malloc(sizeof(Node));
                 memset(z, 0, sizeof(Node));
