@@ -2093,8 +2093,9 @@ void optimize(Program *prog) {
             local_opt_stmt_list(fn->body, true);
         if (opt_O >= 1)
             local_opt_clear_addrs();
-        if (opt_O >= 2)
-            ssa_run(fn);
+        // SSA pass disabled until Phase 4 (actual optimizations) is ready
+        // if (opt_O >= 2)
+        //     ssa_run(fn);
     }
 }
 
@@ -2649,6 +2650,7 @@ typedef struct SsaBuildCtx {
     char **label_names;
     int *label_blocks;
     int nlabels;
+    int stmts_seen; // safety: prevent infinite loop
 } SsaBuildCtx;
 
 // Forward declaration
@@ -2691,6 +2693,10 @@ static int ssa_build_stmts(SsaBuildCtx *ctx, Node *n, int fallthrough) {
 
     int cur = -1; // current block being built
     for (; n; n = n->next) {
+        if (++ctx->stmts_seen > 100000) {
+            // Safety: unhandled AST pattern causing re-processing
+            break;
+        }
         switch (n->kind) {
         case ND_LABEL:
             // Label: current block is the target
