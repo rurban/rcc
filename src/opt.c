@@ -3587,6 +3587,102 @@ static Node *peephole(Node *n) {
                     }
                 }
             }
+            // Small multiplier strength reduction (integer only)
+            if (n->kind == ND_MUL && n->ty &&
+                n->ty->kind != TY_FLOAT && n->ty->kind != TY_DOUBLE &&
+                n->ty->kind != TY_LDOUBLE && n->ty->kind != TY_COMPLEX) {
+                int64_t m = n->rhs->val;
+                if (m == 3) {
+                    // x * 3 = (x << 1) + x
+                    Node *sh = malloc(sizeof(Node));
+                    memset(sh, 0, sizeof(Node));
+                    sh->kind = ND_SHL;
+                    sh->lhs = n->lhs;
+                    Node *c1 = malloc(sizeof(Node));
+                    memset(c1, 0, sizeof(Node));
+                    c1->kind = ND_NUM;
+                    c1->val = 1;
+                    sh->rhs = c1;
+                    sh->ty = n->ty;
+                    Node *add = malloc(sizeof(Node));
+                    memset(add, 0, sizeof(Node));
+                    add->kind = ND_ADD;
+                    add->lhs = sh;
+                    add->rhs = n->lhs;
+                    add->ty = n->ty;
+                    return add;
+                }
+                if (m == 5) {
+                    // x * 5 = (x << 2) + x
+                    Node *sh = malloc(sizeof(Node));
+                    memset(sh, 0, sizeof(Node));
+                    sh->kind = ND_SHL;
+                    sh->lhs = n->lhs;
+                    Node *c2 = malloc(sizeof(Node));
+                    memset(c2, 0, sizeof(Node));
+                    c2->kind = ND_NUM;
+                    c2->val = 2;
+                    sh->rhs = c2;
+                    sh->ty = n->ty;
+                    Node *add = malloc(sizeof(Node));
+                    memset(add, 0, sizeof(Node));
+                    add->kind = ND_ADD;
+                    add->lhs = sh;
+                    add->rhs = n->lhs;
+                    add->ty = n->ty;
+                    return add;
+                }
+                if (m == 6) {
+                    // x * 6 = (x << 2) + (x << 1)
+                    Node *sh2 = malloc(sizeof(Node));
+                    memset(sh2, 0, sizeof(Node));
+                    sh2->kind = ND_SHL;
+                    sh2->lhs = n->lhs;
+                    Node *c2 = malloc(sizeof(Node));
+                    memset(c2, 0, sizeof(Node));
+                    c2->kind = ND_NUM;
+                    c2->val = 2;
+                    sh2->rhs = c2;
+                    sh2->ty = n->ty;
+                    Node *sh1 = malloc(sizeof(Node));
+                    memset(sh1, 0, sizeof(Node));
+                    sh1->kind = ND_SHL;
+                    sh1->lhs = n->lhs;
+                    Node *c1 = malloc(sizeof(Node));
+                    memset(c1, 0, sizeof(Node));
+                    c1->kind = ND_NUM;
+                    c1->val = 1;
+                    sh1->rhs = c1;
+                    sh1->ty = n->ty;
+                    Node *add = malloc(sizeof(Node));
+                    memset(add, 0, sizeof(Node));
+                    add->kind = ND_ADD;
+                    add->lhs = sh2;
+                    add->rhs = sh1;
+                    add->ty = n->ty;
+                    return add;
+                }
+                if (m == 7) {
+                    // x * 7 = (x << 3) - x
+                    Node *sh = malloc(sizeof(Node));
+                    memset(sh, 0, sizeof(Node));
+                    sh->kind = ND_SHL;
+                    sh->lhs = n->lhs;
+                    Node *c3 = malloc(sizeof(Node));
+                    memset(c3, 0, sizeof(Node));
+                    c3->kind = ND_NUM;
+                    c3->val = 3;
+                    sh->rhs = c3;
+                    sh->ty = n->ty;
+                    Node *sub = malloc(sizeof(Node));
+                    memset(sub, 0, sizeof(Node));
+                    sub->kind = ND_SUB;
+                    sub->lhs = sh;
+                    sub->rhs = n->lhs;
+                    sub->ty = n->ty;
+                    return sub;
+                }
+            }
         }
         break;
     // x & 0 → 0, x | 0 → x, x ^ 0 → x, x & ~0 → x
