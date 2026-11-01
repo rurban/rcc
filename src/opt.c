@@ -2094,8 +2094,8 @@ void optimize(Program *prog) {
         if (opt_O >= 1)
             local_opt_clear_addrs();
         // SSA pass disabled until Phase 4 (actual optimizations) is ready
-        // if (opt_O >= 2)
-        //     ssa_run(fn);
+        if (opt_O >= 2)
+            ssa_run(fn);
     }
 }
 
@@ -2734,10 +2734,13 @@ static int ssa_build_stmts(SsaBuildCtx *ctx, Node *n, int fallthrough) {
                 eb->first = n->els;
                 els_next = ssa_build_stmts(ctx, n->els, fallthrough);
                 ssa_edge(cfg, cond_block, eb->id);
-                ssa_edge(cfg, then_next, fallthrough);
-                ssa_edge(cfg, els_next, fallthrough);
+                if (then_next != fallthrough)
+                    ssa_edge(cfg, then_next, fallthrough);
+                if (els_next != fallthrough)
+                    ssa_edge(cfg, els_next, fallthrough);
             } else {
-                ssa_edge(cfg, then_next, fallthrough);
+                if (then_next != fallthrough)
+                    ssa_edge(cfg, then_next, fallthrough);
                 ssa_edge(cfg, cond_block, fallthrough); // implicit else
             }
             cur = -1;
