@@ -3289,15 +3289,34 @@ static bool cp_replace_use(Node **pp, SsaConstCtx *ctx) {
     return true;
 }
 
-// Walk a single node, updating const map and replacing uses.
-static void cp_walk_node(Node *n, SsaConstCtx *ctx) {
-    if (!n) return;
+// Transform a node: walk children, update const map, replace LVAR uses.
+// Returns the (possibly new) node to assign to the parent's pointer.
+static Node *cp_transform(Node *n, SsaConstCtx *ctx) {
+    if (!n) return NULL;
+
+    // If this is an LVAR use with a known constant, replace it
+    if (n->kind == ND_LVAR && n->var) {
+        SsaConst *c = cp_find(ctx, n->var);
+        if (c && c->is_const) {
+            Node *cn = malloc(sizeof(Node));
+            memset(cn, 0, sizeof(Node));
+            cn->kind = c->is_float ? ND_FNUM : ND_NUM;
+            cn->val = c->val;
+            cn->fval = c->fval;
+            cn->ty = c->ty;
+            cn->tok = n->tok;
+            return cn;
+        }
+        return n;
+    }
 
     switch (n->kind) {
     case ND_ASSIGN: {
+        // Transform rhs first (may contain uses)
+        n->rhs = cp_transform(n->rhs, ctx);
+        // Now check if this is a const assignment
         if (n->lhs && n->lhs->kind == ND_LVAR && n->lhs->var) {
             LVar *var = n->lhs->var;
-            // Only handle simple '=' (not compound ops)
             if (n->tok && n->tok->name && n->tok->name[0] == '=' && n->tok->name[1] == '\0') {
                 int64_t v;
                 double f;
@@ -3309,59 +3328,63 @@ static void cp_walk_node(Node *n, SsaConstCtx *ctx) {
                 cp_clear(ctx, var);
             }
         }
-        cp_walk_node(n->lhs, ctx);
-        cp_walk_node(n->rhs, ctx);
         break;
     }
-    case ND_LVAR:
-        // Uses are handled by cp_replace_use at the parent level
-        break;
     case ND_IF:
-        cp_walk_node(n->cond, ctx);
-        cp_walk_node(n->then, ctx);
-        cp_walk_node(n->els, ctx);
+        n->cond = cp_transform(n->cond, ctx);
+        n->then = cp_transform(n->then, ctx);
+        n->els = cp_transform(n->els, ctx);
         break;
     case ND_FOR:
-        cp_walk_node(n->init, ctx);
-        cp_walk_node(n->cond, ctx);
-        cp_walk_node(n->body, ctx);
-        cp_walk_node(n->inc, ctx);
+        n->init = cp_transform(n->init, ctx);
+        n->cond = cp_transform(n->cond, ctx);
+        n->body = cp_transform(n->body, ctx);
+        n->inc = cp_transform(n->inc, ctx);
         break;
     case ND_DO:
-        cp_walk_node(n->body, ctx);
-        cp_walk_node(n->cond, ctx);
+        n->body = cp_transform(n->body, ctx);
+        n->cond = cp_transform(n->cond, ctx);
         break;
     case ND_SWITCH:
-        cp_walk_node(n->cond, ctx);
-        cp_walk_node(n->body, ctx);
+        n->cond = cp_transform(n->cond, ctx);
+        n->body = cp_transform(n->body, ctx);
         break;
-    case ND_BLOCK:
-        for (Node *s = n->body; s; s = s->next)
-            cp_walk_node(s, ctx);
-        break;
-    case ND_RETURN:
-        cp_walk_node(n->rhs, ctx);
-        break;
-    case ND_EXPR_STMT:
-        cp_walk_node(n->rhs, ctx);
-        break;
-    case ND_FUNCALL:
-        for (Node *a = n->args; a; a = a->next)
-            cp_walk_node(a->rhs, ctx);
-        break;
-    default:
-        // Walk binary/unary operands
-        cp_walk_node(n->lhs, ctx);
-        cp_walk_node(n->rhs, ctx);
+    case ND_BLOCK: {
+        Node **pp = &n->body;
+        while (*pp) {
+            *pp = cp_transform(*pp, ctx);
+            pp = &(*pp)->next;
+        }
         break;
     }
+    case ND_RETURN:
+        n->rhs = cp_transform(n->rhs, ctx);
+        break;
+    case ND_EXPR_STMT:
+        n->rhs = cp_transform(n->rhs, ctx);
+        break;
+    case ND_FUNCALL: {
+        Node **ap = &n->args;
+        while (*ap) {
+            (*ap)->rhs = cp_transform((*ap)->rhs, ctx);
+            ap = &(*ap)->next;
+        }
+        break;
+    }
+    default:
+        n->lhs = cp_transform(n->lhs, ctx);
+        n->rhs = cp_transform(n->rhs, ctx);
+        break;
+    }
+    return n;
 }
 
 // Constant propagation: walk the function body, track constants, replace uses.
 static void ssa_const_prop(Function *fn) {
     if (!fn || !fn->body) return;
     SsaConstCtx ctx = {0};
-    cp_walk_node(fn->body, &ctx);
+    // Transform the body (ND_BLOCK case handles the linked list)
+    fn->body = cp_transform(fn->body, &ctx);
     free(ctx.consts);
 }
 
