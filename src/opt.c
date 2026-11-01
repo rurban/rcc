@@ -3306,6 +3306,21 @@ static bool cp_is_const(Node *n, int64_t *val, double *fval) {
             return true;
         }
     }
+    // Ternary: c ? a : b — fold if cond is constant
+    if (n->kind == ND_COND) {
+        int64_t cv;
+        double cf;
+        if (cp_is_const(n->cond, &cv, &cf)) {
+            Node *branch = (cf != 0) ? (cf ? n->then : n->els)
+                                     : (cv ? n->then : n->els);
+            return cp_is_const(branch, val, fval);
+        }
+    }
+    // Cast: (T)x — fold if operand is constant
+    if (n->kind == ND_CAST && n->rhs) {
+        if (cp_is_const(n->rhs, val, fval))
+            return true; // value is the same through a cast
+    }
     // Binary op on two constants
     int64_t lv, rv;
     double lf, rf;
@@ -3629,16 +3644,30 @@ static bool dce_var_used(LVar *var, LVar **used, int nused) {
 static bool dce_rhs_no_side_effects(Node *n) {
     if (!n) return true;
     switch (n->kind) {
-    case ND_NUM: case ND_FNUM: case ND_LVAR: case ND_NEG:
+    case ND_NUM:
+    case ND_FNUM:
+    case ND_LVAR:
+    case ND_NEG:
         return true;
     case ND_ASSIGN:
         return false; // assignment has side effects
     case ND_FUNCALL:
         return false; // call has side effects
-    case ND_PRE_INC: case ND_PRE_DEC: case ND_POST_INC: case ND_POST_DEC:
+    case ND_PRE_INC:
+    case ND_PRE_DEC:
+    case ND_POST_INC:
+    case ND_POST_DEC:
         return false; // increment/decrement has side effects
-    case ND_ADD: case ND_SUB: case ND_MUL: case ND_DIV: case ND_MOD:
-    case ND_SHL: case ND_SHR: case ND_BITAND: case ND_BITOR: case ND_BITXOR:
+    case ND_ADD:
+    case ND_SUB:
+    case ND_MUL:
+    case ND_DIV:
+    case ND_MOD:
+    case ND_SHL:
+    case ND_SHR:
+    case ND_BITAND:
+    case ND_BITOR:
+    case ND_BITXOR:
         return dce_rhs_no_side_effects(n->lhs) && dce_rhs_no_side_effects(n->rhs);
     default:
         return false; // conservative: assume side effects
