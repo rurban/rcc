@@ -2954,7 +2954,13 @@ SsaDom *ssa_build_dom(SsaCFG *cfg) {
     for (int i = 0; i < n; i++) dom->idom[i] = -1;
     dom->idom[cfg->entry] = cfg->entry;
     bool changed = true;
+    int iter = 0;
     while (changed) {
+        if (++iter > 1000) {
+            fprintf(stderr, "Internal Error: dom tree did not converge (fn=%s, nblocks=%d)\n",
+                    cfg->fn->name ? cfg->fn->name : "?", n);
+            abort();
+        }
         changed = false;
         for (int b = 1; b < n; b++) {
             SsaBlock *bb = cfg->blocks[b];
@@ -2969,11 +2975,16 @@ SsaDom *ssa_build_dom(SsaCFG *cfg) {
             for (int i = 0; i < bb->npred; i++) {
                 int p = bb->pred[i];
                 if (dom->idom[p] == -1 || p == nidom) continue;
+                // Walk up from p to find LCP with nidom, with cycle guard
                 int f = p;
-                while (f != nidom && f != -1) f = dom->idom[f];
+                int steps = 0;
+                while (f != nidom && f != -1) {
+                    if (++steps > n) break; // cycle guard
+                    f = dom->idom[f];
+                }
                 if (f != -1) nidom = f;
             }
-            if (dom->idom[b] != nidom) {
+            if (nidom != b && dom->idom[b] != nidom) {
                 dom->idom[b] = nidom;
                 changed = true;
             }

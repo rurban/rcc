@@ -2,36 +2,36 @@
 
 **Platform**: Linux x86_64
 
-Generated: November 01 2026 04:40
+Generated: November 01 2026 14:51
 
 ## Overall Summary
 
 - **Total**: 4745
-- **Passed**: 4386
-- **Failed**: 0
+- **Passed**: 4162
+- **Failed**: 225
 - **Skipped**: 354
-- **Overall Pass Rate**: 100%
+- **Overall Pass Rate**: 95%
 
 ## TCC Compatibility Tests
 
 - **Total**: 118
 - **Passed**: 117
-- **Failed**: 0
+- **Failed**: 1
 - **Pass Rate**: 99%
 
 ## RCC Unit Tests
 
 - **Total**: 429
-- **Passed**: 429
-- **Failed**: 0
-- **Pass Rate**: 100%
+- **Passed**: 425
+- **Failed**: 4
+- **Pass Rate**: 99%
 
 ## c-testsuite
 
 - **Total**: 220
-- **Passed**: 220
-- **Failed**: 0
-- **Pass Rate**: 100%
+- **Passed**: 0
+- **Failed**: 220
+- **Pass Rate**: 0%
 
 ## NCC Compliance Tests (vs GCC)
 
