@@ -53,6 +53,7 @@ static char *kw_has_include;
 static char *kw_has_include_next;
 static char *kw_has_c_attribute;
 static char *kw_has_builtin;
+static char *kw_has_feature;
 static char *kw_va_args;
 static char *kw_va_opt;
 static char *kw_defined;
@@ -1448,6 +1449,7 @@ static Token *xp_next(void) {
 
 static void expand_token(Token *t);
 static int64_t has_builtin_val(const char *name);
+static int64_t has_feature_val(const char *name);
 static void drain_frames(void) {
     for (;;) {
         Token *t = ungot_pull();
@@ -1989,7 +1991,7 @@ static void expand_token(Token *t) {
         out_append(t);
         return;
     }
-    if (name == kw_has_include || name == kw_has_include_next || name == kw_has_c_attribute || name == kw_has_builtin) {
+    if (name == kw_has_include || name == kw_has_include_next || name == kw_has_c_attribute || name == kw_has_builtin || name == kw_has_feature) {
         Token *nx = xp_next();
         if (ptok(nx, "(")) {
             // __has_builtin(NAME) is a Clang extension usable anywhere
@@ -2012,6 +2014,16 @@ static void expand_token(Token *t) {
                 Token *close = ptok(arg, ")") ? arg : xp_next();
                 while (close && !ptok(close, ")")) close = xp_next();
                 out_append(syn_num(has_builtin_val(argname), t));
+                return;
+            }
+            if (name == kw_has_feature && !xp_in_cond) {
+                // __has_feature is likewise usable outside #if in Clang;
+                // evaluate and substitute a numeric literal here.
+                Token *arg = xp_next();
+                char *argname = (arg && arg->kind == TK_IDENT) ? arg->name : "";
+                Token *close = ptok(arg, ")") ? arg : xp_next();
+                while (close && !ptok(close, ")")) close = xp_next();
+                out_append(syn_num(has_feature_val(argname), t));
                 return;
             }
             xp_unget(nx);
@@ -2554,6 +2566,16 @@ static int64_t has_builtin_val(const char *name) {
     }
     return 0;
 }
+// __has_feature(NAME): Clang's feature test for compiler-supported
+// extensions. rcc implements the sanitizer features: `address_sanitizer`
+// (-fsanitize=address, opt_asan) and `undefined_behavior_sanitizer`
+// (-fsanitize=undefined, opt_ubsan). Unknown names yield 0, matching Clang.
+static int64_t has_feature_val(const char *name) {
+    if (name[0] == '\0') return 0;
+    if (strcmp(name, "address_sanitizer") == 0) return opt_asan;
+    if (strcmp(name, "undefined_behavior_sanitizer") == 0) return opt_ubsan;
+    return 0;
+}
 static int64_t eval_pp_expr_tok(Token **pp);
 // #if-expression primary: defined()/__has_include()/__has_c_attribute(),
 // numeric/string literals, parenthesized subexpr, unary !/-/~/+.
@@ -2624,6 +2646,14 @@ static int64_t eval_primary_tok(Token **pp) {
             if (ptok(t, ")")) t = t->next;
             *pp = t;
             return has_builtin_val(text);
+        }
+        if (nm == kw_has_feature) {
+            t = t->next;
+            if (ptok(t, "(")) t = t->next;
+            char *text = gather_spellings(t, ")", &t);
+            if (ptok(t, ")")) t = t->next;
+            *pp = t;
+            return has_feature_val(text);
         }
         if (opt_std_version && strcmp(opt_std_version, "202311L") >= 0) {
             if (nm == kw_true) {
@@ -3699,6 +3729,7 @@ Token *preprocess(char *filename, char *p) {
         define_pre("__has_c_attribute", "1");
         define_pre("__has_include_next", "1");
         define_pre("__has_builtin", "1");
+        define_pre("__has_feature", "1");
 #include "gcc_predefined.h"
         // rcc's own self-identification macro, matching every other
         // compiler's practice of defining both a GCC-compat macro (for
@@ -3765,6 +3796,7 @@ Token *preprocess(char *filename, char *p) {
             if (!find_macro("__bool_true_false_are_defined")) define_pre("__bool_true_false_are_defined", "1");
         }
         if (opt_O > 0) define_pre("__OPTIMIZE__", "1");
+        if (opt_asan) define_pre("__SANITIZE_ADDRESS__", "1");
         if (!find_macro("__USE_FORTIFY_LEVEL")) define_pre("__USE_FORTIFY_LEVEL", "0");
 #ifdef __APPLE__
         if (!find_macro("__APPLE__")) define_macro("__APPLE__", false, NULL, 0, "1");
@@ -4015,6 +4047,7 @@ Token *preprocess(char *filename, char *p) {
         kw_has_include_next = str_intern("__has_include_next", 18);
         kw_has_c_attribute = str_intern("__has_c_attribute", 17);
         kw_has_builtin = str_intern("__has_builtin", 13);
+        kw_has_feature = str_intern("__has_feature", 13);
         kw_va_args = str_intern("__VA_ARGS__", 11);
         kw_va_opt = str_intern("__VA_OPT__", 10);
         kw_defined = str_intern("defined", 7);
