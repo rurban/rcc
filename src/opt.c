@@ -3652,6 +3652,14 @@ static Node *peephole(Node *n) {
                 z->ty = n->ty;
                 return z;
             }
+            // x % 2 → x & 1
+            if (n->rhs->val == 2 && n->kind == ND_MOD && n->ty &&
+                n->ty->kind != TY_FLOAT && n->ty->kind != TY_DOUBLE &&
+                n->ty->kind != TY_LDOUBLE && n->ty->kind != TY_COMPLEX) {
+                n->kind = ND_BITAND;
+                n->rhs->val = 1;
+                return n;
+            }
             if (n->rhs->val == 0 && n->kind == ND_MUL) {
                 Node *z = malloc(sizeof(Node));
                 memset(z, 0, sizeof(Node));
@@ -4007,6 +4015,14 @@ static Node *peephole(Node *n) {
     case ND_BITOR:
         if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 0)
             return n->lhs;
+        if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == ~0) {
+            Node *z = malloc(sizeof(Node));
+            memset(z, 0, sizeof(Node));
+            z->kind = ND_NUM;
+            z->val = ~0;
+            z->ty = n->ty;
+            return z;
+        }
         if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR && n->rhs->kind == ND_LVAR &&
             n->lhs->var == n->rhs->var)
             return n->lhs; // x | x = x
