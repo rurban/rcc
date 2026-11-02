@@ -21629,9 +21629,10 @@ struct ObjFile *codegen(Program *prog) {
         // -fstack-protector: load canary into [rbp-8] via %fs:0x28 (TLS)
         if (fn->needs_stack_chk) {
             // mov %fs:0x28, %rdx
-            secbuf_emit8(cg_sec, 0x65); // FS prefix
+            secbuf_emit8(cg_sec, 0x64); // FS prefix
             secbuf_emit8(cg_sec, 0x8B); // MOV r64, m
-            secbuf_emit8(cg_sec, 0x15); // ModRM: rdx, disp32
+            secbuf_emit8(cg_sec, 0x14); // ModRM: mod=00, reg=rdx(010), rm=100 (abs -> SIB follows)
+            secbuf_emit8(cg_sec, 0x25); // SIB: scale=0, index=none, base=none
             secbuf_emit8(cg_sec, 0x28); // disp32 = 0x28
             secbuf_emit8(cg_sec, 0x00);
             secbuf_emit8(cg_sec, 0x00);
@@ -22220,9 +22221,10 @@ struct ObjFile *codegen(Program *prog) {
             secbuf_emit8(cg_sec, 0x55); // ModRM: rdx, [rbp+disp8]
             secbuf_emit8(cg_sec, 0xA0); // disp8 = -96
             // mov %fs:0x28, %rsi
-            secbuf_emit8(cg_sec, 0x65); // FS prefix
+            secbuf_emit8(cg_sec, 0x64); // FS prefix
             secbuf_emit8(cg_sec, 0x8B); // MOV r64, m
-            secbuf_emit8(cg_sec, 0x35); // ModRM: rsi, disp32
+            secbuf_emit8(cg_sec, 0x34); // ModRM: mod=00, reg=rsi(110), rm=100 (abs -> SIB follows)
+            secbuf_emit8(cg_sec, 0x25); // SIB: scale=0, index=none, base=none
             secbuf_emit8(cg_sec, 0x28); // disp32 = 0x28
             secbuf_emit8(cg_sec, 0x00);
             secbuf_emit8(cg_sec, 0x00);
@@ -22230,7 +22232,7 @@ struct ObjFile *codegen(Program *prog) {
             // cmp %rsi, %rdx
             secbuf_emit8(cg_sec, 0x48); // REX.W
             secbuf_emit8(cg_sec, 0x39); // CMP r/m, r
-            secbuf_emit8(cg_sec, 0xDA); // ModRM: rdx, rsi
+            secbuf_emit8(cg_sec, 0xF2); // ModRM: mod=11, reg=rsi(110), rm=rdx(010)
             char *ok_lbl = format(".L.stackchk_ok.%s", fn->name);
             emit_jcc_fixup(cg_sec, X86_Z, ok_lbl);
             emit_direct_call("__stack_chk_fail", false);
