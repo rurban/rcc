@@ -3494,6 +3494,23 @@ static Node *peephole(Node *n) {
             n->rhs = n->rhs->rhs;
             return n;
         }
+        // x - (x + c) = -c, x - (x - c) = c  (x is the same LVar; signed overflow
+        // is UB, so the identity is exact)
+        if (n->kind == ND_SUB &&
+            n->lhs && n->lhs->kind == ND_LVAR &&
+            n->rhs && (n->rhs->kind == ND_ADD || n->rhs->kind == ND_SUB) &&
+            n->rhs->lhs && n->rhs->lhs->kind == ND_LVAR &&
+            n->lhs->var == n->rhs->lhs->var &&
+            n->rhs->rhs && n->rhs->rhs->kind == ND_NUM) {
+            int64_t c = n->rhs->rhs->val;
+            // x - (x + c) = -c ; x - (x - c) = c  (emit the folded constant)
+            Node *z = malloc(sizeof(Node));
+            memset(z, 0, sizeof(Node));
+            z->kind = ND_NUM;
+            z->val = (n->rhs->kind == ND_SUB) ? c : -c;
+            z->ty = n->ty;
+            return z;
+        }
         // x + x → x << 1, x - x → 0 (same LVar both sides)
         if (n->lhs && n->rhs &&
             n->lhs->kind == ND_LVAR && n->rhs->kind == ND_LVAR &&
@@ -3556,6 +3573,21 @@ static Node *peephole(Node *n) {
                 n->rhs->fval = 0.25;
                 return n;
             }
+            // x / 2^k → x * 2^-k  (powers of two are exact under IEEE 754)
+            if (n->kind == ND_DIV && n->rhs->fval > 0.0) {
+                uint64_t bits;
+                memcpy(&bits, &n->rhs->fval, sizeof(bits));
+                uint64_t e = (bits >> 52) & 0x7ff;
+                // positive finite normal power of two: 0 < e < 0x7ff, mantissa zero
+                if (e != 0 && e != 0x7ff && (bits & 0x000fffffffffffffull) == 0) {
+                    uint64_t rbits = ((uint64_t)(2046 - e)) << 52; // 2^-k
+                    double recip;
+                    memcpy(&recip, &rbits, sizeof(recip));
+                    n->kind = ND_MUL;
+                    n->rhs->fval = recip;
+                    return n;
+                }
+            }
             // x * 2.0 → x + x
             if (n->rhs->fval == 2.0 && n->kind == ND_MUL) {
                 Node *x2 = malloc(sizeof(Node));
@@ -3592,6 +3624,15 @@ static Node *peephole(Node *n) {
             }
             // x * (-1.0) → -x
             if (n->rhs->fval == -1.0 && n->kind == ND_MUL) {
+                Node *neg = malloc(sizeof(Node));
+                memset(neg, 0, sizeof(Node));
+                neg->kind = ND_NEG;
+                neg->rhs = n->lhs;
+                neg->ty = n->ty;
+                return neg;
+            }
+            // x / -1.0 → -x
+            if (n->rhs->fval == -1.0 && n->kind == ND_DIV) {
                 Node *neg = malloc(sizeof(Node));
                 memset(neg, 0, sizeof(Node));
                 neg->kind = ND_NEG;
@@ -4011,6 +4052,30 @@ static Node *peephole(Node *n) {
         if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR && n->rhs->kind == ND_LVAR &&
             n->lhs->var == n->rhs->var)
             return n->lhs; // x & x = x
+        // x & ~x = 0
+        if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR &&
+            n->rhs->kind == ND_BITNOT && n->rhs->rhs && n->rhs->rhs->kind == ND_LVAR &&
+            n->lhs->var == n->rhs->rhs->var) {
+            Node *z = malloc(sizeof(Node));
+            memset(z, 0, sizeof(Node));
+            z->kind = ND_NUM;
+            z->val = 0;
+            z->ty = n->ty;
+            return z;
+        }
+        // x & (x | c) = x  (absorption)
+        if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR &&
+            n->rhs->kind == ND_BITOR && n->rhs->lhs && n->rhs->lhs->kind == ND_LVAR &&
+            n->lhs->var == n->rhs->lhs->var)
+            return n->lhs;
+        // x & c1 & c2 = x & (c1 & c2)
+        if (n->rhs && n->rhs->kind == ND_NUM &&
+            n->lhs && n->lhs->kind == ND_BITAND &&
+            n->lhs->rhs && n->lhs->rhs->kind == ND_NUM) {
+            n->lhs->rhs->val &= n->rhs->val;
+            n->ty = n->lhs->ty;
+            return n->lhs;
+        }
         break;
     case ND_BITOR:
         if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 0)
@@ -4026,6 +4091,30 @@ static Node *peephole(Node *n) {
         if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR && n->rhs->kind == ND_LVAR &&
             n->lhs->var == n->rhs->var)
             return n->lhs; // x | x = x
+        // x | ~x = ~0
+        if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR &&
+            n->rhs->kind == ND_BITNOT && n->rhs->rhs && n->rhs->rhs->kind == ND_LVAR &&
+            n->lhs->var == n->rhs->rhs->var) {
+            Node *z = malloc(sizeof(Node));
+            memset(z, 0, sizeof(Node));
+            z->kind = ND_NUM;
+            z->val = ~0;
+            z->ty = n->ty;
+            return z;
+        }
+        // x | (x & c) = x  (absorption)
+        if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR &&
+            n->rhs->kind == ND_BITAND && n->rhs->lhs && n->rhs->lhs->kind == ND_LVAR &&
+            n->lhs->var == n->rhs->lhs->var)
+            return n->lhs;
+        // x | c1 | c2 = x | (c1 | c2)
+        if (n->rhs && n->rhs->kind == ND_NUM &&
+            n->lhs && n->lhs->kind == ND_BITOR &&
+            n->lhs->rhs && n->lhs->rhs->kind == ND_NUM) {
+            n->lhs->rhs->val |= n->rhs->val;
+            n->ty = n->lhs->ty;
+            return n->lhs;
+        }
         break;
     case ND_BITXOR:
         if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 0)
@@ -4048,6 +4137,25 @@ static Node *peephole(Node *n) {
             z->ty = n->ty;
             return z;
         } // x ^ x = 0
+        // x ^ ~x = ~0
+        if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR &&
+            n->rhs->kind == ND_BITNOT && n->rhs->rhs && n->rhs->rhs->kind == ND_LVAR &&
+            n->lhs->var == n->rhs->rhs->var) {
+            Node *z = malloc(sizeof(Node));
+            memset(z, 0, sizeof(Node));
+            z->kind = ND_NUM;
+            z->val = ~0;
+            z->ty = n->ty;
+            return z;
+        }
+        // x ^ c1 ^ c2 = x ^ (c1 ^ c2)
+        if (n->rhs && n->rhs->kind == ND_NUM &&
+            n->lhs && n->lhs->kind == ND_BITXOR &&
+            n->lhs->rhs && n->lhs->rhs->kind == ND_NUM) {
+            n->lhs->rhs->val ^= n->rhs->val;
+            n->ty = n->lhs->ty;
+            return n->lhs;
+        }
         break;
     // x << 0 → x, x >> 0 → x
     case ND_SHL:
@@ -5205,6 +5313,10 @@ void ssa_run(Function *fn, char *in_path) {
     ssa_licm(fn);
     // ssa_unroll(fn); // disabled: see #if 0 block above
     ssa_const_prop(fn);
+    // 2nd peephole: const_prop substitutes values and exposes patterns that
+    // were not visible on the first pass (e.g. x+0 / x&c1&c2 / x-x after a
+    // propagated constant). Pure rewrite, idempotent, cheap.
+    ssa_peephole(fn);
     ssa_dce(fn, in_path);
 }
 
