@@ -21628,18 +21628,22 @@ struct ObjFile *codegen(Program *prog) {
 
         // -fstack-protector: load canary into [rbp-8] via %fs:0x28 (TLS)
         if (fn->needs_stack_chk) {
-            // mov %fs:0x28, %rdx
+            // mov %fs:0x28, %rax
+            // NOTE: must use RAX (not RDX). RDX is an incoming argument
+            // register (3rd positional arg / 1st vararg); loading the canary
+            // into it here would clobber the argument before it is used or
+            // spilled. RAX is free at function entry (return-value register).
             secbuf_emit8(cg_sec, 0x64); // FS prefix
             secbuf_emit8(cg_sec, 0x8B); // MOV r64, m
-            secbuf_emit8(cg_sec, 0x14); // ModRM: mod=00, reg=rdx(010), rm=100 (abs -> SIB follows)
+            secbuf_emit8(cg_sec, 0x04); // ModRM: mod=00, reg=rax(000), rm=100 (abs -> SIB follows)
             secbuf_emit8(cg_sec, 0x25); // SIB: scale=0, index=none, base=none
             secbuf_emit8(cg_sec, 0x28); // disp32 = 0x28
             secbuf_emit8(cg_sec, 0x00);
             secbuf_emit8(cg_sec, 0x00);
             secbuf_emit8(cg_sec, 0x00);
-            // mov %rdx, -96(%rbp)
+            // mov %rax, -96(%rbp)
             secbuf_emit8(cg_sec, 0x89); // MOV m, r64
-            secbuf_emit8(cg_sec, 0x55); // ModRM: rdx, [rbp+disp8]
+            secbuf_emit8(cg_sec, 0x45); // ModRM: rax, [rbp+disp8]
             secbuf_emit8(cg_sec, 0xA0); // disp8 = -96
         }
 
