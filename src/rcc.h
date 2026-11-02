@@ -546,6 +546,9 @@ struct LVar {
     char *alias_target; // __attribute__((alias("target")))
     char *section_name; // __attribute__((section("name")))
     int offset;
+    int vreg; // -O2+: 1+VReg index when the local lives in a callee-saved VReg, else 0
+    int vr_score; // loop-weighted use count for VReg selection; <0 = ineligible
+    int vr_epoch; // codegen function counter that last initialized vreg/vr_score
     Type *ty;
     bool is_local;
     bool is_extern;

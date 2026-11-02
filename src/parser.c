@@ -14708,6 +14708,22 @@ static Node *to_assign(Node *binary) {
     if ((lhs->kind == ND_MEMBER && lhs->member && lhs->member->bit_width > 0) ||
         (lhs->kind == ND_LVAR && lhs->var && lhs->var->is_global_reg))
         return new_binary(ND_ASSIGN, lhs, new_binary(binary->kind, lhs, binary->rhs, tok), tok);
+    // -O2+: a plain scalar local has no lhs side effects, so keep it a direct
+    // ASSIGN(x, x op e) -- no &x, so the codegen can keep x in a register.
+    // A fresh read node avoids aliasing the assign target under in-place passes.
+    if (opt_O >= 2 && lhs->kind == ND_LVAR && lhs->var && lhs->var->is_local && !lhs->var->is_static &&
+        lhs->chain_depth == 0 && lhs->ty && !lhs->ty->is_vector &&
+        (lhs->ty->kind == TY_CHAR || lhs->ty->kind == TY_SHORT || lhs->ty->kind == TY_INT ||
+         lhs->ty->kind == TY_LONG || lhs->ty->kind == TY_LLONG || lhs->ty->kind == TY_PTR ||
+         lhs->ty->kind == TY_FLOAT || lhs->ty->kind == TY_DOUBLE)) {
+        Node *rd = new_var_node(lhs->var, tok);
+        bool comm = (binary->kind == ND_BITOR || binary->kind == ND_BITAND ||
+                     binary->kind == ND_BITXOR || binary->kind == ND_ADD || binary->kind == ND_MUL);
+        // same operand order as the generic path below (rhs first when commutative)
+        Node *op = comm ? new_binary(binary->kind, binary->rhs, rd, tok)
+                        : new_binary(binary->kind, rd, binary->rhs, tok);
+        return new_binary(ND_ASSIGN, lhs, op, tok);
+    }
     Type *lhs_ty = lhs->ty;
     if (lhs_ty->kind == TY_ARRAY || lhs_ty->kind == TY_VLA)
         lhs_ty = pointer_to(lhs_ty->base);

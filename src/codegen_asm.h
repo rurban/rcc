@@ -569,6 +569,20 @@ static inline void asm_record(AsmOp op, size_t offset, size_t count,
     if (opt_O != 0) asm_peep_try();
 }
 
+// VRegs holding register-allocated locals (-O2+, set by codegen.c): a fold
+// that drops the "dead" intermediate write of a MOV_RR chain must skip them.
+extern int cg_pinned_regs;
+#ifdef ARCH_ARM64
+#define PEEP_NREG 12
+#else
+#define PEEP_NREG 8
+#endif
+static inline bool peep_pinned_phys(int phys) {
+    for (int i = 0; i < PEEP_NREG; i++)
+        if ((cg_pinned_regs & (1 << i)) && (int)REG(i) == phys) return true;
+    return false;
+}
+
 static AsmOp peep_pend_op = ASM_NONE;
 static AsmInsn peep_pend[2];
 static int peep_pend_n = 0;
@@ -605,7 +619,7 @@ static inline void asm_peep_try(void) {
     // truncating cg_sec->len on a non-adjacent pair would delete real code.
     // Pattern 1: MOV_RR(prv) + MOV_RR(cur) -> fold
     if (peep_pend_op == ASM_MOV_RR && cur->op == ASM_MOV_RR &&
-        prv->op == ASM_MOV_RR && prv->rd == cur->rs && prv->rd != cur->rd &&
+        prv->op == ASM_MOV_RR && prv->rd == cur->rs && prv->rd != cur->rd && !peep_pinned_phys(prv->rd) &&
         cur->offset == prv->offset + prv->count) {
         cg_sec->len = prv->offset;
         int sf = (prv->size == 8) ? 1 : 0;
@@ -620,7 +634,7 @@ static inline void asm_peep_try(void) {
     // fold would re-emit the pending immediate at cur->size, discarding
     // the truncation.
     if (peep_pend_op == ASM_MOV_RI && cur->op == ASM_MOV_RR &&
-        prv->op == ASM_MOV_RR && prv->rd != prv->rs && prv->rs == peep_pend[0].rd &&
+        prv->op == ASM_MOV_RR && prv->rd != prv->rs && prv->rs == peep_pend[0].rd && !peep_pinned_phys(prv->rd) &&
         prv->offset == peep_pend[0].offset + peep_pend[0].count &&
         cur->offset == prv->offset + prv->count) {
         cg_sec->len = peep_pend[0].offset;
@@ -731,7 +745,7 @@ static inline void asm_peep_try(void) {
     // untracked instruction ever slips between two recorded entries.
     // Pattern 1: MOV_RR(prv) + MOV_RR(cur) -> fold
     if (peep_pend_op == ASM_MOV_RR && cur->op == ASM_MOV_RR &&
-        prv->op == ASM_MOV_RR && prv->rd == cur->rs && prv->rd != cur->rd &&
+        prv->op == ASM_MOV_RR && prv->rd == cur->rs && prv->rd != cur->rd && !peep_pinned_phys(prv->rd) &&
         cur->offset == prv->offset + prv->count) {
         cg_sec->len = prv->offset;
         x86_mov_rr(cg_sec, prv->size, cur->rd, prv->rs);
@@ -745,7 +759,7 @@ static inline void asm_peep_try(void) {
     // fold would re-emit the pending immediate at cur->size, discarding
     // the truncation.
     if (peep_pend_op == ASM_MOV_RI && cur->op == ASM_MOV_RR &&
-        prv->op == ASM_MOV_RR && prv->rd != prv->rs && prv->rs == peep_pend[0].rd &&
+        prv->op == ASM_MOV_RR && prv->rd != prv->rs && prv->rs == peep_pend[0].rd && !peep_pinned_phys(prv->rd) &&
         prv->offset == peep_pend[0].offset + peep_pend[0].count &&
         cur->offset == prv->offset + prv->count) {
         cg_sec->len = peep_pend[0].offset;

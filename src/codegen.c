@@ -771,6 +771,8 @@ static char *reg8[] = {"%r10b", "%r11b", "%bl", "%r12b", "%r13b", "%r14b", "%r15
 
 static int used_regs = 0;
 static int ever_used_regs = 0;
+// VRegs permanently holding register-allocated locals (-O2+); never spill victims.
+int cg_pinned_regs = 0; // read by the asm-level peephole (codegen_asm.h)
 // __builtin_unwind_init(): the prologue saves every callee-saved register into the frame
 void cg_force_callee_saved(void) {
 #ifdef ARCH_ARM64
@@ -2465,6 +2467,22 @@ static bool node_may_call(Node *n) {
     for (Node *a = n->args; a; a = a->next)
         if (node_may_call(a)) return true;
     return false;
+}
+
+// `x++;` / `--x;` etc. on a register-allocated local with the value discarded:
+// a single add/sub on the pinned VReg (see vr_assign_locals).
+static bool gen_vreg_incdec_stmt(Node *n) {
+    if (!n || (n->kind != ND_POST_INC && n->kind != ND_POST_DEC && n->kind != ND_PRE_INC && n->kind != ND_PRE_DEC))
+        return false;
+    Node *l = n->lhs;
+    if (!l || l->kind != ND_LVAR || l->var->vreg <= 0 || l->chain_depth != 0) return false;
+    int sz = l->ty->size;
+    int delta = l->ty->kind == TY_PTR ? (int)l->ty->base->size : 1;
+    if (n->kind == ND_POST_INC || n->kind == ND_PRE_INC)
+        asm_add_imm(cg_sec, l->var->vreg - 1, sz, delta);
+    else
+        asm_sub_imm(cg_sec, l->var->vreg - 1, sz, delta);
+    return true;
 }
 
 VReg alloc_reg_avoid2(VReg avoid1, VReg avoid2);
@@ -5883,7 +5901,7 @@ VReg alloc_reg(void) {
     //
     // First pass: prefer a used-but-not-yet-spilled register.
     for (int i = NUM_REGS - 1; i >= 0; i--) {
-        if ((used_regs & (1 << i)) && !(spilled_regs & (1 << i))) {
+        if (!(cg_pinned_regs & (1 << i)) && (used_regs & (1 << i)) && !(spilled_regs & (1 << i))) {
             if (opt_W) {
                 if (reg_owner[i])
                     fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s (%s) to stack in %s\n", reg64[i], reg_owner[i], current_fn);
@@ -5911,7 +5929,7 @@ VReg alloc_reg(void) {
     // hazard; it only differs from the first pass in also considering
     // already-spilled registers as candidates.
     for (int i = NUM_REGS - 1; i >= 0; i--) {
-        if (used_regs & (1 << i)) {
+        if (!(cg_pinned_regs & (1 << i)) && (used_regs & (1 << i))) {
             if (opt_W) {
                 if (reg_owner[i])
                     fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s (%s) to stack in %s\n", reg64[i], reg_owner[i], current_fn);
@@ -5980,7 +5998,7 @@ VReg alloc_reg_avoid2(VReg avoid1, VReg avoid2) {
     }
     for (int i = NUM_REGS - 1; i >= 0; i--) {
         if (i == avoid1 || i == avoid2) continue;
-        if ((used_regs & (1 << i)) && !(spilled_regs & (1 << i))) {
+        if (!(cg_pinned_regs & (1 << i)) && (used_regs & (1 << i)) && !(spilled_regs & (1 << i))) {
             if (opt_W) {
                 if (reg_owner[i])
                     fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s (%s) to stack in %s\n", reg64[i], reg_owner[i], current_fn);
@@ -6001,7 +6019,7 @@ VReg alloc_reg_avoid2(VReg avoid1, VReg avoid2) {
     }
     for (int i = NUM_REGS - 1; i >= 0; i--) {
         if (i == avoid1 || i == avoid2) continue;
-        if (used_regs & (1 << i)) {
+        if (!(cg_pinned_regs & (1 << i)) && (used_regs & (1 << i))) {
             if (opt_W) {
                 if (reg_owner[i])
                     fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s (%s) to stack in %s\n", reg64[i], reg_owner[i], current_fn);
@@ -7553,7 +7571,10 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
             cond->lhs = cond->rhs;
             cond->rhs = swap_tmp;
         }
-        VReg r_lhs = gen(cond->lhs);
+        // A register-allocated local is read-only here: use its pin, no copy.
+        VReg pin_l = (cond->lhs->kind == ND_LVAR && cond->lhs->var->vreg > 0 && cond->lhs->chain_depth == 0) ? cond->lhs->var->vreg - 1 : -1;
+        VReg pin_r = (cond->rhs->kind == ND_LVAR && cond->rhs->var->vreg > 0 && cond->rhs->chain_depth == 0) ? cond->rhs->var->vreg - 1 : -1;
+        VReg r_lhs = pin_l >= 0 ? pin_l : gen(cond->lhs);
         int sz = op_size(cond->lhs->ty);
         if (sz < op_size(cond->rhs->ty))
             sz = op_size(cond->rhs->ty);
@@ -7583,7 +7604,7 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
             asm_cmp_imm(cg_sec, r_lhs, sz, (int32_t)rhs_val); // cmp $imm, rr_lhs
 #endif
         } else {
-            VReg r_rhs = gen(cond->rhs);
+            VReg r_rhs = pin_r >= 0 ? pin_r : gen(cond->rhs);
 #ifndef ARCH_ARM64
             // When r_lhs was spilled during gen(rhs) and rhs reused the same
             // physical register, a plain reg-reg cmp would self-compare.
@@ -7595,9 +7616,9 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
             } else
 #endif
                 asm_cmp_reg_reg(cg_sec, r_lhs, r_rhs, sz); // cmp rr_rhs, rr_lhs
-            free_reg(r_rhs);
+            if (pin_r < 0) free_reg(r_rhs);
         }
-        free_reg(r_lhs);
+        if (pin_l < 0) free_reg(r_lhs);
 
 #ifdef ARCH_ARM64
         if (cond->kind == ND_EQ) {
@@ -11643,6 +11664,11 @@ VReg gen(Node *node) {
     case ND_LVAR: {
         VReg r = alloc_reg();
         if (opt_W) reg_owner[r] = node->var->name;
+        if (node->var->vreg > 0 && node->chain_depth == 0) {
+            // -O2+: local lives in a pinned VReg; hand out a copy (callers free it).
+            asm_mov_reg_reg(cg_sec, r, node->var->vreg - 1, 8);
+            return r;
+        }
 #ifndef ARCH_ARM64
         __attribute__((unused)) char *label = var_label(node->var);
 #endif
@@ -12413,8 +12439,12 @@ VReg gen(Node *node) {
         }
         if (node->lhs->kind == ND_LVAR && node->lhs->var->is_local && node->lhs->var->ty->kind != TY_ARRAY) {
             VReg r2 = gen(node->rhs);
+            if (node->lhs->var->vreg > 0 && node->lhs->chain_depth == 0)
+                // 4-byte mov zero-extends, matching what a stack reload yields
+                asm_mov_reg_reg(cg_sec, node->lhs->var->vreg - 1, r2, node->lhs->ty->size);
+            else
 #ifdef ARCH_ARM64
-            if (node->lhs->chain_depth > 0) {
+                if (node->lhs->chain_depth > 0) {
                 VReg base = alloc_reg();
                 gen_chain_walk_into(base, node->lhs->chain_depth);
                 emit_store_offset(node->lhs->ty, r2, REG(base), -node->lhs->var->offset);
@@ -12422,7 +12452,7 @@ VReg gen(Node *node) {
             } else
                 emit_store_offset(node->lhs->ty, r2, FRAME_PTR, -node->lhs->var->offset);
 #else
-            if (node->lhs->chain_depth > 0) {
+                if (node->lhs->chain_depth > 0) {
                 VReg base = alloc_reg();
                 gen_chain_walk_into(base, node->lhs->chain_depth);
                 x86_mov_mr(cg_sec, node->lhs->ty->size, x86_mem(REG(base), -node->lhs->var->offset), REG(r2));
@@ -13040,6 +13070,20 @@ VReg gen(Node *node) {
     case ND_PRE_DEC: {
         bool is_pre = (node->kind == ND_PRE_INC || node->kind == ND_PRE_DEC);
         bool is_inc = (node->kind == ND_POST_INC || node->kind == ND_PRE_INC);
+        if (node->lhs->kind == ND_LVAR && node->lhs->var->vreg > 0 && node->lhs->chain_depth == 0) {
+            // -O2+: ++/-- directly on the pinned VReg (pointer step = pointee size).
+            int vr = node->lhs->var->vreg - 1;
+            int sz = node->lhs->ty->size;
+            int delta = node->lhs->ty->kind == TY_PTR ? (int)node->lhs->ty->base->size : 1;
+            VReg res = alloc_reg();
+            if (!is_pre) asm_mov_reg_reg(cg_sec, res, vr, sz);
+            if (is_inc)
+                asm_add_imm(cg_sec, vr, sz, delta);
+            else
+                asm_sub_imm(cg_sec, vr, sz, delta);
+            if (is_pre) asm_mov_reg_reg(cg_sec, res, vr, sz);
+            return res;
+        }
         // GCC "global register variable" (LVar.is_global_reg): no memory
         // address at all, so the ordinary gen_addr()-based load/modify/
         // store below (which every other branch here uses) cannot apply.
@@ -14412,6 +14456,7 @@ VReg gen(Node *node) {
         return result;
     }
     case ND_EXPR_STMT: {
+        if (gen_vreg_incdec_stmt(node->lhs)) return -1;
         VReg r = gen(node->lhs);
         if (r != -1) free_reg(r);
         return -1;
@@ -14906,8 +14951,10 @@ VReg gen(Node *node) {
         if (r_then != -1) free_reg(r_then);
         cg_def_label(cont_label); // continue label
         if (node->inc) {
-            VReg r_inc = gen(node->inc);
-            if (r_inc != -1) free_reg(r_inc);
+            if (!gen_vreg_incdec_stmt(node->inc)) {
+                VReg r_inc = gen(node->inc);
+                if (r_inc != -1) free_reg(r_inc);
+            }
         }
         asm_b_back(cg_sec, begin_pos); // b begin
         asm_patch_branch(cg_sec, end_jmp, cg_sec->len, 1); // patch cond branch
@@ -19351,6 +19398,388 @@ static void queue_label_diff_patch(int section, size_t patch_off, char *label_hi
     pending_label_diffs = p;
 }
 
+// ============================================================================
+// -O2+: hot scalar locals live in callee-saved VRegs
+// ============================================================================
+// A local qualifies only if every use is a plain value read, plain `x = e`,
+// or ++/-- (all handled in gen()). Anything needing its address (&x, member
+// access, asm, cleanup, nested-fn access) keeps it on the stack. Callee-saved
+// VRegs survive calls, so no spill/reload around calls is needed. The most
+// used local (loop counter) gets the first VReg of the pool.
+#ifdef ARCH_ARM64
+static const int vr_pool[] = {6, 7, 8, 9}; // x19-x22
+#else
+static const int vr_pool[] = {2, 3, 4}; // rbx, r12, r13
+#endif
+static bool vr_fn_bad;
+static bool cg_has_nested_fns;
+static int vr_epoch;
+static LVar **vr_seen; // locals referenced by the current function body
+static int vr_nseen, vr_cap;
+static int vr_maxneed; // largest Ershov register need of any expression in the function
+
+static bool vr_is_cand(LVar *v) {
+    if (!v->is_local || v->is_static || v->is_extern || v->is_function || v->is_nested_fn ||
+        v->addr_taken || v->is_global_reg || v->asm_name || v->section_name || v->alias_target ||
+        v->cleanup_func || !v->ty || v->ty->cleanup_func || ty_volatile(v->ty) || v->ty->is_vector ||
+        (v->name && v->name == kw_retbuf))
+        return false;
+    switch (v->ty->kind) {
+    case TY_INT:
+    case TY_LONG:
+    case TY_LLONG:
+        return v->ty->size == 4 || v->ty->size == 8;
+    case TY_PTR:
+        return v->ty->base && v->ty->base->kind != TY_VLA && v->ty->base->size > 0;
+    default:
+        return false;
+    }
+}
+
+// First reference to `v` in this function: reset its allocation state and list it.
+static LVar *vr_touch(LVar *v);
+static void vr_count(Node *c, int w) {
+    LVar *v = c->var;
+    if (!v) return;
+    vr_touch(v);
+    if (v->vr_score < 0) return;
+    if (c->chain_depth)
+        v->vr_score = -1;
+    else if (v->vr_score < (1 << 28))
+        v->vr_score += w;
+}
+
+static void vr_scan(Node *n, int w);
+
+// `n` is evaluated for its ADDRESS: any local on the address spine stays in memory.
+static void vr_scan_addr(Node *n, int w) {
+    if (!n) return;
+    switch (n->kind) {
+    case ND_LVAR:
+        if (n->var) vr_touch(n->var)->vr_score = -1;
+        return;
+    case ND_CAST:
+    case ND_MEMBER:
+        vr_scan_addr(n->lhs, w);
+        return;
+    case ND_COMMA:
+        vr_scan(n->lhs, w);
+        vr_scan_addr(n->rhs, w);
+        return;
+    case ND_COND:
+        vr_scan(n->cond, w);
+        vr_scan_addr(n->then, w);
+        vr_scan_addr(n->els, w);
+        return;
+    default:
+        vr_scan(n, w);
+        return;
+    }
+}
+
+static bool vr_is_setjmp_like(const char *nm) {
+    return nm && (strstr(nm, "setjmp") || strstr(nm, "vfork") || strstr(nm, "getcontext") || strstr(nm, "swapcontext") || strstr(nm, "savectx"));
+}
+
+// Wide values (int128/bitint/decimal/complex/x87/vector, struct copies) use
+// several extra scratch registers and fixed physical pairs: never pin around them.
+static bool vr_wide_node(Node *n) {
+    Type *t = n->ty;
+    if (!t) return false;
+    if (is_int128_like(t) || is_wide_bitint(t) || is_complex(t) || is_decimal(t) ||
+        t->kind == TY_LDOUBLE || t->is_vector)
+        return true;
+    return (t->kind == TY_STRUCT || t->kind == TY_UNION) &&
+        (n->kind == ND_ASSIGN || n->kind == ND_FUNCALL || n->kind == ND_COND);
+}
+
+static int vr_stmt_need(Node *n);
+
+// Register need of an expression tree: `lhs` is evaluated first and its result
+// stays live while `rhs` runs (leaf = 1). Also records the function-wide maximum.
+static int vr_need(Node *n) {
+    if (!n) return 0;
+    int res;
+    switch (n->kind) {
+    case ND_ADD:
+    case ND_SUB:
+    case ND_MUL:
+    case ND_DIV:
+    case ND_MOD:
+    case ND_SHL:
+    case ND_SHR:
+    case ND_BITAND:
+    case ND_BITOR:
+    case ND_BITXOR:
+    case ND_EQ:
+    case ND_NE:
+    case ND_LT:
+    case ND_LE: {
+        int l = vr_need(n->lhs), r = vr_need(n->rhs);
+        res = l > r + 1 ? l : r + 1;
+        break;
+    }
+    case ND_LOGAND:
+    case ND_LOGOR: {
+        int l = vr_need(n->lhs), r = vr_need(n->rhs);
+        res = (l > r ? l : r) + 1;
+        break;
+    }
+    case ND_ASSIGN: {
+        int l = vr_need(n->lhs), r = vr_need(n->rhs);
+        if (n->lhs && n->lhs->kind == ND_LVAR)
+            res = r > 1 ? r : 1;
+        else
+            res = l > r + 1 ? l : r + 1;
+        break;
+    }
+    case ND_COMMA: {
+        int l = vr_need(n->lhs), r = vr_need(n->rhs);
+        res = l > r ? l : r;
+        break;
+    }
+    case ND_COND: {
+        int c = vr_need(n->cond), t = vr_need(n->then), e = vr_need(n->els);
+        res = (c > (t > e ? t : e) ? c : (t > e ? t : e)) + 1;
+        break;
+    }
+    case ND_FUNCALL: {
+        // earlier register args stay live while later ones are evaluated
+        res = 1;
+        int k = 0;
+        for (Node *a = n->args; a; a = a->next, k++) {
+            int an = vr_need(a) + (k < 6 ? k : 6);
+            if (an > res) res = an;
+        }
+        if (n->lhs && n->lhs->kind != ND_LVAR) {
+            int cn = vr_need(n->lhs) + 1;
+            if (cn > res) res = cn;
+        }
+        break;
+    }
+    case ND_POST_INC:
+    case ND_POST_DEC:
+    case ND_PRE_INC:
+    case ND_PRE_DEC:
+        res = vr_need(n->lhs) + 1;
+        break;
+    case ND_DEREF:
+    case ND_ADDR:
+    case ND_CAST:
+    case ND_NEG:
+    case ND_NOT:
+    case ND_BITNOT:
+    case ND_MEMBER:
+    case ND_REAL:
+    case ND_IMAG:
+        res = vr_need(n->lhs);
+        if (res < 1) res = 1;
+        break;
+    case ND_STMT_EXPR: { // inlined calls: the body runs while outer partial values are live
+        int b = vr_stmt_need(n->body), e = vr_need(n->stmt_expr_result);
+        res = b > e ? b : e;
+        if (res < 1) res = 1;
+        break;
+    }
+    default:
+        res = 1;
+        break;
+    }
+    if (vr_wide_node(n) || (n->lhs && vr_wide_node(n->lhs)) || (n->rhs && vr_wide_node(n->rhs)))
+        res = NUM_REGS; // disables pinning for this function
+    if (res > vr_maxneed) vr_maxneed = res;
+    return res;
+}
+
+// Largest register need among the expressions of a statement tree.
+static int vr_stmt_need(Node *n) {
+    int m = 0;
+    for (; n; n = n->next) {
+        int k = 0, j;
+        switch (n->kind) {
+        case ND_EXPR_STMT:
+        case ND_RETURN:
+            k = vr_need(n->lhs);
+            break;
+        case ND_IF:
+        case ND_DO:
+        case ND_SWITCH:
+            k = vr_need(n->cond);
+            break;
+        case ND_FOR:
+            k = vr_need(n->cond);
+            j = vr_need(n->inc);
+            if (j > k) k = j;
+            break;
+        default:
+            break;
+        }
+        Node *subs[] = {n->then, n->els, n->body, n->init};
+        for (int i = 0; i < 4; i++) {
+            j = vr_stmt_need(subs[i]);
+            if (j > k) k = j;
+        }
+        if (n->stmt_expr_result) {
+            j = vr_need(n->stmt_expr_result);
+            if (j > k) k = j;
+        }
+        if (k > m) m = k;
+    }
+    return m;
+}
+
+static void vr_scan(Node *n, int w) {
+    for (; n; n = n->next) {
+        if (n->defer_retspill) vr_touch(n->defer_retspill)->vr_score = -1;
+        int wl = w >= (1 << 20) ? w : w * 8;
+        switch (n->kind) { // expression roots: record their register need
+        case ND_EXPR_STMT:
+        case ND_RETURN:
+            vr_need(n->lhs);
+            break;
+        case ND_IF:
+        case ND_DO:
+        case ND_SWITCH:
+            vr_need(n->cond);
+            break;
+        case ND_FOR:
+            vr_need(n->cond);
+            vr_need(n->inc);
+            break;
+        default:
+            break;
+        }
+        if (n->stmt_expr_result) vr_need(n->stmt_expr_result);
+        Node *kids[] = {n->lhs, n->rhs, n->cond, n->then, n->els, n->init, n->inc, n->body, n->args, n->stmt_expr_result};
+        const int nk = (int)(sizeof(kids) / sizeof(kids[0]));
+        switch (n->kind) {
+        case ND_LVAR:
+            vr_count(n, w);
+            continue;
+        case ND_ASM:
+            vr_fn_bad = true;
+            return;
+        case ND_ADDR:
+            vr_scan_addr(n->lhs, w);
+            vr_scan_addr(n->rhs, w);
+            continue;
+        case ND_POST_INC:
+        case ND_POST_DEC:
+        case ND_PRE_INC:
+        case ND_PRE_DEC:
+            if (n->lhs && n->lhs->kind == ND_LVAR)
+                vr_count(n->lhs, 2 * w);
+            else
+                vr_scan_addr(n->lhs, w);
+            continue;
+        case ND_ASSIGN:
+            if (n->lhs && n->lhs->kind == ND_LVAR)
+                vr_count(n->lhs, w);
+            else
+                vr_scan_addr(n->lhs, w);
+            vr_scan(n->rhs, w);
+            continue;
+        case ND_FUNCALL:
+            if (vr_is_setjmp_like(n->funcname) ||
+                (n->lhs && n->lhs->kind == ND_LVAR && n->lhs->var && vr_is_setjmp_like(n->lhs->var->name)))
+                vr_fn_bad = true;
+            for (int i = 0; i < nk; i++)
+                vr_scan(kids[i], w);
+            continue;
+        case ND_FOR:
+        case ND_DO:
+            for (int i = 0; i < nk; i++)
+                vr_scan(kids[i], kids[i] == n->init ? w : wl);
+            continue;
+        case ND_MEMBER:
+        case ND_ZERO_INIT:
+        case ND_REAL:
+        case ND_IMAG:
+        case ND_VA_START:
+        case ND_VA_COPY:
+        case ND_VA_ARG:
+        case ND_VA_ARG_PACK:
+        case ND_VA_ARG_PACK_LEN:
+        case ND_ALLOCA:
+        case ND_ALLOCA_ZINIT:
+        case ND_ATOMIC_LOAD:
+        case ND_ATOMIC_STORE:
+        case ND_ATOMIC_EXCHANGE:
+        case ND_ATOMIC_CAS:
+        case ND_ATOMIC_FENCE:
+        case ND_ATOMIC_FETCH_OP:
+            for (int i = 0; i < nk; i++)
+                for (Node *k = kids[i]; k; k = k->next)
+                    vr_scan_addr(k, w);
+            continue;
+        default:
+            for (int i = 0; i < nk; i++)
+                vr_scan(kids[i], w);
+            continue;
+        }
+    }
+}
+
+static LVar *vr_touch(LVar *v) {
+    if (v->vr_epoch != vr_epoch) {
+        v->vr_epoch = vr_epoch;
+        v->vreg = 0;
+        v->vr_score = vr_is_cand(v) ? 0 : -1;
+        if (vr_nseen == vr_cap) {
+            vr_cap = vr_cap ? vr_cap * 2 : 64;
+            vr_seen = realloc(vr_seen, vr_cap * sizeof(LVar *));
+        }
+        vr_seen[vr_nseen++] = v;
+    }
+    return v;
+}
+
+// Pick the hottest eligible locals for the pool, hottest first.
+static void vr_assign_locals(Function *fn) {
+    for (int i = 0; i < vr_nseen; i++)
+        vr_seen[i]->vreg = 0; // previous function's choices must not leak
+    vr_epoch++;
+    vr_nseen = 0;
+    if (opt_O < 2 || fn->is_nested || cg_has_nested_fns || !fn->body || opt_ubsan || opt_asan ||
+        opt_float_cast_overflow || opt_sanitize_list || opt_g)
+        return; // sanitizer/debug builds keep every local in memory
+    for (LVar *p = fn->params; p; p = p->param_next)
+        vr_touch(p)->vr_score = -1; // params arrive in ABI regs/stack; keep in memory
+    vr_fn_bad = false;
+    vr_maxneed = 0;
+    vr_scan(fn->body, 1);
+    if (vr_fn_bad) {
+        for (int i = 0; i < vr_nseen; i++)
+            vr_seen[i]->vreg = 0;
+        return;
+    }
+    // Never shrink the temp pool below what the hungriest expression needs
+    // (+2 margin for address/bounds temps): pinning must not induce spills.
+    int room = NUM_REGS - vr_maxneed - 2;
+    size_t maxn = room < 0 ? 0 : (size_t)room;
+    if (maxn > sizeof(vr_pool) / sizeof(vr_pool[0])) maxn = sizeof(vr_pool) / sizeof(vr_pool[0]);
+    for (size_t k = 0; k < maxn && k < sizeof(vr_pool) / sizeof(vr_pool[0]); k++) {
+        LVar *best = NULL;
+        for (int i = 0; i < vr_nseen; i++) {
+            LVar *v = vr_seen[i];
+            if (v->vr_score >= 4 && !v->vreg && (!best || v->vr_score > best->vr_score))
+                best = v;
+        }
+        if (!best) break;
+        best->vreg = vr_pool[k] + 1;
+    }
+}
+
+// Reserve the selected VRegs for the whole function (both codegen passes).
+static void vr_apply(Function *fn) {
+    (void)fn;
+    cg_pinned_regs = 0;
+    for (int i = 0; i < vr_nseen; i++)
+        if (vr_seen[i]->vreg > 0) cg_pinned_regs |= 1 << (vr_seen[i]->vreg - 1);
+    used_regs |= cg_pinned_regs;
+    ever_used_regs |= cg_pinned_regs;
+}
+
 struct ObjFile *codegen(Program *prog) {
     init_local_builtins();
     // Reset label and fixup hashtables for new compilation unit
@@ -19368,6 +19797,9 @@ struct ObjFile *codegen(Program *prog) {
     cg_set_section(SEC_TEXT);
     cg_dry_run = false;
     all_items = prog->items;
+    cg_has_nested_fns = false;
+    for (TLItem *item = all_items; item; item = item->next)
+        if (item->kind == TL_FUNC && item->fn->is_nested) cg_has_nested_fns = true;
     memset(func_htab, 0, sizeof(func_htab));
     for (TLItem *item = all_items; item; item = item->next)
         if (item->kind == TL_FUNC) {
@@ -19882,6 +20314,8 @@ struct ObjFile *codegen(Program *prog) {
         spill_victim = 0; // per-function state, same lifetime as spilled_regs
         spill_count = 0;
         memset(reg_owner, 0, sizeof(reg_owner));
+        vr_assign_locals(fn);
+        vr_apply(fn);
         ctrl_depth = 0;
         fn_uses_alloca = false;
         last_debug_file = 0;
@@ -20399,6 +20833,7 @@ struct ObjFile *codegen(Program *prog) {
         spill_victim = 0; // per-function state, same lifetime as spilled_regs
         spill_count = 0;
         memset(reg_owner, 0, sizeof(reg_owner));
+        vr_apply(fn);
         // Pass 1's gen_funcall r10/r11-across-a-call protection
         // (spill_offset(0)/spill_offset(1), used without a matching
         // pop_spill_slot()) leaves spill_depth[0..1] > 0 once the first

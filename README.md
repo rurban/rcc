@@ -240,8 +240,6 @@ cmpsb`/`repne scasb`/ byte loops), avoiding libc call overhead. Also
   TR39 advised homoglyph/confusable checks via my
   [libu8indent](https://github.com/rurban/libu8ident/) library.
   Checking unicode security guidelines for identifiers.
-- Simple function inliner and const-loop unroller with -O2. But no SSA
-  conversion and optimizations.
 
 ### Switch-Dispatch Lowering: Binary Search / Perfect Hash
 
