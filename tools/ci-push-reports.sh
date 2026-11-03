@@ -66,28 +66,32 @@ m_files="bench/bench_report_darwin.md test/tcc_test_arm64.md test_report_arm64.m
 w_files="bench/bench_report_mingw.md test_report_mingw.md test/tcc_test_mingw.md"
 l_files="test/tcc_test_linux.md test/torture_report_linux.log test_report_linux.md"
 b_files="test_report_FreeBSD.md test_report_NetBSD.md test_report_OpenBSD.md"
-dirs="linux-reports macos-reports windows-reports freebsd-reports netbsd-reports openbsd-reports"
-rm -rf linux-reports macos-reports windows-reports freebsd-reports netbsd-reports openbsd-reports
-if gh run download "$run_id" -D . 2>/dev/null; then
+dirs="linux-reports-clang linux-reports-gcc macos-reports windows-reports freebsd-reports netbsd-reports openbsd-reports"
+# gh refuses to extract into an existing directory ("file exists"), so every
+# artifact dir (incl. o2-report, which is never synced) must be gone first.
+# shellcheck disable=SC2086
+rm -rf $dirs o2-report
+if gh run download "$run_id" -D .; then
     downloaded=yes
 else
-    echo "  -> no artifacts found (skipping)" >&2
+    echo "  -> gh run download failed (see error above)" >&2
 fi
 
 if [ -z "$downloaded" ]; then
     echo "No artifacts were downloaded, nothing to do."
     exit 0
 fi
-pwd="$(pwd)"
+# linux-reports-gcc is synced last so its files win over clang's (same names).
 for d in $dirs; do
-    cd "$d" && rsync -av . ..
-    cd "$pwd" || exit 1
+    [ -d "$d" ] || continue
+    rsync -av "$d"/ .
 done
 
 echo "Staging downloaded report files..."
 # shellcheck disable=SC2086
 git add $m_files $w_files $l_files $b_files 2>/dev/null || true
-rm -rf macos-reports windows-reports linux-reports freebsd-reports netbsd-reports openbsd-reports || true
+# shellcheck disable=SC2086
+rm -rf $dirs o2-report || true
 
 if git diff --cached --quiet; then
     echo "No report files changed, nothing to commit."
