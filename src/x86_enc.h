@@ -101,6 +101,14 @@ typedef struct {
     uint8_t seg; // segment-override prefix byte (0x64=%fs, 0x65=%gs, ...), 0 = none
 } X86Mem;
 
+// Bookkeeping of the most recently encoded RIP-relative memory operand (the
+// IR backend attaches the PC32 relocation after the whole instruction is out):
+// section offset of its disp32, immediate bytes that trail it in the same
+// instruction, and a running count of RIP operands encoded.
+extern size_t x86_rip_disp_pos;
+extern int x86_rip_trail;
+extern unsigned x86_rip_count;
+
 static inline X86Mem x86_mem(X86Reg base, int64_t disp) {
     return (X86Mem){base, X86_NOREG, 1, disp, 0};
 }

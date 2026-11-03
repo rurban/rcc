@@ -87,11 +87,14 @@
      complex/decimal/int128/long double, labeled loops (C2Y).
   3.1 DONE a (SROA) and b (frame-slot inlining). NEXT (performance, priority
      order):
-     c. Cross-join memory dataflow: replace the dominator-tree
-        available-memory walk with a real dataflow analysis so values flow
-        through back-edges (loop-carried store->load) and diamond joins.
-        Today a block with several predecessors starts with an empty
-        table; loop-carried accumulators in memory reload every iteration.
+     c. DONE (memopt flow): forward_loads is now a whole-function must-
+        availability analysis (optimistic over back edges, <=6 rounds,
+        exact-stability or fall back to empty tables) plus a rewrite walk;
+        at joins a fact survives when every pred has it, differing values
+        get a PHI of the per-pred values; loop-carried frame cells promote
+        fully (stores die, slot gone); pointer/global accumulators lose the
+        reload but keep the store (no TBAA: any unknown store/call kills).
+        Measured 3661 -> 3588 post-opt loads over test_*.c + AWFY (-2.0%).
      d. Pointer-increment strength reduction for non-widenable products
         (mm's k*n: I32 product indexed, cannot prove no-wrap) - needs
         wrap-exactness reasoning the IV prover doesn't do yet.
@@ -108,15 +111,17 @@
         deeper loop than its def (VInfo.keep); a kept GADDR that the
         allocator spills reverts to rematerialization (lea beats a reload).
         bench.c sieve loops lost one `lea` per iteration (AWFY Sieve -14%).
-     h. NEXT: fold `GADDR + const` (no index, non-GOT) into a RIP-relative
-        memory operand (`add r,[rip+sym]`, `mov [rip+sym],r`): saves the
-        remaining lea per scalar-global access. The encoder has one RIP site
-        (x86_enc.c emit_mem); record the disp32 position there and apply
-        the PC32 reloc after the instruction with addend
-        disp - (end - pos), asserting the trailing-immediate size so a
-        mistake aborts the compile instead of miscompiling. Needs the
-        sym carried through fold_addr and the three `e->aux = l->aux`
-        fusion sites.
+     h. DONE (RIP-relative operands): a LOAD/STORE address that is a non-GOT
+        GADDR + constant with no index folds into [rip+sym+disp] (addressing
+        kind aux==2, symbol in IRInstr.sym; fold_addr, also through
+        cross-block ADD(GADDR,const)), so `total += a[i]` is `add r,[rip+total];
+        mov [rip+total],r` with no lea. x86_enc.c records the disp32 position
+        (x86_rip_disp_pos) and the immediate bytes behind it (x86_rip_trail);
+        ir_x86.c attaches PC32 with addend off - (4 + trail) after each IR
+        instruction (rip_finish) and aborts the compile on any inconsistency
+        (operand count, trailing size, non-zero disp, missed site). GOT/weak/
+        TLS symbols never fold. The encoder no longer emits a spurious REX.B
+        for RIP bases (X86_EXT).
      i. FINDING (do not re-chase): AWFY Queens swings 29 <-> 37 ms between
         builds whose placeQueen is byte-identical. Neither 16-byte function
         alignment nor 16/8-byte loop-header alignment (both tried, built,

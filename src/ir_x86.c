@@ -416,10 +416,14 @@ static int scaled_by(int v, int *base) {
     return 0;
 }
 
-// Fold ADD/SUB/SHL/MUL/FRAMEADDR chains of a LOAD/STORE address into
+// Fold ADD/SUB/SHL/MUL/FRAMEADDR/GADDR chains of a LOAD/STORE address into
 // (base, index, scale, disp). m->aux = 1 means the base is rbp (a.k.a. a
-// FRAMEADDR folded in, m->a == IR_NONE). Folded operands must live in the same
-// block so operand lifetimes are not stretched across loops.
+// FRAMEADDR folded in, m->a == IR_NONE); m->aux = 2 means the address is
+// [rip + m->sym + disp] (a non-GOT GADDR folded in, m->a == m->b == IR_NONE; the
+// symbol rides in m->sym, which LOAD/STORE and every fused user otherwise leave
+// unused). Folded operands must live in the same block so operand lifetimes are
+// not stretched across loops; FRAMEADDR/GADDR(+const) are link/frame constants
+// that are rematerialized anyway, so they fold from any block.
 static void fold_addr(IRInstr *m, bool split) {
     IRBlock *blk = m->blk;
     int base = m->a, idx = m->b, scale = m->scale ? m->scale : 1;
@@ -456,14 +460,31 @@ static void fold_addr(IRInstr *m, bool split) {
         }
         if (base != IR_NONE) {
             IRInstr *d = V(base);
-            if (d->op == IR_FRAMEADDR) {
+            // GADDR + constant is a link-time constant: folding it into the address
+            // stretches no live range, so it is allowed across blocks.
+            bool gadd = d->op == IR_ADD && d->type == IRT_I64 &&
+                ((V(d->a)->op == IR_GADDR && !V(d->a)->msign && const_of(d->b, &c)) ||
+                 (V(d->b)->op == IR_GADDR && !V(d->b)->msign && const_of(d->a, &c)));
+            if (d->op == IR_GADDR) {
+                // A plain RIP-relative symbol (not GOT) with no index: becomes a
+                // [rip + sym + disp] operand (kind 2, symbol carried in m->sym), so no
+                // lea is needed. Block-independent like FRAMEADDR: the address is a
+                // link-time constant, nothing is kept live.
+                if (!d->msign && kind == 0 && idx == IR_NONE && fits32(disp + d->imm)) {
+                    disp += d->imm;
+                    m->sym = d->sym;
+                    kind = 2;
+                    base = IR_NONE;
+                    ch = true;
+                }
+            } else if (d->op == IR_FRAMEADDR) {
                 if (fits32(disp - d->imm)) {
                     disp -= d->imm;
                     kind = 1;
                     base = IR_NONE;
                     ch = true;
                 }
-            } else if (d->blk == blk && d->op == IR_ADD && d->type == IRT_I64) {
+            } else if ((d->blk == blk || gadd) && d->op == IR_ADD && d->type == IRT_I64) {
                 if (const_of(d->b, &c) && fits32(disp + c)) {
                     disp += c;
                     base = d->a;
@@ -472,7 +493,7 @@ static void fold_addr(IRInstr *m, bool split) {
                     disp += c;
                     base = d->b;
                     ch = true;
-                } else if (split && idx == IR_NONE &&
+                } else if (split && idx == IR_NONE && d->blk == blk &&
                            (be.vi[d->id].uses == 1 || be.vi[d->id].uses == be.mu[d->id])) {
                     int ib;
                     if (scaled_by(d->a, &ib) && !scaled_by(d->b, &ib)) {
@@ -614,6 +635,7 @@ static void fold_cmp_loads(void) {
             e->scale = l->scale;
             e->imm = l->imm;
             e->aux = l->aux;
+            e->sym = l->sym; // aux == 2: the RIP-relative symbol
             e->cc = (uint8_t)cc;
             if (e->op == IR_BR) e->msign = (uint8_t)form;
             else
@@ -726,6 +748,7 @@ static void prep_ir(void) {
             e->scale = l->scale;
             e->imm = l->imm;
             e->aux = l->aux;
+            e->sym = l->sym;
             e->mw = mw;
             e->msign = sgn;
             be.vi[l->id].uses--;
@@ -762,6 +785,7 @@ static void prep_ir(void) {
                 e->scale = l->scale;
                 e->imm = l->imm;
                 e->aux = l->aux;
+                e->sym = l->sym;
                 e->mw = 1;
                 be.vi[l->id].uses--;
                 if (e->b != IR_NONE) be.vi[e->b].uses++;
@@ -1453,25 +1477,83 @@ static bool imm32(int v, int64_t *out) {
     return true;
 }
 
+// A RIP-relative operand folded into a LOAD/STORE/ALU/CMP (addressing kind 2) is encoded with
+// a zero disp32 by mem_of(); the PC32 relocation is attached once the whole
+// instruction is out (rip_finish), because the CPU resolves rip against the END of
+// the instruction and a trailing immediate shifts that end.
+static const char *rip_sym; // symbol of the pending operand, NULL = none
+static int64_t rip_off; // symbol offset (GADDR imm + folded displacement)
+static int rip_expect_trail; // immediate bytes the emitting site knows follow the operand
+static size_t rip_start; // S->len at the start of the IR instruction
+
+// Symbol index for a GADDR label, created undefined on first use (the assembler
+// side resolves it later), exactly as asm_lea_rip_reg() does.
+static int rip_symidx(const char *label) {
+    int sidx = objfile_find_sym(cg_obj, label);
+    if (sidx < 0) sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, label[0] == '.' ? SB_LOCAL : SB_GLOBAL, ST_NOTYPE);
+    return sidx;
+}
+
+static void rip_abort(const char *why) {
+    fprintf(stderr, "ir_x86: internal error: RIP-relative operand: %s\n", why);
+    abort();
+}
+
+// Attach the relocation of the RIP operand emitted by one IR instruction (count0 =
+// x86_rip_count before it). Any inconsistency aborts rather than risking a silently
+// wrong address.
+static void rip_finish(unsigned count0) {
+    unsigned n = x86_rip_count - count0;
+    if (!rip_sym) {
+        if (n) rip_abort("unaccounted rip operand");
+        return;
+    }
+    if (n != 1) rip_abort("operand count != 1");
+    int trail = x86_rip_trail;
+    if (trail != rip_expect_trail) rip_abort("trailing immediate size mismatch");
+    size_t pos = x86_rip_disp_pos;
+    if (pos < rip_start || pos + 4 + (size_t)trail > S->len) rip_abort("disp outside instruction");
+    if (S->data[pos] | S->data[pos + 1] | S->data[pos + 2] | S->data[pos + 3]) rip_abort("disp32 not zero");
+    objfile_add_reloc(cg_obj, SEC_TEXT, pos, rip_symidx(rip_sym), R_X86_64_PC32, rip_off - (4 + trail));
+    rip_sym = NULL;
+    rip_expect_trail = 0;
+}
+
+// lea/mov-from-GOT below use their own fixed-offset relocation; they must stay
+// invisible to the bookkeeping of a folded operand in the same IR instruction.
+typedef struct {
+    size_t pos;
+    int trail;
+    unsigned cnt;
+} RipSave;
+static RipSave rip_save(void) { return (RipSave){x86_rip_disp_pos, x86_rip_trail, x86_rip_count}; }
+static void rip_restore(RipSave s) {
+    x86_rip_disp_pos = s.pos;
+    x86_rip_trail = s.trail;
+    x86_rip_count = s.cnt;
+}
+
 // lea r, label(%rip) with the same relocation asm_lea_rip_reg() records (that
 // helper takes a codegen virtual register index, not a physical register).
 static void lea_rip(X86Reg r, const char *label) {
+    RipSave sv = rip_save();
     size_t off = S->len;
     X86Mem m = {X86_RIP, X86_NOREG, 1, 0, 0};
     x86_lea(S, 8, r, m);
-    int sidx = objfile_find_sym(cg_obj, label);
-    if (sidx < 0) sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, label[0] == '.' ? SB_LOCAL : SB_GLOBAL, ST_NOTYPE);
-    objfile_add_reloc(cg_obj, SEC_TEXT, off + 3, sidx, R_X86_64_PC32, -4);
+    objfile_add_reloc(cg_obj, SEC_TEXT, off + 3, rip_symidx(label), R_X86_64_PC32, -4);
+    rip_restore(sv);
 }
 
 // mov r, label@GOTPCREL(%rip): the address of an extern/weak/-fPIC symbol.
 static void got_rip(X86Reg r, const char *label) {
+    RipSave sv = rip_save();
     size_t off = S->len;
     X86Mem m = {X86_RIP, X86_NOREG, 1, 0, 0};
     x86_mov_rm(S, 8, r, m);
     int sidx = objfile_find_sym(cg_obj, label);
     if (sidx < 0) sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
     objfile_add_reloc(cg_obj, SEC_TEXT, off + 3, sidx, R_X86_64_GOTPCREL, -4);
+    rip_restore(sv);
 }
 
 static void mat_g(int v, X86Reg r) {
@@ -1801,7 +1883,16 @@ static void emit_mul_imm(IRInstr *i, int a, int64_t imm) {
     fin_g(i->id, rd);
 }
 
-static X86Mem mem_of(int a, int b, int scale, int64_t disp, int kind, X86Reg tb, X86Reg ti) {
+// Memory operand [a + b*scale + disp]; kind 1 = rbp-based frame slot (a unused); kind 2 =
+// RIP-relative [rip + sym + disp] (a/b unused, symbol carried in `sym`): the relocation
+// is attached by rip_finish() after the instruction is encoded.
+static X86Mem mem_of(int a, int b, int scale, int64_t disp, int kind, const char *sym, X86Reg tb, X86Reg ti) {
+    if (kind == 2) {
+        if (rip_sym || !sym || b != IR_NONE) rip_abort("bad folded rip address");
+        rip_sym = sym;
+        rip_off = disp;
+        return (X86Mem){X86_RIP, X86_NOREG, 1, 0, 0};
+    }
     X86Reg base = kind == 1 ? X86_RBP : use_g(a, tb);
     X86Reg idx = b != IR_NONE ? use_g(b, ti) : X86_NOREG;
     return x86_mem_idx(base, idx, scale, disp);
@@ -1810,7 +1901,7 @@ static X86Mem mem_of(int a, int b, int scale, int64_t disp, int kind, X86Reg tb,
 static void emit_alu_rm(IRInstr *i) {
     const int sz = tsz(i->type), id = i->id;
     X86Reg rd = def_g(id);
-    X86Mem m = mem_of(i->b, i->c, i->scale, i->imm, i->aux, R_S1, R_S0);
+    X86Mem m = mem_of(i->b, i->c, i->scale, i->imm, i->aux, i->sym, R_S1, R_S0);
     // A scratch index forces the destination out of rax (dst spilled): fold the address.
     if (rd == R_S0 && m.index == R_S0) {
         x86_lea(S, 8, R_S1, m);
@@ -2002,10 +2093,11 @@ static int emit_icmp(int a, int b, int cc) {
 static int emit_icmp_m(const IRInstr *e, int form) {
     int v = form == 1 ? e->a : e->b; // the non-memory operand
     int sz = tsz(V(v)->type);
-    X86Mem m = form == 1 ? mem_of(e->b, e->c, e->scale, e->imm, e->aux, R_S1, R_S0)
-                         : mem_of(e->a, e->c, e->scale, e->imm, e->aux, R_S1, R_S0);
+    X86Mem m = form == 1 ? mem_of(e->b, e->c, e->scale, e->imm, e->aux, e->sym, R_S1, R_S0)
+                         : mem_of(e->a, e->c, e->scale, e->imm, e->aux, e->sym, R_S1, R_S0);
     int64_t imm;
     if (form == 2 && imm32(v, &imm)) {
+        if (m.base == X86_RIP) rip_expect_trail = sz == 8 ? 4 : sz;
         x86_cmp_mi(S, sz, m, (int32_t)imm);
         return cc_x86[e->cc];
     }
@@ -2059,7 +2151,7 @@ static FCond emit_fcmp(int a, int b, int cc) {
 // form. cc is one of FEQ/FNE/FGT/FGE (see fold_cmp_loads): no operand swap.
 static FCond emit_fcmp_m(const IRInstr *e) {
     X86XmmReg xa = use_x(e->a, X_S0);
-    X86Mem m = mem_of(e->b, e->c, e->scale, e->imm, e->aux, R_S0, R_S1);
+    X86Mem m = mem_of(e->b, e->c, e->scale, e->imm, e->aux, e->sym, R_S0, R_S1);
     size_t off = S->len;
     if (V(e->a)->type == IRT_F32) {
         x86_movaps_rm(S, xa, m);
@@ -2106,7 +2198,7 @@ static void emit_fbin_rm(IRInstr *i) {
     static const uint8_t opc[] = {0x58, 0x5c, 0x59, 0x5e}; // FADD FSUB FMUL FDIV
     X86XmmReg rd = def_x(i->id);
     load_x(rd, i->a);
-    X86Mem m = mem_of(i->b, i->c, i->scale, i->imm, i->aux, R_S0, R_S1);
+    X86Mem m = mem_of(i->b, i->c, i->scale, i->imm, i->aux, i->sym, R_S0, R_S1);
     fp_arith_rm(i->type, opc[i->op - IR_FADD], rd, m);
     fin_x(i->id, rd);
 }
@@ -2307,7 +2399,7 @@ static void emit_conv(IRInstr *i) {
 
 // Memory operand of a LOAD/STORE; scratch registers hold spilled/remat parts.
 static X86Mem build_mem(const IRInstr *m, X86Reg tb, X86Reg ti) {
-    return mem_of(m->a, m->b, m->scale, m->imm, m->aux, tb, ti);
+    return mem_of(m->a, m->b, m->scale, m->imm, m->aux, m->sym, tb, ti);
 }
 
 static void emit_load(IRInstr *i) {
@@ -2365,6 +2457,7 @@ static void emit_store(IRInstr *i) {
                                                     : 8;
     int64_t imm;
     if (imm32(c, &imm)) {
+        if (m.base == X86_RIP) rip_expect_trail = sz == 8 ? 4 : sz;
         x86_mov_mi(S, sz, m, (int32_t)imm);
         return;
     }
@@ -2956,7 +3049,10 @@ void ir_emit_x86(Program *prog, IRFunc *f, bool emitting_local_copy) {
         for (int k = 0; k < b->nins; k++) {
             IRInstr *i = b->ins[k];
             if (i->op == IR_NOP || (!emitted(i))) continue;
+            rip_start = S->len;
+            unsigned rip_c0 = x86_rip_count;
             emit_ins(b, i, nxt);
+            rip_finish(rip_c0);
         }
     }
     cg_ir_end_fn(sym, start);
