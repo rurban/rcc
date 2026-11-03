@@ -5,10 +5,10 @@
 #include <stddef.h>
 
 __attribute__((noinline)) int ext(int x) { return x * 3 + 1; }
-__attribute__((noinline)) long extl(long x) { return x - 7; }
+__attribute__((noinline)) long long extl(long long x) { return x - 7; }
 
 int g_arr[8] = {10, 20, 30, 40, 50, 60, 70, 80};
-long g_l = 123456789012L;
+long long g_l = 123456789012LL;
 short g_s = -1234;
 unsigned char g_c = 200;
 
@@ -27,17 +27,17 @@ int r_div(int a, int b) { return a / b; }
 int r_rem(int a, int b) { return a % b; }
 unsigned r_udiv(unsigned a, unsigned b) { return a / b; }
 unsigned r_urem(unsigned a, unsigned b) { return a % b; }
-long r_lrem(long a, long b) { return a % b; }
+long long r_lrem(long long a, long long b) { return a % b; }
 int r_cmp(int a, int b) { return a < b; }
 int r_load(int i) { return g_arr[i & 7]; }
-long r_loadl(void) { return g_l; }
+long long r_loadl(void) { return g_l; }
 int r_sext16(void) { return g_s; }
 int r_zext8(void) { return g_c; }
-int r_trunc(long x) { return (int)x; }
-int r_sext32(int x) { return (long)x > 5 ? 1 : (int)(long)x; }
-long r_widen(int x) { return (long)x; }
+int r_trunc(long long x) { return (int)x; }
+int r_sext32(int x) { return (long long)x > 5 ? 1 : (int)(long long)x; }
+long long r_widen(int x) { return (long long)x; }
 int r_call(int x) { return ext(x); }
-long r_calll(long x) { return extl(x); }
+long long r_calll(long long x) { return extl(x); }
 int r_call_args(int a, int b, int c) { return ext(a + b + c); }
 
 int r_multi(int k, int a, int b) { // different producer per return path
@@ -76,15 +76,15 @@ int main(void) {
     if (r_rem(-100, 7) != -2) return 13;
     if (r_udiv(4000000000u, 7) != 571428571u) return 14;
     if (r_urem(4000000000u, 7) != 3u) return 15;
-    if (r_lrem(-123456789012L, 1000003L) != -123456789012L % 1000003L) return 16;
+    if (r_lrem(-123456789012LL, 1000003LL) != -123456789012LL % 1000003LL) return 16;
     if (r_cmp(1, 2) != 1 || r_cmp(2, 1) != 0) return 17;
     if (r_load(2) != 30 || r_load(11) != 40) return 18;
-    if (r_loadl() != 123456789012L) return 19;
+    if (r_loadl() != 123456789012LL) return 19;
     if (r_sext16() != -1234) return 20;
     if (r_zext8() != 200) return 21;
-    if (r_trunc(0x1ffffffffL) != -1) return 22;
+    if (r_trunc(0x1ffffffffLL) != -1) return 22;
     if (r_sext32(-9) != -9 || r_sext32(9) != 1) return 23;
-    if (r_widen(-5) != -5L) return 24;
+    if (r_widen(-5) != -5LL) return 24;
     if (r_call(4) != 13) return 25;
     if (r_calll(100) != 93) return 26;
     if (r_call_args(1, 2, 3) != 19) return 27;

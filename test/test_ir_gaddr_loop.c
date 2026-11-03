@@ -11,7 +11,11 @@ int ga[64], gb[64];
 long gsum;
 extern int ext_arr[16];
 int ext_arr[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+#ifdef _WIN32
+int weak_arr[16]; // PE has no weak data symbols
+#else
 __attribute__((weak)) int weak_arr[16];
+#endif
 
 __attribute__((noinline)) int bump(int x) { return x + 1; }
 
