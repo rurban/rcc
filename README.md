@@ -467,6 +467,7 @@ every `__attribute__`/`__builtin_*`/`#pragma` extension — in
     -###               dry-run (print commands, don't execute)
     -dM                dump all macro definitions (use with -E)
     -fdump-ast         dump AST to stderr for debugging
+    -fdump-ast-optimized  dump AST after optimizations
     -fexec-charset=cs  set execution character set (default UTF-8)
     -print-search-dirs print install, include and library paths
     --help

@@ -304,6 +304,7 @@ void help(void) {
            "-###                dry-run (print commands, don't execute)\n"
            "-dM                 dump all macro definitions (use with -E)\n"
            "-fdump-ast          dump AST for debugging\n"
+           "-fdump-ast-optimized  dump AST after -O optimization (for debugging)\n"
            "-fexec-charset=cs   set execution character set (default UTF-8)\n"
            "-print-search-dirs  print install, include and library paths\n"
            "-dumpmachine        print target version\n"
@@ -367,6 +368,7 @@ bool opt_dryrun = false;
 bool opt_dM = false;
 bool opt_E = false;
 bool opt_fdump_ast = false;
+bool opt_fdump_ast_opt = false;
 bool opt_g = false;
 bool opt_pie = false;
 bool opt_pic = false;
@@ -714,6 +716,8 @@ int main(int argc, char **argv) {
             opt_dM = true;
         } else if (!strcmp(argv[i], "-fdump-ast")) {
             opt_fdump_ast = true;
+        } else if (!strcmp(argv[i], "-fdump-ast-optimized")) {
+            opt_fdump_ast_opt = true;
         } else if (!strcmp(argv[i], "-g") || !strcmp(argv[i], "-g1") ||
                    !strcmp(argv[i], "-g2") || !strcmp(argv[i], "-g3") ||
                    !strcmp(argv[i], "-ggdb") || !strcmp(argv[i], "-ggdb1") ||
@@ -1406,6 +1410,8 @@ int main(int argc, char **argv) {
             if (opt_time)
                 fprintf(stderr, "  opt         %-20s: %6llu us\n", cur_path,
                         (unsigned long long)ticks_us(timer_sub(timer_end(), t0)));
+            if (opt_fdump_ast_opt)
+                dump_ast(prog);
         } else {
             // optimize() itself won't run at all here, but real GCC's
             // `__attribute__((always_inline))` forces inlining even at

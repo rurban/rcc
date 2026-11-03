@@ -358,6 +358,11 @@ B<-W> also enables dead-code-elision notices).
 
 Dump the parsed AST to stderr, for compiler debugging.
 
+=item B<-fdump-ast-optimized>
+
+Dump the AST after all -O optimizations to stderr, for optimizer
+debugging.
+
 =item B<-print-search-dirs>
 
 Print the compiler's install, include and library search paths, then
