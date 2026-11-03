@@ -5,7 +5,9 @@
 //   simplify      constant folding, algebraic rewrites, trivial-phi/copy propagation
 //   dce           mark/sweep dead code (handles dead phi cycles)
 //   gvn           dominator-tree value numbering of pure instrs
-//   memopt        load forwarding / redundant-load elimination, dead-store elimination
+//   memopt        load forwarding / redundant-load elimination over a bounded availability
+//                 dataflow (joins merge facts with phis, loop-carried cells included),
+//                 dead-store elimination
 //   sroa          scalar replacement of aggregates: non-escaping frame slots whose
 //                 accesses all decompose to constant displacements become SSA cells
 //   licm          hoist invariant pure instrs into (created) loop preheaders
@@ -2002,7 +2004,7 @@ static void acc_make(Mem *m, const IRInstr *i, Acc *o) {
     o->base = a;
     IRInstr *d = V(f, a);
     int r = m->root[a];
-    if (d->op == IR_FRAMEADDR) {
+    if (d->op == IR_FRAMEADDR && r > 0) { // r == 0: FRAMEADDR in an unreachable block, never rooted by mem_init
         o->rk = R_FRAME;
         o->slot = r - 1;
         if (idx == IR_NONE) {
@@ -2060,6 +2062,8 @@ typedef struct {
     Acc acc;
     int val; // loaded value (LOAD entry) or stored value (STORE entry)
     uint8_t mw, msign;
+    uint8_t vtype; // IRType of val: forwarding decisions never look at the value itself, so
+    // the analysis walk can run on entries whose values are not known yet
     bool is_store;
 } Ent;
 
@@ -2071,127 +2075,493 @@ static void tab_add(Ent *e, int *n, const Ent *x) {
     e[(*n)++] = *x;
 }
 
-// How a LOAD of value type/width L can be produced from stored value v of the same
-// width: 1 = v itself, 2 = TRUNC(v), 3 = *op(v) (narrow sign/zero extension), 0 = no.
-static int fwd_from_store(const IRInstr *L, const IRInstr *v, IROp *op) {
+// How a LOAD of value type/width L can be produced from a stored value of type vt and the
+// same width: 1 = v itself, 2 = TRUNC(v), 3 = *op(v) (narrow sign/zero extension), 0 = no.
+static int fwd_from_type(const IRInstr *L, IRType vt, IROp *op) {
     if (L->type != mem_type(L->mw)) return 0;
     switch (L->mw) {
-    case IRM_I64: return v->type == IRT_I64;
-    case IRM_I32: return v->type == IRT_I32 ? 1 : v->type == IRT_I64 ? 2
-                                                                     : 0;
+    case IRM_I64: return vt == IRT_I64;
+    case IRM_I32: return vt == IRT_I32 ? 1 : vt == IRT_I64 ? 2
+                                                           : 0;
     case IRM_I16:
     case IRM_I8:
-        if (v->type != IRT_I32) return 0;
+        if (vt != IRT_I32) return 0;
         *op = L->mw == IRM_I8 ? (L->msign ? IR_SEXT8 : IR_ZEXT8) : (L->msign ? IR_SEXT16 : IR_ZEXT16);
         return 3;
-    case IRM_F32: return v->type == IRT_F32;
-    default: return v->type == IRT_F64;
+    case IRM_F32: return vt == IRT_F32;
+    default: return vt == IRT_F64;
     }
 }
 
-typedef struct {
-    Ent *e;
-    int n, refs;
-} Saved;
+static int fwd_from_store(const IRInstr *L, const IRInstr *v, IROp *op) { return fwd_from_type(L, (IRType)v->type, op); }
 
-// Redundant-load elimination and store-to-load forwarding along single-predecessor
-// chains (a block with several predecessors starts with an empty table).
-static bool forward_loads(Mem *m, IRBlock **rpo, int nrpo) {
-    IRFunc *f = m->f;
-    Saved **sv = xcalloc((size_t)f->nblocks, sizeof(*sv));
-    Ent *tab = xcalloc(MEM_CAP, sizeof(*tab));
-    bool changed = false;
-    for (int bi = 0; bi < nrpo; bi++) {
-        IRBlock *b = rpo[bi];
-        int n = 0;
-        if (b->npreds == 1 && sv[b->preds[0]->id]) {
-            Saved *s = sv[b->preds[0]->id];
-            memcpy(tab, s->e, sizeof(*tab) * (size_t)s->n);
-            n = s->n;
-            if (--s->refs == 0) {
-                free(s->e);
-                free(s);
-                sv[b->preds[0]->id] = NULL;
-            }
-        }
-        bool dirty = false;
-        for (int k = 0; k < b->nins; k++) {
-            IRInstr *i = b->ins[k];
-            if (i->op == IR_LOAD) {
-                i->a = res(f, i->a);
-                i->b = res(f, i->b);
-                Acc a;
-                acc_make(m, i, &a);
-                int how = 0;
-                IROp xop = IR_NOP;
-                IRInstr *hv = NULL;
-                for (int e = n - 1; e >= 0 && !how; e--) {
-                    Ent *E = &tab[e];
-                    if (E->mw != i->mw || !acc_equal(m, &E->acc, &a)) continue;
-                    IRInstr *v = V(f, res(f, E->val));
-                    if (!E->is_store) {
-                        if (v->type == i->type && (i->mw >= IRM_I32 || E->msign == i->msign)) how = 1;
-                    } else {
-                        how = fwd_from_store(i, v, &xop);
-                    }
-                    hv = v;
-                }
-                if (how == 1) {
-                    fwd_set(f, i->id, hv->id);
-                    kill(i);
-                } else if (how >= 2) { // exact in-place rewrite of the load
-                    i->op = how == 2 ? IR_TRUNC : xop;
-                    i->a = hv->id;
-                    i->b = IR_NONE;
-                    i->imm = 0;
-                    i->mw = i->msign = 0;
-                    i->scale = 1;
+// ----------------------------- load forwarding over a bounded availability dataflow
+//
+// Each block carries a table of memory facts "address K holds value v" (Ent): a STORE adds
+// one, a LOAD that cannot be forwarded adds one, an aliasing STORE removes the facts it may
+// touch, a CALL removes everything a non-escaping frame slot does not shield. Within a
+// single-predecessor chain the table just flows on. At a join the table is the merge of the
+// predecessors' OUT tables: a fact survives when EVERY predecessor holds a fact for the same
+// address (acc_equal), width and value type; if the values differ, a PHI of the per-
+// predecessor values is created at the join and becomes the fact's value (a diamond whose
+// arms store different values, or a loop-carried accumulator: entry store vs back-edge
+// store). Merged facts are sound for every execution path by induction on path length, and
+// SSA names stay meaningful across back edges: a fact's address/value operands all
+// dominate every predecessor's end, in particular the loop entry edge, so they are
+// loop-invariant; anything defined inside the loop reaches the header only through phis.
+//
+// Loops need the facts of a back edge before they are computed, so the analysis walk
+// (no mutation, values ignored: transfer decisions use Ent.vtype only) runs
+// optimistically (a not-yet-computed predecessor does not veto) and repeats until every
+// table is stable. Any fixpoint of "IN = merge of OUT, OUT = transfer(IN)" is sound, but
+// MEM_CAP evictions make the transfer non-monotone, so convergence is demanded exactly: if
+// FLOW_ROUNDS rounds do not stabilize, joins fall back to the empty table. The rewrite walk
+// then replays the same transfer with values, creating phis (arguments of not-yet-walked
+// back-edge predecessors are filled in afterwards from their final OUT tables) and DEFERS
+// every mutation: forwards are recorded and applied at the end, so the walks never see
+// res() chains and take identical decisions. Phis nobody ends up using are removed again.
+
+#define FLOW_ROUNDS 6
+
+typedef struct {
+    IRInstr *ld;
+    int to; // replacement value (final: never itself forwarded later)
+    int how; // fwd_from_type result
+    IROp xop;
+} Fwd;
+
+typedef struct {
+    IRInstr *phi;
+    int slot; // argument index = predecessor slot of the join
+    IRBlock *pred;
+    Ent key; // the merged fact: the value is looked up in pred's final OUT table
+} PFix;
+
+typedef struct {
+    const Ent *e;
+    int n;
+    bool known; // values valid (pred already walked by the rewrite walk)
+    bool top; // analysis only: not computed yet, contributes nothing (optimistic)
+} PTab;
+
+typedef struct {
+    Mem *m;
+    IRFunc *f;
+    IRBlock **rpo;
+    int nrpo;
+    const int *pos; // 1 + RPO index, 0 = unreachable
+    bool back; // some predecessor does not precede its block in RPO (loop)
+    bool *preds_ok; // per block: every predecessor reachable
+    int n0; // f->nvals at the start: larger ids are phis created here
+    int *fw; // load id -> replacement for loads decided to vanish, else IR_NONE
+    bool record; // false during the analysis walk
+    Fwd *fl;
+    int nfl, capfl;
+    IRInstr **phis; // phis created by the rewrite walk
+    int nphis, capphis;
+    PFix *fx;
+    int nfx, capfx;
+    Ent **t1; // analysis OUT tables (values meaningless)
+    int *n1;
+    bool *done1;
+    Ent **t2; // rewrite OUT tables
+    int *n2;
+    PTab *pt;
+    const Ent **ms;
+} Fl;
+
+static void *grow_to(void *p, int n, int *cap, size_t sz) {
+    if (n < *cap) return p;
+    *cap = *cap ? *cap * 2 : 16;
+    p = realloc(p, sz * (size_t)*cap);
+    if (!p) {
+        fprintf(stderr, "rcc: out of memory\n");
+        exit(1);
+    }
+    return p;
+}
+
+static Ent *tab_dup(const Ent *t, int n) {
+    if (!n) return NULL;
+    Ent *d = xcalloc((size_t)n, sizeof *d);
+    memcpy(d, t, sizeof(*d) * (size_t)n);
+    return d;
+}
+
+// Forward target of an id already decided to vanish (stale ids live on in table values).
+static int fl_res(const Fl *s, int id) {
+    while (id >= 0 && id < s->n0 && s->fw[id] != IR_NONE) id = s->fw[id];
+    return id;
+}
+
+// A fact in t for the same address, width and value type as e.
+static const Ent *tab_match(Mem *m, const Ent *t, int n, const Ent *e) {
+    for (int j = n - 1; j >= 0; j--)
+        if (t[j].mw == e->mw && t[j].vtype == e->vtype && acc_equal(m, &t[j].acc, &e->acc)) return &t[j];
+    return NULL;
+}
+
+static bool tab_same(Mem *m, const Ent *x, int nx, const Ent *y, int ny) {
+    if (nx != ny) return false;
+    for (int k = 0; k < nx; k++)
+        if (x[k].mw != y[k].mw || x[k].vtype != y[k].vtype || x[k].is_store != y[k].is_store ||
+            (!x[k].is_store && x[k].msign != y[k].msign) || !acc_equal(m, &x[k].acc, &y[k].acc))
+            return false;
+    return true;
+}
+
+// Runs the transfer function of b over tab. The rewrite walk (s->record) additionally
+// records which loads vanish and what replaces them.
+static void walk_block(Fl *s, IRBlock *b, Ent *tab, int *np) {
+    Mem *m = s->m;
+    IRFunc *f = s->f;
+    int n = *np;
+    for (int k = 0; k < b->nins; k++) {
+        IRInstr *i = b->ins[k];
+        if (i->op == IR_LOAD) {
+            Acc a;
+            acc_make(m, i, &a);
+            int how = 0, hv = IR_NONE;
+            IROp xop = IR_NOP;
+            for (int e = n - 1; e >= 0 && !how; e--) {
+                Ent *E = &tab[e];
+                if (E->mw != i->mw || !acc_equal(m, &E->acc, &a)) continue;
+                if (!E->is_store) {
+                    if (E->vtype == i->type && (i->mw >= IRM_I32 || E->msign == i->msign)) how = 1;
                 } else {
-                    Ent x = {a, i->id, i->mw, i->msign, false};
-                    tab_add(tab, &n, &x);
-                    continue;
+                    how = fwd_from_type(i, (IRType)E->vtype, &xop);
                 }
-                changed = dirty = true;
-            } else if (i->op == IR_STORE) {
-                i->a = res(f, i->a);
-                i->b = res(f, i->b);
-                i->c = res(f, i->c);
-                Acc a;
-                acc_make(m, i, &a);
-                int w = 0;
-                for (int e = 0; e < n; e++)
-                    if (!acc_alias(m, &tab[e].acc, &a)) tab[w++] = tab[e];
-                n = w;
-                Ent x = {a, i->c, i->mw, 0, true};
-                tab_add(tab, &n, &x);
-            } else if (i->op == IR_CALL) {
-                int w = 0;
-                for (int e = 0; e < n; e++)
-                    if (acc_call_safe(m, &tab[e].acc)) tab[w++] = tab[e];
-                n = w;
+                hv = E->val;
             }
-        }
-        if (dirty) compact_block(b);
-        IRBlock *s[2];
-        int ns = ir_succs(b, s), refs = 0;
-        for (int k = 0; k < ns; k++)
-            if (s[k]->npreds == 1) refs++;
-        if (refs && n) {
-            Saved *sa = xcalloc(1, sizeof *sa);
-            sa->e = xcalloc((size_t)n, sizeof(*tab));
-            memcpy(sa->e, tab, sizeof(*tab) * (size_t)n);
-            sa->n = n;
-            sa->refs = refs;
-            sv[b->id] = sa;
+            if (!how) {
+                Ent x = {.acc = a, .val = i->id, .mw = i->mw, .msign = i->msign, .vtype = i->type, .is_store = false};
+                tab_add(tab, &n, &x);
+                continue;
+            }
+            if (!s->record) continue;
+            hv = fl_res(s, hv);
+            s->fl = grow_to(s->fl, s->nfl, &s->capfl, sizeof *s->fl);
+            s->fl[s->nfl++] = (Fwd){i, hv, how, xop};
+            if (how == 1) s->fw[i->id] = hv;
+        } else if (i->op == IR_STORE) {
+            Acc a;
+            acc_make(m, i, &a);
+            int w = 0;
+            for (int e = 0; e < n; e++)
+                if (!acc_alias(m, &tab[e].acc, &a)) tab[w++] = tab[e];
+            n = w;
+            Ent x = {.acc = a, .val = i->c, .mw = i->mw, .msign = 0, .vtype = V(f, i->c)->type, .is_store = true};
+            tab_add(tab, &n, &x);
+        } else if (i->op == IR_CALL) {
+            int w = 0;
+            for (int e = 0; e < n; e++)
+                if (acc_call_safe(m, &tab[e].acc)) tab[w++] = tab[e];
+            n = w;
         }
     }
-    for (int i = 0; i < f->nblocks; i++)
-        if (sv[i]) {
-            free(sv[i]->e);
-            free(sv[i]);
+    *np = n;
+}
+
+// Merges the predecessors' tables (pt[k] = predecessor slot k of b) into out; returns the
+// count. With phis (rewrite walk), differing values get a phi at b. Facts are kept in the
+// first available predecessor's order, which the "latest fact first" lookup relies on.
+static int merge_tabs(Fl *s, IRBlock *b, const PTab *pt, Ent *out, bool phis) {
+    Mem *m = s->m;
+    int np = b->npreds, d = -1, n = 0;
+    for (int k = 0; k < np && d < 0; k++)
+        if (!pt[k].top) d = k;
+    if (d < 0) return 0;
+    const Ent **ms = s->ms;
+    for (int j = 0; j < pt[d].n; j++) {
+        Ent e = pt[d].e[j];
+        bool load = !e.is_store, ok = true;
+        for (int k = 0; k < np && ok; k++) {
+            if (pt[k].top) continue;
+            const Ent *x = k == d ? &pt[d].e[j] : tab_match(m, pt[k].e, pt[k].n, &e);
+            if (!x) {
+                ok = false;
+                break;
+            }
+            ms[k] = x;
+            if (x->is_store || x->msign != e.msign) load = false; // load-fed only if every pred is, with one extension
         }
-    free(sv);
-    free(tab);
+        if (!ok) continue;
+        // A mix of loads/stores (or differing extensions) is still "memory holds the low
+        // mw bytes of val" for every arm, which is what a store fact says.
+        e.is_store = !load;
+        if (!load) e.msign = 0;
+        e.val = IR_NONE;
+        if (phis) {
+            int v0 = IR_NONE;
+            bool same = true, unknown = false;
+            for (int k = 0; k < np && !unknown; k++) {
+                if (!pt[k].known) {
+                    unknown = true;
+                    break;
+                }
+                int v = fl_res(s, ms[k]->val);
+                if (v0 == IR_NONE) v0 = v;
+                else if (v != v0)
+                    same = false;
+            }
+            if (!unknown && same) {
+                e.val = v0;
+            } else {
+                IRInstr *ph = ir_instr_new(s->f, IR_PHI, (IRType)e.vtype);
+                ph->aux = IR_NONE; // created after fwd_reset: keep res() chains off it
+                ph->nargs = np;
+                ph->args = xcalloc((size_t)np, sizeof(int32_t));
+                ir_block_add_phi(b, ph);
+                s->phis = grow_to(s->phis, s->nphis, &s->capphis, sizeof *s->phis);
+                s->phis[s->nphis++] = ph;
+                for (int k = 0; k < np; k++) {
+                    if (pt[k].known) {
+                        ph->args[k] = fl_res(s, ms[k]->val);
+                    } else {
+                        ph->args[k] = IR_NONE;
+                        s->fx = grow_to(s->fx, s->nfx, &s->capfx, sizeof *s->fx);
+                        s->fx[s->nfx++] = (PFix){ph, k, b->preds[k], e};
+                    }
+                }
+                e.val = ph->id;
+            }
+        }
+        out[n++] = e;
+    }
+    return n;
+}
+
+// The table b starts with. Analysis: from the analysis tables (optimistic about preds not
+// computed yet). Rewrite: from the rewrite tables of walked preds, analysis tables
+// (keys only) for the back-edge preds; `joins` false = joins start empty.
+static int flow_in(Fl *s, IRBlock *b, Ent *tab, bool rewrite, bool joins) {
+    if (b->npreds == 0) return 0;
+    if (b->npreds == 1) {
+        IRBlock *p = b->preds[0];
+        bool have = rewrite ? s->pos[p->id] && s->pos[p->id] < s->pos[b->id] : s->done1[p->id];
+        if (!have) return 0;
+        const Ent *t = rewrite ? s->t2[p->id] : s->t1[p->id];
+        int n = rewrite ? s->n2[p->id] : s->n1[p->id];
+        if (n) memcpy(tab, t, sizeof(*tab) * (size_t)n);
+        return n;
+    }
+    if (!s->preds_ok[b->id] || (rewrite && !joins)) return 0;
+    for (int k = 0; k < b->npreds; k++) {
+        IRBlock *p = b->preds[k];
+        if (rewrite && s->pos[p->id] < s->pos[b->id]) s->pt[k] = (PTab){s->t2[p->id], s->n2[p->id], true, false};
+        else
+            s->pt[k] = (PTab){s->t1[p->id], s->n1[p->id], false, !rewrite && !s->done1[p->id]};
+    }
+    return merge_tabs(s, b, s->pt, tab, rewrite);
+}
+
+// Analysis: iterate to stable tables; false = no convergence (caller keeps joins empty).
+static bool flow_analyze(Fl *s) {
+    int nb = s->f->nblocks;
+    s->t1 = xcalloc((size_t)nb, sizeof(*s->t1));
+    s->n1 = xcalloc((size_t)nb, sizeof(int));
+    s->done1 = xcalloc((size_t)nb, sizeof(bool));
+    s->record = false;
+    bool conv = false;
+    for (int round = 0; round < FLOW_ROUNDS && !conv; round++) {
+        bool ch = false;
+        for (int bi = 0; bi < s->nrpo; bi++) {
+            IRBlock *b = s->rpo[bi];
+            Ent tab[MEM_CAP];
+            int n = flow_in(s, b, tab, false, true);
+            walk_block(s, b, tab, &n);
+            if (!s->done1[b->id] || !tab_same(s->m, s->t1[b->id], s->n1[b->id], tab, n)) {
+                free(s->t1[b->id]);
+                s->t1[b->id] = tab_dup(tab, n);
+                s->n1[b->id] = n;
+                s->done1[b->id] = true;
+                ch = true;
+            }
+        }
+        conv = !ch || !s->back; // with no back edge every pred precedes its block: one round is exact
+    }
+    return conv;
+}
+
+// Created phis that were removed again sit at the tail of f->vals (ids are handed out in
+// creation order): release them so repeated memopt rounds do not grow the value table.
+static void pop_dead_phis(Fl *s) {
+    IRFunc *f = s->f;
+    while (f->nvals > s->n0 && f->vals[f->nvals - 1]->op == IR_NOP) free(f->vals[--f->nvals]);
+    s->nphis = 0;
+}
+
+// Rewrite walk: records forwards (nothing is mutated except created phis). False when a
+// back-edge phi argument cannot be found (the analysis/rewrite tables disagreed); the phis
+// are removed again and the caller retries without joins.
+static bool flow_rewrite(Fl *s, bool joins) {
+    IRFunc *f = s->f;
+    int nb = f->nblocks;
+    s->nfl = s->nphis = s->nfx = 0;
+    memset(s->fw, 0xFF, sizeof(int) * (size_t)s->n0);
+    s->record = true;
+    s->t2 = xcalloc((size_t)nb, sizeof(*s->t2));
+    s->n2 = xcalloc((size_t)nb, sizeof(int));
+    for (int bi = 0; bi < s->nrpo; bi++) {
+        IRBlock *b = s->rpo[bi];
+        Ent tab[MEM_CAP];
+        int n = flow_in(s, b, tab, true, joins);
+        walk_block(s, b, tab, &n);
+        s->t2[b->id] = tab_dup(tab, n);
+        s->n2[b->id] = n;
+    }
+    bool ok = true;
+    for (int k = 0; k < s->nfx && ok; k++) {
+        PFix *x = &s->fx[k];
+        const Ent *e = tab_match(s->m, s->t2[x->pred->id], s->n2[x->pred->id], &x->key);
+        if (!e) ok = false;
+        else
+            x->phi->args[x->slot] = fl_res(s, e->val);
+    }
+    for (int k = 0; k < nb; k++) free(s->t2[k]);
+    free(s->t2);
+    free(s->n2);
+    if (!ok) {
+        for (int k = 0; k < s->nphis; k++) {
+            IRInstr *ph = s->phis[k];
+            ir_block_remove(ph->blk, ph);
+            free(ph->args);
+            ph->args = NULL;
+            ph->nargs = 0;
+        }
+        pop_dead_phis(s);
+        s->nfl = 0;
+    }
+    return ok;
+}
+
+// Applies the recorded forwards and drops the phis nothing ended up using.
+static bool flow_commit(Fl *s) {
+    IRFunc *f = s->f;
+    bool *dirty = xcalloc((size_t)f->nblocks, sizeof(bool));
+    for (int k = 0; k < s->nfl; k++) {
+        Fwd *w = &s->fl[k];
+        IRInstr *i = w->ld;
+        if (w->how == 1) {
+            dirty[i->blk->id] = true;
+            fwd_set(f, i->id, w->to);
+            kill(i);
+        } else { // exact in-place rewrite of the load
+            i->op = w->how == 2 ? IR_TRUNC : w->xop;
+            i->a = w->to;
+            i->b = i->c = IR_NONE;
+            i->imm = 0;
+            i->mw = i->msign = 0;
+            i->scale = 1;
+        }
+    }
+    if (s->nfl) fwd_apply(f);
+    // A created phi can duplicate one the join already has (rotation leaves such phis for
+    // the same value): keep the older one. Sweep until no new duplicate shows up (a phi
+    // whose arguments were duplicates of each other's phis matches on the next sweep).
+    for (bool found = s->nfl > 0; found;) {
+        found = false;
+        for (int k = 0; k < s->nphis; k++) {
+            IRInstr *p = s->phis[k];
+            if (p->op != IR_PHI) continue;
+            IRBlock *b = p->blk;
+            for (int j = 0; j < b->nphis; j++) {
+                IRInstr *q = b->phis[j];
+                if (q->id >= p->id || q->type != p->type || q->nargs != p->nargs) continue;
+                int a = 0;
+                while (a < p->nargs && res(f, q->args[a]) == res(f, p->args[a])) a++;
+                if (a < p->nargs) continue;
+                fwd_set(f, p->id, q->id);
+                ir_block_remove(b, p);
+                free(p->args);
+                p->args = NULL;
+                p->nargs = 0;
+                found = true;
+                break;
+            }
+        }
+        if (found) fwd_apply(f);
+    }
+    for (int bi = 0; bi < f->nblocks; bi++)
+        if (dirty[bi]) compact_block(f->blocks[bi]);
+    free(dirty);
+    if (s->nphis) {
+        bool *live = xcalloc((size_t)f->nvals, sizeof(bool));
+        if (s->nfl) {
+            for (int bi = 0; bi < f->nblocks; bi++) {
+                IRBlock *b = f->blocks[bi];
+                for (int k = 0; k < b->nphis + b->nins; k++) {
+                    IRInstr *i = k < b->nphis ? b->phis[k] : b->ins[k - b->nphis];
+                    if (i->id >= s->n0) continue; // one of ours
+                    if (i->a != IR_NONE) live[i->a] = true;
+                    if (i->b != IR_NONE) live[i->b] = true;
+                    if (i->c != IR_NONE) live[i->c] = true;
+                    for (int j = 0; j < i->nargs; j++) live[i->args[j]] = true;
+                }
+            }
+            for (bool ch = true; ch;) {
+                ch = false;
+                for (int k = 0; k < s->nphis; k++) {
+                    IRInstr *ph = s->phis[k];
+                    if (ph->op != IR_PHI || !live[ph->id]) continue;
+                    for (int j = 0; j < ph->nargs; j++)
+                        if (!live[ph->args[j]]) live[ph->args[j]] = ch = true;
+                }
+            }
+        }
+        for (int k = 0; k < s->nphis; k++) {
+            IRInstr *ph = s->phis[k];
+            if (ph->op != IR_PHI || live[ph->id]) continue;
+            ir_block_remove(ph->blk, ph);
+            free(ph->args);
+            ph->args = NULL;
+            ph->nargs = 0;
+        }
+        free(live);
+        pop_dead_phis(s);
+    }
+    return s->nfl > 0;
+}
+
+// Redundant-load elimination and store-to-load forwarding (see the dataflow notes above).
+static bool forward_loads(Mem *m, IRBlock **rpo, int nrpo, const int *pos) {
+    IRFunc *f = m->f;
+    Fl s = {.m = m, .f = f, .rpo = rpo, .nrpo = nrpo, .pos = pos, .n0 = f->nvals};
+    s.preds_ok = xcalloc((size_t)f->nblocks, sizeof(bool));
+    s.fw = xcalloc((size_t)f->nvals, sizeof(int));
+    int maxp = 1;
+    bool join = false;
+    for (int bi = 0; bi < nrpo; bi++) {
+        IRBlock *b = rpo[bi];
+        bool ok = true;
+        if (b->npreds > maxp) maxp = b->npreds;
+        if (b->npreds > 1) join = true;
+        for (int k = 0; k < b->npreds; k++) {
+            int pp = pos[b->preds[k]->id];
+            if (!pp) ok = false;
+            else if (pp >= pos[b->id])
+                s.back = true;
+        }
+        s.preds_ok[b->id] = ok;
+    }
+    s.pt = xcalloc((size_t)maxp, sizeof(*s.pt));
+    s.ms = xcalloc((size_t)maxp, sizeof(*s.ms));
+    bool joins = join && flow_analyze(&s);
+    bool ok = flow_rewrite(&s, joins);
+    if (!ok) ok = flow_rewrite(&s, false);
+    bool changed = ok && flow_commit(&s);
+    if (s.t1)
+        for (int k = 0; k < f->nblocks; k++) free(s.t1[k]);
+    free(s.t1);
+    free(s.n1);
+    free(s.done1);
+    free(s.fl);
+    free(s.phis);
+    free(s.fx);
+    free(s.pt);
+    free(s.ms);
+    free(s.fw);
+    free(s.preds_ok);
     return changed;
 }
 
@@ -2323,8 +2693,15 @@ static bool memopt(IRFunc *f) {
     mem_init(&m, f);
     IRBlock **rpo = xcalloc((size_t)f->nblocks, sizeof(*rpo));
     int n = ir_rpo(f, rpo);
-    bool changed = forward_loads(&m, rpo, n);
-    if (changed) fwd_apply(f);
+    int nv0 = f->nvals;
+    int *pos = xcalloc((size_t)f->nblocks, sizeof(int));
+    for (int k = 0; k < n; k++) pos[rpo[k]->id] = k + 1; // 0 = unreachable
+    bool changed = forward_loads(&m, rpo, n, pos);
+    free(pos);
+    if (f->nvals != nv0) { // phis were created: the per-value root tables must cover them
+        mem_free(&m);
+        mem_init(&m, f);
+    }
     for (int bi = 0; bi < f->nblocks; bi++) changed |= dse_block(&m, f->blocks[bi]);
     changed |= dead_local_stores(&m);
     free(rpo);
@@ -2351,7 +2728,8 @@ static bool memopt(IRFunc *f) {
 // cannot reach it (acc_call_safe). Each cell's value is tracked as an SSA value along
 // single-predecessor chains; multi-predecessor blocks merge cell values available from
 // every processed predecessor with phis (back-edge predecessors not yet processed in
-// RPO simply contribute nothing, so loop-carried cells are not promoted). A load whose
+// RPO simply contribute nothing; memopt's forward_loads dataflow handles loop-carried cells
+// and leaves the slot's loads/stores for dead_local_stores). A load whose
 // cell has no available value on the reaching path would read unspecified bytes, so it
 // bails the whole slot: promotion is all-or-nothing. A promoted load rewrites to the
 // cell value -- directly when types match, else via the exact TRUNC / narrow-extension

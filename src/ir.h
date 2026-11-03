@@ -323,7 +323,11 @@ void ir_tailrec(IRFunc *f);
 // loop may alias it, the loop has no call or trapping divide, and the load's
 // block dominates every exit; licm hoists invariant pure instrs into (created)
 // loop preheaders. Memory (all LOAD/STORE are plain accesses): redundant loads
-// and store->load pairs are forwarded along single-predecessor chains,
+// and store->load pairs are forwarded over a bounded availability dataflow (facts
+// merge at joins when every predecessor holds one, with a phi of the per-predecessor
+// values when they differ; loops are analysed optimistically to a stable fixpoint, so
+// a loop-carried accumulator cell becomes a header phi of its entry and back-edge
+// values),
 // same-address overwritten stores and stores to never-read non-escaping frame
 // slots are removed; unused LOADs are deleted. CALLs and trapping divides are
 // never removed, merged or reordered, nor is a store moved past an aliasing access.
