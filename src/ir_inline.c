@@ -50,6 +50,60 @@ static bool all_scalar(const int32_t *cls, int n) {
     return true;
 }
 
+// Escape check for callee frame slots, same rule as ir_opt.c's memopt: a slot
+// escapes when a pointer derived from its FRAMEADDR (through ADD only) is used
+// for anything but the address operand of a LOAD/STORE (call arg, stored value,
+// phi arg, compare, return, ...). A callee with an escaping slot is not
+// inlinable: its slot addresses would have to keep working in the caller's
+// frame, and a leaked address could outlive the inlined region.
+// Only the reachable blocks (rpo) are rooted, mirroring memopt; uses in any
+// block are examined, unreachable ones just have no root to match.
+static bool frame_slots_escape(const IRFunc *c, IRBlock *const *rpo, int nr) {
+    int n = c->nvals;
+    int *root = xmalloc(sizeof(int) * (size_t)n); // 0 or slot index+1
+    memset(root, 0, sizeof(int) * (size_t)n);
+    int32_t *imm = xmalloc(sizeof(int32_t) * (size_t)n);
+    int nslots = 0;
+    for (int bi = 0; bi < nr; bi++)
+        for (int k = 0; k < rpo[bi]->nins; k++) {
+            IRInstr *i = rpo[bi]->ins[k];
+            if (i->op == IR_FRAMEADDR) {
+                int s = 0;
+                while (s < nslots && imm[s] != i->imm) s++;
+                if (s == nslots) imm[nslots++] = i->imm;
+                root[i->id] = s + 1;
+            } else if (i->op == IR_ADD) {
+                int ra = i->a != IR_NONE ? root[i->a] : 0, rb = i->b != IR_NONE ? root[i->b] : 0;
+                if (ra && !rb) root[i->id] = ra;
+                else if (!ra && rb)
+                    root[i->id] = rb;
+            }
+        }
+    bool esc = false;
+    for (int bi = 0; bi < c->nblocks && !esc; bi++) {
+        const IRBlock *b = c->blocks[bi];
+        for (int k = 0; k < b->nphis + b->nins && !esc; k++) {
+            const IRInstr *u = k < b->nphis ? b->phis[k] : b->ins[k - b->nphis];
+            for (int p = 0; p < 3 && !esc; p++) {
+                int v = p == 0 ? u->a : p == 1 ? u->b
+                                               : u->c;
+                if (v == IR_NONE || !root[v]) continue;
+                if ((u->op == IR_LOAD || u->op == IR_STORE) && p == 0) continue;
+                if (u->op == IR_ADD && root[u->id] == root[v]) continue; // further derivation, not a use
+                esc = true;
+            }
+            for (int j = 0; j < u->nargs && !esc; j++) {
+                int v = u->args[j];
+                if (!root[v]) continue;
+                esc = true; // phi arg / call arg: the address leaves the slot's loads/stores
+            }
+        }
+    }
+    free(root);
+    free(imm);
+    return esc;
+}
+
 // Instrs that cost nothing to duplicate: the backend rematerializes them.
 static bool is_free_op(int op) {
     return op == IR_PARAM || op == IR_ICONST || op == IR_FCONST || op == IR_UNDEF || op == IR_NOP;
@@ -79,8 +133,6 @@ static bool inlinable(const IRFunc *caller, const IRInstr *call, IRFunc *callee,
         total += b->nphis;
         for (int k = 0; k < b->nins; k++) {
             const IRInstr *o = b->ins[k];
-            // Frame slots would need rebasing into the caller's frame.
-            if (o->op == IR_FRAMEADDR) return false;
             if (o->op == IR_NOP) continue;
             total++;
             if (o->op == IR_PARAM && (o->imm < 0 || o->imm >= callee->nparams || o->type != (uint8_t)callee->param_types[o->imm]))
@@ -97,9 +149,47 @@ static bool inlinable(const IRFunc *caller, const IRInstr *call, IRFunc *callee,
     }
     // A callee that never returns would leave the continuation without a result.
     if (nrets == 0) return false;
+    // Frame slots are inlinable only when no slot address escapes: see splice.
+    if (frame_slots_escape(callee, rpo, n)) return false;
     *nr = n;
     *added = total;
     return true;
+}
+
+// Frame-slot rebasing. A FRAMEADDR imm o addresses bytes [rbp-o, rbp-o+sz):
+// parser.c assigns LVar.offset = align_to(prev_offset + size, align), so an
+// offset is the distance below rbp at which the object's storage ENDS, objects
+// are disjoint (each starts no higher than the previous one's end), and an
+// object's size is <= its offset. frame_layout() in ir_x86.c sizes the locals
+// area from the max FRAMEADDR imm (lbytes) and places aggregate temps (paggoff,
+// ctemp) at >= align8(lbytes), so any imm below the post-splice max stays
+// disjoint from the aggregate-temp and spill ranges, which sit below.
+//
+// Rebase rule: fresh = base + callee_imm with base = align8(max FRAMEADDR imm
+// already present in the caller, 0 if none). The uniform shift preserves the
+// callee's internal layout (relative offsets and disjointness are unchanged),
+// and fresh >= base + size keeps the slot's whole storage strictly below
+// rbp-base <= rbp-caller_max, i.e. below every existing caller slot (whose
+// deepest byte is rbp-caller_max). Since the rebased imms are plain FRAMEADDR
+// imms of the caller, frame_layout automatically reserves the space and keeps
+// the agg-temp area above it; splicing later callees re-scans the caller, so
+// every inline site gets its own disjoint copies. Distinct callee imms map to
+// distinct fresh imms; one callee imm always maps to one fresh imm (same slot
+// in the callee -> same slot in this clone).
+//
+// This is sound because the callee's slot storage exists in the caller's frame
+// during the inlined execution exactly as it would in the callee's own frame;
+// frame addresses of locals are not observably distinct across the two
+// compilations for valid C (comparing addresses of objects from different
+// frames is unspecified), and a non-escaping address never outlives the
+// inlined region. Loads/stores keep their displacements relative to the
+// rebased address, so nothing else in the clone changes.
+static int32_t frame_rebase(int32_t *map_imm, int32_t *map_fresh, int *n, int32_t base, int32_t imm) {
+    for (int k = 0; k < *n; k++)
+        if (map_imm[k] == imm) return map_fresh[k];
+    map_imm[*n] = imm;
+    map_fresh[*n] = base + imm;
+    return map_fresh[(*n)++];
 }
 
 // Clones the callee body into `caller` in place of `call`; see the file comment.
@@ -108,6 +198,17 @@ static void splice(IRFunc *caller, IRInstr *call, const IRFunc *callee, IRBlock 
     const IRType rt = (IRType)call->type;
     const int call_id = call->id;
     const int line = call->line;
+
+    // Rebase callee frame slots above the caller's own (see frame_rebase).
+    int caller_max = 0;
+    for (int bi = 0; bi < caller->nblocks; bi++)
+        for (int k = 0; k < caller->blocks[bi]->nins; k++) {
+            IRInstr *i = caller->blocks[bi]->ins[k];
+            if (i->op == IR_FRAMEADDR && i->imm > caller_max) caller_max = i->imm;
+        }
+    const int32_t frame_base = (int32_t)((caller_max + 7) & ~7);
+    int32_t fmap_imm[128], fmap_fresh[128]; // <= ~60 FRAMEADDRs fit the cost limit; 128 is generous headroom
+    int nfmap = 0;
 
     // Split: everything after the call (including the terminator) moves to `cont`.
     int pos = 0;
@@ -174,6 +275,8 @@ static void splice(IRFunc *caller, IRInstr *call, const IRFunc *callee, IRBlock 
                 ni->args = NULL;
                 ni->arg_class = NULL;
                 ni->nargs = 0;
+                if (o->op == IR_FRAMEADDR) // rebase the slot into the caller's frame
+                    ni->imm = frame_rebase(fmap_imm, fmap_fresh, &nfmap, frame_base, o->imm);
                 if (o->op != IR_PHI && o->nargs) {
                     ni->args = dup_i32(o->args, o->nargs);
                     ni->nargs = o->nargs;

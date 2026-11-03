@@ -85,19 +85,8 @@
      (Bounce 107->56ms, CD ~1.0x, Towers 54->31ms via tailrec).
      Remaining rejections: bitfields, inline asm, atomics, volatile,
      complex/decimal/int128/long double, labeled loops (C2Y).
-  3.1 NEXT (performance, priority order):
-     a. SROA: scalar replacement of non-escaping structs/arrays. memopt's
-        escape analysis already proves which frame slots never escape;
-        promote their fields to SSA values (kill FRAMEADDR + load/store
-        pairs). AWFY Richards (2.3x vs gcc) and Bounce (2.7x) are
-        call/allocation-bound; this is their unlock. Re-profile Havlak
-        (1.08x) afterwards.
-     b. Inline callees with frame slots: rebase the callee's FRAMEADDR
-        offsets into the caller's frame at splice time (assign fresh
-        offsets above the caller's current max; offsets are only compared
-        within a function, and the backend sizes the locals area from the
-        max surviving imm, so rebasing is purely local to the clone).
-        Unlocks inlining of functions with small stack arrays/locals.
+  3.1 DONE a (SROA) and b (frame-slot inlining). NEXT (performance, priority
+     order):
      c. Cross-join memory dataflow: replace the dominator-tree
         available-memory walk with a real dataflow analysis so values flow
         through back-edges (loop-carried store->load) and diamond joins.

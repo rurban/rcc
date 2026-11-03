@@ -310,7 +310,7 @@ void ir_tailrec(IRFunc *f);
 // Scalar fixpoint: constant folding, algebraic simplification, copy/phi
 // simplification, DCE, unreachable-block removal, branch folding (incl. branches
 // on values a dominating edge already decided), empty-block threading, block
-// merging, dominator-tree GVN of pure instrs, and memopt (below).
+// merging, dominator-tree GVN of pure instrs, and memopt + sroa (below).
 // Loop passes (after the fixpoint; loops from dominance back edges, irreducible
 // loops skipped): loop rotation turns a header-tested loop into a guarded
 // do-while (the header's test is copied into the preheader; SSA uses of header
@@ -327,7 +327,16 @@ void ir_tailrec(IRFunc *f);
 // same-address overwritten stores and stores to never-read non-escaping frame
 // slots are removed; unused LOADs are deleted. CALLs and trapping divides are
 // never removed, merged or reordered, nor is a store moved past an aliasing access.
-// Must preserve exact C-visible semantics (incl. wrap, trap-capable divides).
+// sroa (same fixpoint, after memopt): a frame slot whose address never escapes and
+// whose every access decomposes to that root plus a constant displacement is promoted
+// to per-displacement SSA cells, provided the cells are pairwise disjoint byte
+// intervals (any overlap -- differing widths over the same bytes, or equal-width
+// intervals straddling each other -- keeps the slot in memory); loads rewrite to the
+// cell value and stores vanish, so the slot's FRAMEADDR goes dead and the backend
+// drops the slot.
+// Cells merge at multi-predecessor joins with phis; a load with no stored value on its
+// reaching path bails the slot (all-or-nothing per slot). Must preserve exact C-visible
+// semantics (incl. wrap, trap-capable divides).
 // Output block ids are dense and loop_depth is refreshed.
 void ir_opt(IRFunc *f);
 

@@ -6,6 +6,8 @@
 //   dce           mark/sweep dead code (handles dead phi cycles)
 //   gvn           dominator-tree value numbering of pure instrs
 //   memopt        load forwarding / redundant-load elimination, dead-store elimination
+//   sroa          scalar replacement of aggregates: non-escaping frame slots whose
+//                 accesses all decompose to constant displacements become SSA cells
 //   licm          hoist invariant pure instrs into (created) loop preheaders
 //
 // Semantics preserved exactly: I32 values stay sign-extended in imm, shifts only fold
@@ -2321,6 +2323,331 @@ static bool memopt(IRFunc *f) {
     return changed;
 }
 
+// ---------------------------------------------------- scalar replacement of aggregates
+//
+// sroa promotes a non-escaping frame slot into independent SSA "cells" (byte intervals
+// addressed at constant displacements from the slot's FRAMEADDR) when that is sound:
+//  - the slot's address must not escape (mem_init's analysis: a pointer derived from its
+//    FRAMEADDR through ADD counts only as a LOAD/STORE address operand);
+//  - every LOAD/STORE touching the slot must decompose (acc_make) to (this slot, a
+//    constant displacement); a variable-index or otherwise undecomposable access bails
+//    the slot -- no partial promotion;
+//  - two cells whose byte intervals overlap at all bail the slot -- that covers
+//    differing widths over the same bytes (union-style punning) AND the subtler
+//    equal-width case of intervals straddling each other (4B at +0 vs 4B at +2), which
+//    no single SSA value per displacement can reproduce. Per the rule, each cell then
+//    has exactly one width.
+// This is sound because for a non-escaping slot those accesses are the ONLY ones that
+// can ever observe or mutate it: unknown pointers cannot alias it (acc_alias) and calls
+// cannot reach it (acc_call_safe). Each cell's value is tracked as an SSA value along
+// single-predecessor chains; multi-predecessor blocks merge cell values available from
+// every processed predecessor with phis (back-edge predecessors not yet processed in
+// RPO simply contribute nothing, so loop-carried cells are not promoted). A load whose
+// cell has no available value on the reaching path would read unspecified bytes, so it
+// bails the whole slot: promotion is all-or-nothing. A promoted load rewrites to the
+// cell value -- directly when types match, else via the exact TRUNC / narrow-extension
+// conversions memopt's fwd_from_store uses; a promoted store vanishes. The FRAMEADDR and
+// its ADD chain lose their uses and DCE removes them, so the backend stops allocating
+// the slot (it sizes locals from surviving FRAMEADDRs).
+
+typedef struct {
+    int64_t disp;
+    int width;
+    IRInstr *i; // the LOAD/STORE
+    bool is_store;
+} SAcc;
+
+typedef struct {
+    int64_t disp;
+    int val; // SSA value id the cell currently holds
+} SEnt;
+
+typedef struct {
+    SEnt *e;
+    int n, cap;
+} SMap; // disp -> value, small (cells per slot)
+
+typedef struct {
+    IRInstr *i; // the LOAD to rewrite
+    int v; // cell value
+    int how; // 1 = replace by v, 2 = TRUNC(v), 3 = narrow extension xop
+    IROp xop;
+} SLd;
+
+static int smap_find(const SMap *s, int64_t disp) {
+    for (int k = 0; k < s->n; k++)
+        if (s->e[k].disp == disp) return k;
+    return -1;
+}
+
+static void smap_put(SMap *s, int64_t disp, int val) {
+    int k = smap_find(s, disp);
+    if (k >= 0) {
+        s->e[k].val = val;
+        return;
+    }
+    if (s->n == s->cap) {
+        s->cap = s->cap ? s->cap * 2 : 8;
+        s->e = realloc(s->e, sizeof(*s->e) * (size_t)s->cap);
+        if (!s->e) {
+            fprintf(stderr, "rcc: out of memory\n");
+            exit(1);
+        }
+    }
+    s->e[s->n].disp = disp;
+    s->e[s->n].val = val;
+    s->n++;
+}
+
+static bool sroa_slot(IRFunc *f, Mem *m, IRBlock **rpo, const int *pos, int nrpo, int slot) {
+    if (m->slot_esc[slot]) return false;
+    // Phase 1: collect this slot's accesses in reachable blocks; any access that does
+    // not decompose to (slot, constant disp) bails the slot.
+    SAcc *accs = NULL;
+    int nacc = 0, acccap = 0;
+    bool bail = false;
+    for (int bi = 0; bi < nrpo && !bail; bi++) {
+        IRBlock *b = rpo[bi];
+        for (int k = 0; k < b->nins && !bail; k++) {
+            IRInstr *i = b->ins[k];
+            if (i->op != IR_LOAD && i->op != IR_STORE) continue;
+            i->a = res(f, i->a);
+            i->b = res(f, i->b);
+            if (i->op == IR_STORE) i->c = res(f, i->c);
+            Acc a;
+            acc_make(m, i, &a);
+            if (a.rk != R_FRAME || a.slot != slot) continue;
+            if (!a.cst) { // variable index or undecomposable address
+                bail = true;
+                break;
+            }
+            if (nacc == acccap) {
+                if (acccap >= 512) { // keep the pass cheap on pathological functions
+                    bail = true;
+                    break;
+                }
+                acccap = acccap ? acccap * 2 : 16;
+                accs = realloc(accs, sizeof(*accs) * (size_t)acccap);
+                if (!accs) {
+                    fprintf(stderr, "rcc: out of memory\n");
+                    exit(1);
+                }
+            }
+            accs[nacc].disp = a.disp;
+            accs[nacc].width = a.size;
+            accs[nacc].i = i;
+            accs[nacc].is_store = i->op == IR_STORE;
+            nacc++;
+        }
+    }
+    if (bail || !nacc) {
+        free(accs);
+        return false;
+    }
+    // Cells must be pairwise disjoint byte intervals: two accesses whose intervals
+    // overlap at all (same displacement with differing widths, or -- the easy trap --
+    // equal-width intervals straddling each other, e.g. a 4B access at +0 and another
+    // at +2) describe memory no single SSA value per displacement can reproduce, so
+    // the slot stays in memory. Same displacement + same width is one cell: fine.
+    for (int x = 0; x < nacc && !bail; x++)
+        for (int y = x + 1; y < nacc; y++) {
+            if (accs[x].disp == accs[y].disp && accs[x].width == accs[y].width) continue; // one cell
+            if (overlap(accs[x].disp, accs[x].width, accs[y].disp, accs[y].width)) {
+                bail = true;
+                break;
+            }
+        }
+    free(accs);
+    if (bail) return false;
+    // Phase 2: dataflow walk recording the rewrites; bail discards everything.
+    SMap *st = xcalloc((size_t)f->nblocks, sizeof(*st)); // exit state per block
+    SLd *lds = NULL;
+    int nld = 0, ldcap = 0;
+    IRInstr **kills = NULL; // stores to drop
+    int nkill = 0, killcap = 0;
+    IRInstr **newphis = NULL; // phis created by the walk (removed if the slot bails)
+    int nphi = 0, phicap = 0;
+    IRBlock **dirty = NULL;
+    int ndirty = 0, dirtycap = 0;
+    for (int bi = 0; bi < nrpo && !bail; bi++) {
+        IRBlock *b = rpo[bi];
+        SMap in = {0};
+        if (b->npreds == 1) {
+            IRBlock *p = b->preds[0];
+            if (pos[p->id] && pos[p->id] - 1 < bi && st[p->id].n) {
+                in.e = xcalloc((size_t)st[p->id].n, sizeof(*in.e));
+                memcpy(in.e, st[p->id].e, sizeof(*in.e) * (size_t)st[p->id].n);
+                in.n = in.cap = st[p->id].n;
+            }
+        } else if (b->npreds > 1) {
+            // Merge: a cell present in every processed predecessor becomes a phi.
+            // Predecessors processed later in RPO (back edges, irreducible loops)
+            // block the merge by contributing nothing.
+            IRBlock *p0 = b->preds[0];
+            if (pos[p0->id] && pos[p0->id] - 1 < bi) {
+                SMap *s0 = &st[p0->id];
+                for (int e = 0; e < s0->n && !bail; e++) {
+                    int64_t disp = s0->e[e].disp;
+                    int args[64];
+                    bool all = b->npreds <= (int)(sizeof args / sizeof *args);
+                    if (!all) break;
+                    args[0] = s0->e[e].val;
+                    for (int k = 1; k < b->npreds && all; k++) {
+                        IRBlock *p = b->preds[k];
+                        if (!pos[p->id] || pos[p->id] - 1 >= bi) {
+                            all = false;
+                            break;
+                        }
+                        int j = smap_find(&st[p->id], disp);
+                        if (j < 0) {
+                            all = false;
+                            break;
+                        }
+                        args[k] = st[p->id].e[j].val;
+                    }
+                    if (!all) continue;
+                    IRType t = V(f, args[0])->type;
+                    for (int k = 1; k < b->npreds; k++)
+                        if (V(f, args[k])->type != t) {
+                            bail = true;
+                            break;
+                        }
+                    if (bail) break;
+                    IRInstr *ph = ir_instr_new(f, IR_PHI, t);
+                    ph->aux = IR_NONE; // created after fwd_reset: keep res() chains off it
+                    ph->nargs = b->npreds;
+                    ph->args = xcalloc((size_t)b->npreds, sizeof(int32_t));
+                    for (int k = 0; k < b->npreds; k++) ph->args[k] = args[k];
+                    ir_block_add_phi(b, ph);
+                    if (nphi == phicap) {
+                        phicap = phicap ? phicap * 2 : 8;
+                        newphis = realloc(newphis, sizeof(*newphis) * (size_t)phicap);
+                        if (!newphis) {
+                            fprintf(stderr, "rcc: out of memory\n");
+                            exit(1);
+                        }
+                    }
+                    newphis[nphi++] = ph;
+                    smap_put(&in, disp, ph->id);
+                }
+            }
+        }
+        for (int k = 0; k < b->nins && !bail; k++) {
+            IRInstr *i = b->ins[k];
+            if (i->op != IR_LOAD && i->op != IR_STORE) continue;
+            Acc a;
+            acc_make(m, i, &a);
+            if (a.rk != R_FRAME || a.slot != slot) continue;
+            int j = smap_find(&in, a.disp);
+            if (i->op == IR_STORE) {
+                smap_put(&in, a.disp, i->c);
+                if (nkill == killcap) {
+                    killcap = killcap ? killcap * 2 : 16;
+                    kills = realloc(kills, sizeof(*kills) * (size_t)killcap);
+                    if (!kills) {
+                        fprintf(stderr, "rcc: out of memory\n");
+                        exit(1);
+                    }
+                }
+                kills[nkill++] = i;
+            } else {
+                if (j < 0) { // would read bytes no store produced: keep the slot in memory
+                    bail = true;
+                    break;
+                }
+                IROp xop = IR_NOP;
+                int how = fwd_from_store(i, V(f, in.e[j].val), &xop);
+                if (!how) {
+                    bail = true;
+                    break;
+                }
+                if (nld == ldcap) {
+                    ldcap = ldcap ? ldcap * 2 : 16;
+                    lds = realloc(lds, sizeof(*lds) * (size_t)ldcap);
+                    if (!lds) {
+                        fprintf(stderr, "rcc: out of memory\n");
+                        exit(1);
+                    }
+                }
+                lds[nld].i = i;
+                lds[nld].v = in.e[j].val;
+                lds[nld].how = how;
+                lds[nld].xop = xop;
+                nld++;
+            }
+        }
+        st[b->id] = in; // exit state for single-pred successors
+        if (ndirty == dirtycap) { // remember blocks with recorded rewrites
+            dirtycap = dirtycap ? dirtycap * 2 : 8;
+            dirty = realloc(dirty, sizeof(*dirty) * (size_t)dirtycap);
+            if (!dirty) {
+                fprintf(stderr, "rcc: out of memory\n");
+                exit(1);
+            }
+        }
+        dirty[ndirty++] = b;
+    }
+    if (bail) {
+        for (int k = 0; k < nphi; k++) ir_block_remove(newphis[k]->blk, newphis[k]);
+        for (int k = 0; k < f->nblocks; k++) free(st[k].e);
+        free(st);
+        free(lds);
+        free(kills);
+        free(newphis);
+        free(dirty);
+        return false;
+    }
+    // Apply: loads become the cell value (or its exact conversion), stores vanish.
+    for (int k = 0; k < nld; k++) {
+        IRInstr *i = lds[k].i;
+        if (lds[k].how == 1) {
+            fwd_set(f, i->id, lds[k].v);
+            kill(i);
+        } else { // in-place rewrite; the load's id and result type stay
+            i->op = lds[k].how == 2 ? IR_TRUNC : lds[k].xop;
+            i->a = lds[k].v;
+            i->b = IR_NONE;
+            i->c = IR_NONE;
+            i->imm = 0;
+            i->mw = i->msign = 0;
+            i->scale = 1;
+        }
+    }
+    for (int k = 0; k < nkill; k++) kill(kills[k]);
+    fwd_apply(f);
+    for (int k = 0; k < ndirty; k++) compact_block(dirty[k]);
+    for (int k = 0; k < f->nblocks; k++) free(st[k].e);
+    free(st);
+    free(lds);
+    free(kills);
+    free(newphis);
+    free(dirty);
+    return true;
+}
+
+static bool sroa(IRFunc *f) {
+    bool any = false;
+    for (int bi = 0; bi < f->nblocks && !any; bi++)
+        for (int k = 0; k < f->blocks[bi]->nins && !any; k++) {
+            IROp op = (IROp)f->blocks[bi]->ins[k]->op;
+            any = op == IR_LOAD || op == IR_STORE;
+        }
+    if (!any) return false;
+    fwd_reset(f);
+    Mem m;
+    mem_init(&m, f);
+    IRBlock **rpo = xcalloc((size_t)f->nblocks, sizeof(*rpo));
+    int n = ir_rpo(f, rpo);
+    int *pos = xcalloc((size_t)f->nblocks, sizeof(int));
+    for (int k = 0; k < n; k++) pos[rpo[k]->id] = k + 1; // 0 = unreachable in RPO
+    bool changed = false;
+    for (int slot = 0; slot < m.nslots; slot++) changed |= sroa_slot(f, &m, rpo, pos, n, slot);
+    free(pos);
+    free(rpo);
+    mem_free(&m);
+    return changed;
+}
+
 // ------------------------------------------------------------------ loop passes
 //
 //   loop_rotate   guard + do-while: the header's exit test is copied into the
@@ -3195,6 +3522,7 @@ static void scalar_opts(IRFunc *f) {
         ch |= gvn(f);
         ch |= fold_known_branches(f);
         ch |= memopt(f);
+        ch |= sroa(f);
         if (!ch) break;
     }
     dce(f);
