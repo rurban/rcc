@@ -189,11 +189,12 @@ static void rex_for_size(SecBuf *s, int size, X86Reg reg, X86Reg rm) {
         // though their index isn't > RDI: without a REX prefix, that same
         // index instead selects one of the legacy high-byte registers
         // (ah/bh/ch/dh) — a completely different physical register that
-        // just happens to share the same 3-bit ModRM encoding.
-        bool need_rex = reg >= X86_R8 || rm >= X86_R8 ||
-            (size == 1 && ((reg >= X86_RSP && reg <= X86_RDI) || (rm >= X86_RSP && rm <= X86_RDI)));
-        if (need_rex)
+        // just happens to share the same 3-bit ModRM encoding. maybe_rex()
+        // alone can't emit that (it gates on > RDI), so emit a plain REX.
+        if (reg >= X86_R8 || rm >= X86_R8)
             maybe_rex(s, 0, reg, 0, rm);
+        else if (size == 1 && ((reg >= X86_RSP && reg <= X86_RDI) || (rm >= X86_RSP && rm <= X86_RDI)))
+            emit1(s, rex(0, 0, 0, 0)); // spl/bpl/sil/dil: plain REX prefix
     }
 }
 
@@ -346,7 +347,11 @@ void x86_xor_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
 }
 void x86_movsx(SecBuf *s, int dst_sz, int src_sz, X86Reg dst, X86Reg src) {
     if (dst_sz == 4 && src_sz == 1) {
-        maybe_rex(s, 0, dst, 0, src);
+        // byte src: RSP..RDI (sil/dil/bpl/spl) need a REX to disambiguate
+        // from the legacy high bytes (dh/...); maybe_rex() alone misses it.
+        int r = dst > X86_RDI, b = src > X86_RDI;
+        if (r || b || (src >= X86_RSP && src <= X86_RDI))
+            emit1(s, rex(0, r, 0, b));
         emit3(s, 0x0f, 0xbe, modrm(3, dst, src));
     } else if (dst_sz == 4 && src_sz == 2) {
         maybe_rex(s, 0, dst, 0, src);
@@ -369,7 +374,11 @@ void x86_movsx(SecBuf *s, int dst_sz, int src_sz, X86Reg dst, X86Reg src) {
 
 void x86_movzx(SecBuf *s, int dst_sz, int src_sz, X86Reg dst, X86Reg src) {
     if (dst_sz == 4 && src_sz == 1) {
-        maybe_rex(s, 0, dst, 0, src);
+        // byte src: RSP..RDI (sil/dil/bpl/spl) need a REX to disambiguate
+        // from the legacy high bytes (dh/...); maybe_rex() alone misses it.
+        int r = dst > X86_RDI, b = src > X86_RDI;
+        if (r || b || (src >= X86_RSP && src <= X86_RDI))
+            emit1(s, rex(0, r, 0, b));
         emit3(s, 0x0f, 0xb6, modrm(3, dst, src));
     } else if (dst_sz == 4 && src_sz == 2) {
         maybe_rex(s, 0, dst, 0, src);
