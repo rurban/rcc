@@ -2,15 +2,15 @@
 
 **Platform**: Linux x86_64 (musl-built rcc)
 
-Generated: September 16 2026 08:19
+Generated: November 03 2026 20:04
 
 ## Overall Summary
 
-- **Total**: 4715
-- **Passed**: 4339
+- **Total**: 4736
+- **Passed**: 4360
 - **Failed**: 2
 - **Skipped**: 368
-- **Overall Pass Rate**: 100%
+- **Overall Pass Rate**: 99%
 
 ## TCC Compatibility Tests
 
@@ -21,10 +21,10 @@ Generated: September 16 2026 08:19
 
 ## RCC Unit Tests
 
-- **Total**: 399
-- **Passed**: 398
+- **Total**: 420
+- **Passed**: 419
 - **Failed**: 0
-- **Pass Rate**: 100%
+- **Pass Rate**: 99%
 
 ## c-testsuite
 
@@ -48,4 +48,4 @@ Generated: September 16 2026 08:19
 - **Skipped**: 368
 - **Fail Compile**: 1
 - **Dg-error Tests**: 36/37 passed, 1 failed
-- **Pass Rate (excl. skip)**: 100%
+- **Pass Rate (excl. skip)**: 99%

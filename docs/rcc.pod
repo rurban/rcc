@@ -280,13 +280,26 @@ Everything B<-O1> does, plus B<-finline> (tiny C<return EXPR;>
 function inlining), B<-funroll> (constant-trip-count C<for>-loop
 unrolling) and, on x86-64 ELF targets, the SSA IR backend: every function
 made of scalar integer/pointer/C<float>/C<double> code (loops, branches,
-calls, array and struct-field access) is lowered to an SSA IR, optimized
-(constant folding, value numbering, loop-invariant code motion), and compiled
-with linear-scan register allocation and scaled-index addressing. Functions
-using anything else (bitfields, C<switch>, C<goto>, aggregates by value,
-C<long double>, variadic definitions, VLAs, cleanups, C<volatile>, or any
+calls, C<switch>, C<goto>, statement expressions, struct/union/array
+access) is lowered to an SSA IR, optimized, and compiled with linear-scan
+register allocation and scaled-index addressing. The optimizer: constant
+folding and propagation, GVN (incl. redundant-load elimination),
+loop-invariant code motion, dead code and dead store elimination,
+store-to-load forwarding and non-escaping frame-slot analysis, inlining
+of small same-file callees (multi-block, multi-return; honours
+C<__attribute__((noinline))>), tail recursion to loops, loop rotation,
+induction-variable widening (wrap-freedom proven, no UB assumptions),
+scaled strength reduction (stride 12/24/40 struct arrays), and
+invariant-load hoisting. Calls to noreturn functions (C<abort>,
+C<exit>, C<__assert_fail>, C<__attribute__((noreturn))>) end in
+C<__builtin_unreachable()>, so a cold assert/abort path no longer forces
+a frame or callee-saved saves on the hot path (shrink-wrapping).
+C<abs>/C<labs>/C<llabs> lower to branch-free arithmetic. Functions using
+anything else (bitfields, inline asm, atomics, C<volatile>,
+complex/decimal/C<__int128>/C<long double>, C2y labeled loops, VLAs,
+cleanups, nested functions, or any
 sanitizer/B<-g>/B<-fstack-protector>) are compiled by the regular code
-generator. See B<-fno-ir> and B<-fdump-ir>.
+generator. See B<-fno-ir>, B<-fno-ir-inline> and B<-fdump-ir>.
 
 =item B<-O3>
 

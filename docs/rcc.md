@@ -503,6 +503,120 @@ regardless of `-O` level (see the table below).
   making each copy eligible for the constant-folding/dead-branch passes
   above. A trip count over 16, or any other loop shape, is left alone.
 
+#### `-O2` and up: the SSA IR backend (`src/ir_*.c`)
+
+On x86-64 ELF targets, `-O2`/`-O3` compile every eligible function
+through a self-contained SSA IR instead of the AST code generator:
+
+```
+ir_build (SSA construction)  ->  ir_inline (same-TU inlining)
+  ->  ir_tailrec (tail recursion to loops)  ->  ir_opt (optimizer)
+  ->  ir_emit_x86 (linear-scan regalloc + x86-64 emitter)
+```
+
+Each function is considered independently: anything the IR cannot
+represent is compiled by the regular code generator, per function, so
+one unsupported construct never downgrades the whole file.
+
+- **Eligibility.** Scalar integer/pointer/float/double code: loops,
+  branches, direct and indirect calls, `switch`, `goto`/labels, GNU
+  statement expressions, struct/union/array access including aggregates
+  by value (the IR mirrors the AST codegen's simplified SysV ABI exactly:
+  class entries `(bytes<<3)|class`, two-register `RAX:RDX` returns,
+  sret). Not eligible: bitfields, inline asm, atomics, `volatile`,
+  complex/decimal/`__int128`/`long double`, C2y labeled loops, VLAs,
+  cleanups (defer etc.), nested functions, and any
+  sanitizer/`-g`/`-fstack-protector` TU. About 77% of the unit-test
+  functions compile through the IR; rejected functions are reported
+  with a reason under `-fdump-ir`. `abs`/`labs`/`llabs` are not calls:
+  they lower to the branch-free `(x ^ (x>>w)) - (x>>w)` in the
+  prototype's width, matching the AST codegen's builtin expansion.
+
+- **Values and memory model.** Address-taken locals are `FRAMEADDR`
+  (address `rbp - off`, one per object, offset unique per local) reached
+  through `LOAD`/`STORE` with explicit widths; globals are `GADDR`
+  (plain `lea` or GOT, flagged via `msign`) whose distinct symbols never
+  alias each other. Narrow loads carry their extension in `msign`.
+  Volatile accesses are rejected outright: the optimizer merges and
+  removes plain loads and stores, which would be wrong for volatile.
+
+- **Inliner (`ir_inline.c`).** Direct calls to small same-file callees
+  are spliced into the caller before optimization: at most 25
+  non-constant instructions at call sites outside loops, 60 inside,
+  12 blocks, no frame slots, scalar args and return; multi-block and
+  multi-return callees merge through phis; the callee template is
+  `ir_opt`'d once so the size caps see optimized code. Never inlined:
+  `__attribute__((noinline))`, weak, aliased, or asm-named callees, and
+  non-static callees under `-fPIC`/`-shared` (interposition). IR for the
+  whole TU is built up front, so callees defined later in the file
+  inline too; each caller is then rebuilt fresh so templates stay
+  pristine. `-fno-ir-inline` keeps the IR but skips inlining.
+
+- **Tail recursion (`ir_tailrec`).** A self tail call — direct,
+  non-variadic, scalar, last before the `ret` (possibly through an
+  empty `jmp` chain or a merge-block phi) — becomes a back-edge into a
+  new loop header whose phis take over the parameters. Functions with
+  frame slots, aggregates, or an interposable self-reference (weak/
+  aliased/non-static under PIC) keep their calls.
+
+- **Optimizer (`ir_opt.c`)**, in fixpoint order (bounded rounds):
+  constant folding/propagation, GVN with a dominator-tree value table
+  (also folds branches a dominating single-entry edge already decided),
+  loop rotation (header test cloned into the preheader as a guard,
+  backward-read phis repair SSA), induction-variable widening
+  (`i32` induction phis whose increment provably cannot wrap become
+  `i64`; wrap-freedom is proven by a sound range analysis over
+  constants, dominating conditional edges and phi hulls — no UB
+  assumptions, so `i <= n` or unsigned compares correctly stay 32-bit),
+  scaled strength reduction (when every use of `sext(i)` is `mul s, C`
+  with `C ∉ {1,2,4,8}`, the widened IV carries `C*i` directly — exact,
+  because a non-wrapping `i32` IV bounds `C*i` to ±C·2^31 ⊂ `i64`),
+  loop-invariant code motion, invariant-load hoisting (only when the
+  loop has no call and no trapping divide, no may-alias store, and the
+  load's block dominates every exit so the hoisted load cannot fault
+  where the original wouldn't), a memory pass — redundant-load
+  elimination and same-width store→load forwarding (plus exact
+  `TRUNC`/`SEXT`/`ZEXT` narrowings) over a dominator-tree
+  available-memory table keyed by (base, index, scale, disp, width);
+  invalidation by may-alias stores and by calls (except non-escaping
+  frame slots, which escape analysis — a frame address used for
+  anything but a load/store address — proves calls cannot touch);
+  in-block dead-store elimination and dead local stores — and dead code
+  elimination.
+
+  Memory values deliberately do **not** flow through join points or
+  loops: a block with several predecessors starts with an empty table,
+  which keeps the analysis cheap and conservative.
+
+- **Noreturn and shrink-wrapping.** `__attribute__((noreturn))` /
+  `_Noreturn` / `[[noreturn]]` (e.g. glibc's `abort`, `exit`,
+  `__assert_fail`) reaches the IR; a noreturn call is truncated with
+  `__builtin_unreachable()`, its block's successors and phi inputs
+  dropped, and cold blocks laid out last. When the hot path needs no
+  callee-saved registers, spill slots, locals, or stack params, the
+  function is emitted frameless and each cold block establishes its own
+  frame (16-byte aligned at the call) — an `assert`-guarded function
+  pays nothing on the hot path.
+
+- **Backend (`ir_x86.c`).** Linear-scan register allocation over the
+  block order, callee-saved registers only when live ranges demand them.
+  The locals area is sized from the `FRAMEADDR`s that survived
+  inlining and optimization — not the AST stack layout, which keeps
+  slots SSA construction promoted to registers. Single-use loads fold
+  into `add`/`sub`/`and`/`or`/`xor`/`imul`/`cmp` (also the `cmp`
+  inside a branch) and the SSE `add/sub/mul/div/ucomis` ops as memory
+  operands when no store, call, or trapping divide intervenes; the
+  usual scaled-index addressing (`base + index*1/2/4/8 + disp`) absorbs
+  `sext32` indices and constant offsets. Leaf functions that touch
+  neither the frame nor callee-saved registers get no prologue at all.
+
+- **Debugging.** `-fdump-ir` prints each function's IR as built and
+  after inlining + optimization (with `not eligible (reason)` lines);
+  `-fno-ir` disables the backend entirely (per-function fallback is
+  automatic); `-fno-ir-inline` isolates the inliner. Both suites and
+  the AWFY benchmarks run with outputs verified against the other
+  compilers at every level.
+
 #### `-O3` only
 
 Adds the [contract range prover](#contracts-prepost-contract_assert-contract_assume):

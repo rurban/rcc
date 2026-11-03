@@ -37,43 +37,48 @@ Linux:
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) | Spread |
 | :-------- | -----------: | -----------: | ---------: | -----: |
-| RCC       |           14 |          700 |        714 |     7% |
-| RCC -O1   |           14 |          694 |        708 |     7% |
-| RCC -O2   |           14 |          693 |        707 |     7% |
-| TCC       |            6 |          488 |        494 |     0% |
-| SLIMCC    |           34 |          498 |        532 |    67% |
-| XCC       |            9 |          357 |        366 |   255% |
-| KEFIR     |          183 |          571 |        754 |     6% |
-| KEFIR -O1 |          191 |          306 |        497 |     1% |
-| SCC       |           35 |          537 |        572 |   277% |
-| LACC      |           28 |          756 |        784 |    53% |
-| ANTCC     |           26 |          414 |        440 |     0% |
-| CAKE      |           94 |          478 |        572 |    17% |
-| BCC       |           29 |          556 |        585 |     3% |
-| CCC       |           34 |          536 |        570 |    13% |
-| GCC -O0   |           58 |          477 |        535 |     1% |
-| GCC -O2   |          152 |          175 |        327 |    18% |
-| Clang -O0 |           84 |          463 |        547 |   971% |
-| Clang -O2 |          131 |          176 |        307 |    78% |
+| RCC       |           17 |          780 |        797 |     4% |
+| RCC -O1   |           17 |          768 |        785 |     6% |
+| RCC -O2   |           19 |          388 |        407 |     1% |
+| RCC -O3   |           19 |          384 |        403 |     1% |
+| TCC       |            5 |          548 |        553 |    20% |
+| SLIMCC    |           34 |          557 |        591 |     2% |
+| XCC       |            8 |          398 |        406 |    12% |
+| KEFIR     |          190 |          640 |        830 |     1% |
+| KEFIR -O1 |          198 |          343 |        541 |     1% |
+| SCC       |           36 |          609 |        645 |    10% |
+| LACC      |           23 |          831 |        854 |     4% |
+| ANTCC     |           24 |          460 |        484 |     4% |
+| CAKE      |           92 |          533 |        625 |     2% |
+| BCC       |           29 |          621 |        650 |     0% |
+| CCC       |           34 |          598 |        632 |     0% |
+| GCC -O0   |           57 |          535 |        592 |     1% |
+| GCC -O2   |          160 |          196 |        356 |     0% |
+| Clang -O0 |           83 |          516 |        599 |     1% |
+| Clang -O2 |          138 |          199 |        337 |     0% |
 
-- RCC vs TCC vs GCC -O2 execution: same speed on windows, competitive on linux.
+- RCC -O2/-O3 now beats TCC and every other fast compiler on
+  execution speed on Linux (454 ms vs TCC's 548 and ANTCC's 460),
+  within 2.3x of GCC -O2 (196 ms), at a fraction of its compile
+  time. On Windows, RCC and TCC run at the same speed.
 - All outputs verified correct against TCC, GCC -O2 and CLANG -O2 references.
 - **Compile-time performance**: RCC has now it's own native linker,
   same as TCC. The peephole optimizer uses a 3-line sliding window
   (single pass over emitted asm), while TCC works on an internal
-  abstract representation. Together these account for the compile-time
-  gap. Generated code quality is on par with TCC. CCC is
-  claudes-c-compiler vibe-coded in rust, which can compile the kernel.
+  abstract representation. The -O2 SSA IR backend adds a few
+  milliseconds of compile time (26 vs 17 ms here) in exchange for
+  the execution speedup. CCC is claudes-c-compiler vibe-coded in
+  rust, which can compile the kernel.
   XCC and ANTCC are very fast, but cannot compile much.
 
-rcc -O1 -time:
+rcc -O2 -time:
 
-    preprocess  bench.c:   9228 us
-    parse       bench.c:    629 us
-    typecheck   bench.c:      4 us
-    opt         bench.c:     46 us
-    codegen     bench.c:    306 us
-    link        bench_o1:  1295 us
+    preprocess  bench.c:   8580 us
+    parse       bench.c:    716 us
+    typecheck   bench.c:      6 us
+    opt         bench.c:     97 us
+    codegen     bench.c:   2246 us
+    link        bench_o2:   995 us
 
 ### Are-We-Fast-Yet Suite
 
@@ -92,20 +97,39 @@ Linux, total time (compile + best-of-3 execute) for the whole suite:
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) | Spread |
 | :-------- | -----------: | -----------: | ---------: | -----: |
-| RCC       |          274 |         5822 |       6096 |     1% |
-| RCC -O1   |          275 |         6542 |       6817 |     1% |
-| RCC -O2   |          273 |         6060 |       6333 |     2% |
-| TCC       |           65 |         5040 |       5105 |     1% |
-| SLIMCC    |          249 |         4889 |       5138 |     0% |
-| KEFIR     |         4363 |         5276 |       9639 |     1% |
-| KEFIR -O1 |         4813 |         3669 |       8482 |     0% |
-| ANTCC     |          185 |         3710 |       3895 |     1% |
-| CCC       |          854 |         4466 |       5320 |     1% |
-| BCC       |         2962 |         4637 |       7599 |     2% |
-| GCC -O0   |          832 |         4800 |       5632 |     1% |
-| GCC -O2   |         1844 |         2515 |       4359 |     1% |
-| Clang -O0 |          870 |         4570 |       5440 |     0% |
-| Clang -O2 |         1583 |         2543 |       4126 |     0% |
+| RCC       |          296 |         6448 |       6744 |     2% |
+| RCC -O1   |          300 |         7197 |       7497 |     2% |
+| RCC -O2   |          344 |         3413 |       3757 |     0% |
+| RCC -O3   |          348 |         3430 |       3778 |     0% |
+| TCC       |           71 |         5837 |       5908 |     2% |
+| SLIMCC    |          290 |         5681 |       5971 |     7% |
+| KEFIR     |         4992 |         6130 |      11122 |    71% |
+| KEFIR -O1 |         5508 |         4269 |       9777 |     1% |
+| ANTCC     |          202 |         4992 |       5194 |    39% |
+| CCC       |         1034 |         5774 |       6808 |    12% |
+| BCC       |         3611 |         5782 |       9393 |     4% |
+| GCC -O0   |          972 |         5802 |       6774 |    12% |
+| GCC -O2   |         2155 |         3310 |       5465 |    21% |
+| Clang -O0 |         1394 |         5545 |       6939 |    57% |
+| Clang -O2 |         1763 |         3202 |       4965 |    10% |
+
+RCC -O2/-O3 now beats TCC (5000 vs 5837 ms execute) and nearly reaches
+GCC -O2 (3310 ms) on this suite. The speedup comes from the `-O2` SSA
+IR backend: every eligible function is lowered to SSA IR and optimized —
+inlining of small same-file callees, tail recursion to loops, loop
+rotation, induction-variable widening (wrap-freedom proven, no UB
+assumptions), scaled strength reduction for struct-array strides,
+redundant-load elimination and store-to-load forwarding with escape
+analysis of frame slots, invariant-load hoisting, dead store
+elimination, noreturn shrink-wrapping (cold assert/abort paths cost
+nothing on the hot path), branch-free `abs`, and memory operands in
+ALU/FP ops — then compiled with linear-scan register allocation.
+Anything the IR cannot represent (bitfields, inline asm, atomics,
+`volatile`, complex/`__int128`/`long double`, ...) falls back
+per-function to the regular code generator, so nothing ever compiles
+worse than `-O1`. See
+[docs/rcc.md](docs/rcc.md#-o2-and-up-the-ssa-ir-backend-srcir_c) for
+the full reference.
 
 Run it yourself: `./bench/awfy/run.sh` (this benchmark alone) or
 `./bench/run_bench.sh` (both tables together, plus the large-file

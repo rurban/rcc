@@ -82,15 +82,67 @@
      prologue). Memory operands: single-use loads fold into add/sub/and/
      or/xor/imul/cmp (incl. cmp in br)/SSE add/sub/mul/div/ucomis when no
      store/call/divide intervenes. AWFY -O2: 5.9s old -> ~4.8s, gcc 4.6s
-     (Bounce 107->56ms, CD ~1.0x). Still open: inline callees with frame
-     slots (rebase slots), loads/stores across join points (needs dataflow,
-     not the dominator-tree walk), LICM of loads with alias info,
-     induction-variable widening/strength reduction, loop rotation (in
-     progress), scalar replacement of non-escaping structs and arrays.
+     (Bounce 107->56ms, CD ~1.0x, Towers 54->31ms via tailrec).
      Remaining rejections: bitfields, inline asm, atomics, volatile,
      complex/decimal/int128/long double, labeled loops (C2Y).
-  4. ARM64 IR emitter.
+  3.1 NEXT (performance, priority order):
+     a. SROA: scalar replacement of non-escaping structs/arrays. memopt's
+        escape analysis already proves which frame slots never escape;
+        promote their fields to SSA values (kill FRAMEADDR + load/store
+        pairs). AWFY Richards (2.3x vs gcc) and Bounce (2.7x) are
+        call/allocation-bound; this is their unlock. Re-profile Havlak
+        (1.08x) afterwards.
+     b. Inline callees with frame slots: rebase the callee's FRAMEADDR
+        offsets into the caller's frame at splice time (assign fresh
+        offsets above the caller's current max; offsets are only compared
+        within a function, and the backend sizes the locals area from the
+        max surviving imm, so rebasing is purely local to the clone).
+        Unlocks inlining of functions with small stack arrays/locals.
+     c. Cross-join memory dataflow: replace the dominator-tree
+        available-memory walk with a real dataflow analysis so values flow
+        through back-edges (loop-carried store->load) and diamond joins.
+        Today a block with several predecessors starts with an empty
+        table; loop-carried accumulators in memory reload every iteration.
+     d. Pointer-increment strength reduction for non-widenable products
+        (mm's k*n: I32 product indexed, cannot prove no-wrap) - needs
+        wrap-exactness reasoning the IV prover doesn't do yet.
+     e. Exit-edge splitting for iv_widen: a live-out IV value costs a
+        per-iteration trunc today and blocks otherwise-legal widenings;
+        splitting the exit edge would move that cost out of the loop.
+     f. Backend: allocate single-use ret values directly into rax (kills
+        BasicBlock_hash's `mov eax,esi`); x87/aggregate-return shrink-wrap
+        cases.
+  3.2 NEXT (eligibility/coverage; goal >85% of unit-test functions, was
+     ~77%):
+     a. volatile in the IR: model volatile loads/stores as un-mergeable,
+        un-droppable barriers instead of rejecting the function (~26
+        rejects; biggest single unlock after asm).
+     b. Bitfields: lower to shift/mask chains in the builder (~22).
+     c. Re-measure the top rejection reasons (-fdump-ir stats over
+        test/test_*.c) and pick off 'assign type'/'load type' (~46/34).
+     d. Inline asm stays out (whole-function fallback by design).
+  3.3 REJECTED (recorded so it isn't re-litigated): UB-based IV widening
+     of <=-bounded loops (would help Sieve; violates the no-UB-assumptions
+     rule the tests depend on). A -fstrict-overflow-style opt-in flag
+     could revisit it deliberately.
+  4. ARM64 IR emitter (ir_arm64.c): ir_core/ir_build/ir_inline/ir_opt are
+     target-neutral and stay untouched; only the emitter + ABI layer are
+     new. SysV arm64 aggregate classification (homogeneous aggregates)
+     differs from the x86-64 simplified classes - either port
+     ir_agg_class's encoding with arm64 HA rules or accept the simplified
+     classes initially and start scalar-only. Mirror the AST backend's
+     arm64 instruction selection (codegen_asm.h). Gate on the same
+     eligibility; -fno-ir already skips IR on ARM64 today.
+  5. Windows (COFF) IR backend: ir_x86.c's relocation/PIC model is ELF
+     (GOTPCREL, .rodata rip-relative); a COFF variant would bring -O2
+     quality to the Windows table (README shows RCC == TCC there; the
+     Linux -O2 gap win doesn't reach Windows yet).
+  6. Bench hygiene: re-run bench/bench_report on a quiet machine (current
+     -O2/-O3 spreads of 26-70% were taken under agent load) and re-sync;
+     track AWFY per-benchmark after 3.1.a.
 
-  Gate every step on `./run_tests "./rcc -O2" --all --parallel`
+  Gate every step on `./run_tests "./rcc -O2" --all --parallel --timeout 60`
+  (and the default-flags suite; run the two serially, agents may not run
+  make or the suites concurrently with each other).
 
 - interchange and extended float types (just aliased, no __STDC_IEC_60559_TYPES__)

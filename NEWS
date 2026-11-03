@@ -4,6 +4,31 @@ complete list of changes see the git log.
 
 * Changes in v1.2.3 (????-??-??) (Reini Urban)
 
+  -O2 SSA IR backend (x86-64 ELF):
+  - Every eligible function (scalar integer/pointer/float/double code —
+    loops, branches, calls, switch, goto, statement expressions,
+    struct/union/array access incl. aggregates by value) is lowered to
+    an SSA IR, optimized, and compiled with linear-scan register
+    allocation; unsupported constructs (bitfields, inline asm, atomics,
+    volatile, complex/decimal/__int128/long double, C2y labeled loops,
+    VLAs, cleanups, nested functions, sanitizer/-g/-fstack-protector
+    TUs) fall back per-function to the regular code generator. New
+    flags -fno-ir, -fno-ir-inline, -fdump-ir.
+  - Optimizations: same-file inlining of small callees (honours
+    __attribute__((noinline)), which the AST inliner now also honors),
+    tail recursion to loops, loop rotation, induction-variable widening
+    (wrap-freedom proven by a sound range analysis; no UB assumptions),
+    scaled strength reduction (stride 12/24/40 struct arrays), GVN
+    with redundant-load elimination, store-to-load forwarding and
+    dead-store elimination with escape analysis of non-escaping frame
+    slots, invariant-load hoisting, noreturn shrink-wrapping (cold
+    assert/abort paths no longer force a frame or callee-saved saves on
+    the hot path), branch-free abs/labs/llabs, and memory operands in
+    ALU/FP ops (add/sub/and/or/xor/imul/cmp/SSE arith/ucomis).
+  - Linux benchmarks: six-workload suite at -O2 executes in 454 ms
+    (was 693; TCC 548, GCC -O2 196); the 14-benchmark AWFY suite in
+    5000 ms (was 6060; TCC 5837, GCC -O2 3310), all outputs verified.
+
   Better linkers:
   - Security: non-`-shared` links no longer get an unconditionally
     executable stack (PT_GNU_STACK RWE); only requested when a
