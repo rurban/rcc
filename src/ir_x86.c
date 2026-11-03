@@ -1,14 +1,16 @@
 // ir_x86.c -- register allocation, instruction selection and emission (x86-64 SysV).
 //
 // ir_emit_x86() runs these stages on an already built + optimized IRFunc:
-//   1. CFG prep: drop unreachable preds, split critical edges into blocks with
-//      phis (so phi copies always sit at the end of a single-successor block),
-//      loop depths, loop-friendly block layout (loop headers rotated behind
-//      their bodies so the back edge is the only branch of an iteration).
+//   1. CFG prep: a call to a noreturn function ends its block (no successors,
+//      so nothing stays live across it); drop unreachable preds, split critical
+//      edges into blocks with phis (so phi copies always sit at the end of a
+//      single-successor block), loop depths, loop-friendly block layout (loop
+//      headers rotated behind their bodies so the back edge is the only branch
+//      of an iteration; the noreturn "cold" blocks go last).
 //   2. Isel prep on the IR: UNDEF -> 0, address folding into LOAD/STORE
 //      (base + index*scale + disp, rbp-relative frame slots), single-use LOADs
-//      folded into extensions and into ALU/FP memory operands, CMP/FCMP+BR
-//      fusion, use counts + DCE. Constants/addresses are rematerialized.
+//      folded into extensions and into ALU/FP/compare memory operands,
+//      CMP/FCMP+BR fusion, use counts + DCE. Constants/addresses are rematerialized.
 //   3. Liveness -> live ranges with holes per value -> linear scan with
 //      loop-weighted spill costs and register hints (phis, two-address ops,
 //      incoming/outgoing ABI registers).
@@ -26,6 +28,10 @@
 //   [rbp-locals ..rbp)          address-taken locals (IRFunc.frame_size)
 //   below: callee-saved save area, spill slots, then the outgoing stack args
 //   area at [rsp .. rsp+outgoing).
+// A function that needs none of it outside its cold blocks (no calls elsewhere,
+// no callee-saved registers, spills, locals or stack parameters) is frameless on
+// the hot path; each cold block then starts with its own push rbp / mov rbp, rsp
+// (rsp is 8 mod 16 at function entry, so the push aligns it for the call).
 #include "cg_ir.h"
 #include <limits.h>
 
@@ -94,7 +100,8 @@ static struct {
     int nspill[2]; // spill slots per class pool
     int ncs, cs_reg[5]; // callee-saved registers used
     int locals, cs_base, spill_base, outgoing, frame;
-    bool frameless; // leaf without frame pointer, locals, spills or saved registers
+    bool frameless; // no frame pointer, locals, spills or saved registers on the hot path
+    bool coldframe; // frameless, but each cold (noreturn) block builds its own frame
     int nlocal_lbl;
     int *mu; // value -> uses as an address operand in its own block (isel prep)
     int *pabi; // param index -> ABI register / -1
@@ -144,7 +151,43 @@ static int use_at(const IRInstr *i, int k) {
 
 // ------------------------------------------------------------------ 1. CFG
 
+// Block whose control flow ends in a noreturn call (see cut_noreturn).
+static bool is_cold(const IRBlock *b) {
+    int k = b->nins - 1;
+    if (k < 1 || b->ins[k]->op != IR_UNREACHABLE) return false;
+    while (--k >= 0 && b->ins[k]->op == IR_NOP) {}
+    return k >= 0 && b->ins[k]->op == IR_CALL && b->ins[k]->noret;
+}
+
+// A call to a noreturn function ends its block: whatever follows it (merged
+// successor code, the original terminator) never runs. Cutting the block there
+// leaves it with no successors, so nothing is live across the call, no phi
+// copies are made for it and values need no callee-saved register just to
+// survive a call that never comes back. The upstream passes keep seeing the
+// plain call + terminator they were given.
+static void cut_noreturn(IRFunc *f) {
+    for (int bi = 0; bi < f->nblocks; bi++) {
+        IRBlock *b = f->blocks[bi];
+        int k = 0;
+        while (k < b->nins && !(b->ins[k]->op == IR_CALL && b->ins[k]->noret)) k++;
+        if (k == b->nins || (k + 2 == b->nins && b->ins[k + 1]->op == IR_UNREACHABLE)) continue;
+        IRBlock *ss[2];
+        int ns = ir_succs(b, ss);
+        for (int s = 0; s < ns; s++) ir_remove_pred_edge(ss[s], b);
+        for (int j = k + 1; j < b->nins; j++) {
+            IRInstr *d = b->ins[j];
+            d->op = IR_NOP;
+            d->type = IRT_VOID;
+            d->a = d->b = d->c = IR_NONE;
+            d->blk = NULL;
+        }
+        b->nins = k + 1;
+        ir_block_append(b, ir_instr_new(f, IR_UNREACHABLE, IRT_VOID));
+    }
+}
+
 static void cfg_prep(IRFunc *f) {
+    cut_noreturn(f);
     int n = f->nblocks;
     IRBlock **rpo = NEW(IRBlock *, n);
     uint8_t *reach = NEW(uint8_t, n);
@@ -292,6 +335,17 @@ static void layout(IRFunc *f) {
         be.oidx[be.ord[i]->id] = i;
     }
     rotate_loops();
+    // Cold (noreturn) blocks go behind everything else, keeping their order:
+    // the hot path stays contiguous and the cold code stays out of the way.
+    int nh = 1;
+    for (int i = 1; i < np; i++)
+        if (!is_cold(be.ord[i])) post[nh++] = be.ord[i];
+    post[0] = be.ord[0];
+    int nc = nh;
+    for (int i = 1; i < np; i++)
+        if (is_cold(be.ord[i])) post[nc++] = be.ord[i];
+    memcpy(be.ord, post, sizeof(IRBlock *) * (size_t)np);
+    for (int i = 0; i < np; i++) be.oidx[be.ord[i]->id] = i;
     free(stack);
     free(post);
     free(succ);
@@ -460,6 +514,103 @@ static void dce(void) {
     free(work);
 }
 
+// Operand-swapped predicate: a cc b  <=>  b cc_swap[cc] a.
+static const uint8_t cc_swap[] = {
+    [IRCC_EQ] = IRCC_EQ,
+    [IRCC_NE] = IRCC_NE,
+    [IRCC_SLT] = IRCC_SGT,
+    [IRCC_SLE] = IRCC_SGE,
+    [IRCC_SGT] = IRCC_SLT,
+    [IRCC_SGE] = IRCC_SLE,
+    [IRCC_ULT] = IRCC_UGT,
+    [IRCC_ULE] = IRCC_UGE,
+    [IRCC_UGT] = IRCC_ULT,
+    [IRCC_UGE] = IRCC_ULE,
+};
+
+// Is value v a single-use full-width LOAD of type ty in block b that can be
+// sunk down to instruction k of b: nothing in between writes memory, calls or
+// can trap, so the load observes the same memory and faults in the same order.
+static bool sinkable_load(IRBlock *b, int k, int v, int ty) {
+    IRInstr *l = V(v);
+    if (l->op != IR_LOAD || l->blk != b || be.vi[l->id].dead || be.vi[l->id].uses != 1 || l->type != ty) return false;
+    static const uint8_t full[] = {[IRT_I32] = IRM_I32, [IRT_I64] = IRM_I64, [IRT_F32] = IRM_F32, [IRT_F64] = IRM_F64};
+    if (l->mw != full[ty]) return false;
+    int lk = k - 1;
+    while (lk >= 0 && b->ins[lk] != l && !ir_has_side_effects(b->ins[lk])) lk--;
+    return lk >= 0 && b->ins[lk] == l;
+}
+
+// Fold a single-use LOAD operand of a compare (a CMP/FCMP value or the BR it
+// was fused into) into a memory operand. The compare then reads
+//   form 1:  a = register operand, (b, c, scale, imm, aux) = address; cmp a, [mem]
+//   form 2:  (a, c, scale, imm, aux) = address, b = other operand;  cmp [mem], b
+// flagged in mw (CMP/FCMP) or msign (BR). `cc` always reads "first cc second" of
+// the instruction as written, so swapped operands swap the predicate. FP compares
+// only have form 1 and are canonicalized to cc in {FEQ, FNE, FGT, FGE}, the
+// forms where ucomis a, [mem] needs no operand swap.
+static void fold_cmp_loads(void) {
+    for (int bi = 0; bi < be.nord; bi++) {
+        IRBlock *b = be.ord[bi];
+        for (int k = 0; k < b->nins; k++) {
+            IRInstr *e = b->ins[k];
+            if (be.vi[e->id].dead) continue;
+            int kind = e->op == IR_CMP ? 1 : e->op == IR_FCMP ? 2
+                : e->op == IR_BR                              ? e->mw
+                                                              : 0;
+            if (!kind || e->a == e->b) continue;
+            int x = e->a, y = e->b, ty = V(x)->type, cc = e->cc;
+            int lv = IR_NONE, other = IR_NONE, form = 0;
+            if (kind == 1) {
+                int64_t c;
+                if (sinkable_load(b, k, y, ty)) {
+                    lv = y;
+                    other = x;
+                    form = 1;
+                    if (const_of(x, &c) && fits32(c)) { // cmp [mem], imm
+                        form = 2;
+                        cc = cc_swap[cc];
+                    }
+                } else if (sinkable_load(b, k, x, ty)) {
+                    lv = x;
+                    other = y;
+                    form = 2;
+                }
+            } else if (cc == IRCC_FLT || cc == IRCC_FLE) { // emitted as ucomis b, a with FGT/FGE
+                if (sinkable_load(b, k, x, ty)) {
+                    lv = x;
+                    other = y;
+                    form = 1;
+                    cc = cc == IRCC_FLT ? IRCC_FGT : IRCC_FGE;
+                }
+            } else if (sinkable_load(b, k, y, ty)) {
+                lv = y;
+                other = x;
+                form = 1;
+            } else if ((cc == IRCC_FEQ || cc == IRCC_FNE) && sinkable_load(b, k, x, ty)) { // symmetric
+                lv = x;
+                other = y;
+                form = 1;
+            }
+            if (!form) continue;
+            IRInstr *l = V(lv);
+            e->a = form == 1 ? other : l->a;
+            e->b = form == 1 ? l->a : other;
+            e->c = l->b;
+            e->scale = l->scale;
+            e->imm = l->imm;
+            e->aux = l->aux;
+            e->cc = (uint8_t)cc;
+            if (e->op == IR_BR) e->msign = (uint8_t)form;
+            else
+                e->mw = (uint8_t)form;
+            be.vi[l->id].uses--;
+            if (l->a != IR_NONE) be.vi[l->a].uses++;
+            if (l->b != IR_NONE) be.vi[l->b].uses++;
+        }
+    }
+}
+
 static void prep_ir(void) {
     for (int bi = 0; bi < be.nord; bi++) {
         IRBlock *b = be.ord[bi];
@@ -477,7 +628,10 @@ static void prep_ir(void) {
                 i->aux = 0;
             } else if (i->op == IR_BR) {
                 i->mw = 0;
-                i->b = IR_NONE;
+                i->msign = 0; // set to 1/2 when a compare operand is folded into a memory operand
+                i->b = i->c = IR_NONE;
+            } else if (i->op == IR_CMP || i->op == IR_FCMP) {
+                i->mw = 0; // likewise
             } else if ((i->op >= IR_ADD && i->op <= IR_XOR) || (i->op >= IR_FADD && i->op <= IR_FDIV)) {
                 i->mw = 0; // set to 1 by the memory-operand fusion below
             }
@@ -573,7 +727,7 @@ static void prep_ir(void) {
         for (int k = 0; k < b->nins; k++) {
             IRInstr *e = b->ins[k];
             if (be.vi[e->id].dead) continue;
-            bool comm = e->op == IR_ADD || e->op == IR_AND || e->op == IR_OR || e->op == IR_XOR ||
+            bool comm = e->op == IR_ADD || e->op == IR_MUL || e->op == IR_AND || e->op == IR_OR || e->op == IR_XOR ||
                 e->op == IR_FADD || e->op == IR_FMUL;
             bool fp = e->op >= IR_FADD && e->op <= IR_FDIV;
             if (!comm && e->op != IR_SUB && !fp) continue;
@@ -617,6 +771,8 @@ static void prep_ir(void) {
         be.vi[c->a].uses++;
         be.vi[c->b].uses++;
     }
+    dce(); // the fused compares are dead now: exact use counts for the load folding
+    fold_cmp_loads();
     dce();
     free(be.mu);
     be.mu = NULL;
@@ -1580,6 +1736,14 @@ static int edge_real_moves(IRBlock *p, IRBlock *s) {
 
 // ------------------------------------------------------ instruction selection
 
+// imul r, [mem]: the encoder has none, but it is movzx r, byte [mem] (0F B6)
+// with the opcode byte rewritten to 0F AF.
+static void imul_rm(SecBuf *s, int size, X86Reg dst, X86Mem m) {
+    size_t off = s->len;
+    x86_movzx_rm(s, size == 8 ? 8 : 4, 1, dst, m);
+    s->data[off + 1 + ((s->data[off] & 0xf0) == 0x40)] = 0xaf;
+}
+
 typedef void (*AluRR)(SecBuf *, int, X86Reg, X86Reg);
 typedef void (*AluRI)(SecBuf *, int, X86Reg, int32_t);
 typedef void (*AluRM)(SecBuf *, int, X86Reg, X86Mem);
@@ -1594,7 +1758,7 @@ static const struct {
     [IR_AND] = {x86_and_rr, x86_and_ri, x86_and_rm, true},
     [IR_OR] = {x86_or_rr, x86_or_ri, x86_or_rm, true},
     [IR_XOR] = {x86_xor_rr, x86_xor_ri, x86_xor_rm, true},
-    [IR_MUL] = {x86_imul_rr, NULL, NULL, true},
+    [IR_MUL] = {x86_imul_rr, NULL, imul_rm, true},
 };
 
 static void emit_mul_imm(IRInstr *i, int a, int64_t imm) {
@@ -1777,18 +1941,6 @@ static const uint8_t cc_x86[] = {
     [IRCC_UGT] = X86_A,
     [IRCC_UGE] = X86_AE,
 };
-static const uint8_t cc_swap[] = {
-    [IRCC_EQ] = IRCC_EQ,
-    [IRCC_NE] = IRCC_NE,
-    [IRCC_SLT] = IRCC_SGT,
-    [IRCC_SLE] = IRCC_SGE,
-    [IRCC_SGT] = IRCC_SLT,
-    [IRCC_SGE] = IRCC_SLE,
-    [IRCC_ULT] = IRCC_UGT,
-    [IRCC_ULE] = IRCC_UGE,
-    [IRCC_UGT] = IRCC_ULT,
-    [IRCC_UGE] = IRCC_ULE,
-};
 
 // Emits `cmp a, b` and returns the x86 condition that holds iff `a cc b`.
 static int emit_icmp(int a, int b, int cc) {
@@ -1827,10 +1979,48 @@ static int emit_icmp(int a, int b, int cc) {
     return cc_x86[cc];
 }
 
+// cmp with a folded load (see fold_cmp_loads): form 1 = cmp a, [mem(b, c)],
+// form 2 = cmp [mem(a, c)], b. Returns the x86 condition that holds iff `cc`.
+static int emit_icmp_m(const IRInstr *e, int form) {
+    int v = form == 1 ? e->a : e->b; // the non-memory operand
+    int sz = tsz(V(v)->type);
+    X86Mem m = form == 1 ? mem_of(e->b, e->c, e->scale, e->imm, e->aux, R_S1, R_S0)
+                         : mem_of(e->a, e->c, e->scale, e->imm, e->aux, R_S1, R_S0);
+    int64_t imm;
+    if (form == 2 && imm32(v, &imm)) {
+        x86_cmp_mi(S, sz, m, (int32_t)imm);
+        return cc_x86[e->cc];
+    }
+    X86Reg r;
+    if (LOC(v)->kind == LK_REG) {
+        r = (X86Reg)LOC(v)->reg;
+    } else {
+        // v needs a scratch register that the address does not occupy
+        if (m.base == R_S1 && m.index == R_S0) {
+            x86_lea(S, 8, R_S1, m);
+            m = x86_mem(R_S1, 0);
+        }
+        r = use_g(v, m.index == R_S0 ? R_S1 : R_S0);
+    }
+    if (form == 1) x86_cmp_rm(S, sz, r, m);
+    else
+        x86_cmp_mr(S, sz, m, r);
+    return cc_x86[e->cc];
+}
+
 typedef struct {
     int cc;
     int pf; // 0: cc alone; 1: cc && !PF (equal); 2: cc || PF (not equal)
 } FCond;
+
+static FCond fcond(int cc) {
+    switch (cc) {
+    case IRCC_FGT: return (FCond){X86_A, 0};
+    case IRCC_FGE: return (FCond){X86_AE, 0};
+    case IRCC_FEQ: return (FCond){X86_E, 1};
+    default: return (FCond){X86_NE, 2};
+    }
+}
 
 static FCond emit_fcmp(int a, int b, int cc) {
     if (cc == IRCC_FLT || cc == IRCC_FLE) {
@@ -1843,24 +2033,37 @@ static FCond emit_fcmp(int a, int b, int cc) {
     if (V(a)->type == IRT_F32) x86_ucomiss(S, xa, xb);
     else
         x86_ucomisd(S, xa, xb);
-    switch (cc) {
-    case IRCC_FGT: return (FCond){X86_A, 0};
-    case IRCC_FGE: return (FCond){X86_AE, 0};
-    case IRCC_FEQ: return (FCond){X86_E, 1};
-    default: return (FCond){X86_NE, 2};
+    return fcond(cc);
+}
+
+// ucomiss/ucomisd with a memory source, encoded as movaps (0F 28) / movsd
+// (F2 0F 10) with the prefix and opcode bytes rewritten: the encoder has no rm
+// form. cc is one of FEQ/FNE/FGT/FGE (see fold_cmp_loads): no operand swap.
+static FCond emit_fcmp_m(const IRInstr *e) {
+    X86XmmReg xa = use_x(e->a, X_S0);
+    X86Mem m = mem_of(e->b, e->c, e->scale, e->imm, e->aux, R_S0, R_S1);
+    size_t off = S->len;
+    if (V(e->a)->type == IRT_F32) {
+        x86_movaps_rm(S, xa, m);
+        S->data[off + 1 + ((S->data[off] & 0xf0) == 0x40)] = 0x2e;
+    } else {
+        x86_movsd_rm(S, xa, m);
+        S->data[off] = 0x66;
+        S->data[off + 2 + ((S->data[off + 1] & 0xf0) == 0x40)] = 0x2e;
     }
+    return fcond(e->cc);
 }
 
 static void emit_cmp_value(IRInstr *i) {
     if (i->op == IR_CMP) {
-        int cc = emit_icmp(i->a, i->b, i->cc);
+        int cc = i->mw ? emit_icmp_m(i, i->mw) : emit_icmp(i->a, i->b, i->cc);
         X86Reg rd = def_g(i->id);
         x86_setcc(S, (X86Cond)cc, rd);
         x86_movzx(S, 4, 1, rd, rd);
         fin_g(i->id, rd);
         return;
     }
-    FCond fc = emit_fcmp(i->a, i->b, i->cc);
+    FCond fc = i->mw ? emit_fcmp_m(i) : emit_fcmp(i->a, i->b, i->cc);
     X86Reg rd = fc.pf ? R_S0 : def_g(i->id);
     x86_setcc(S, (X86Cond)fc.cc, rd);
     if (fc.pf) {
@@ -2282,9 +2485,9 @@ static void emit_br(IRInstr *br, IRBlock *nxt) {
     int cc;
     int pf = 0;
     if (br->mw == 1) {
-        cc = emit_icmp(br->a, br->b, br->cc);
+        cc = br->msign ? emit_icmp_m(br, br->msign) : emit_icmp(br->a, br->b, br->cc);
     } else if (br->mw == 2) {
-        FCond fc = emit_fcmp(br->a, br->b, br->cc);
+        FCond fc = br->msign ? emit_fcmp_m(br) : emit_fcmp(br->a, br->b, br->cc);
         cc = fc.cc;
         pf = fc.pf;
     } else {
@@ -2505,9 +2708,23 @@ static void frame_layout(void) {
     }
     int total = be.spill_base + 8 * nslots + be.outgoing;
     be.frame = (total + 15) & ~15;
+    // A function whose calls all sit in cold (noreturn) blocks, and that touches
+    // neither the frame nor callee-saved registers, keeps no frame on the hot
+    // path: each cold block sets up its own (emit_cold_prologue). The entry block
+    // is never shrink-wrapped; its frame is the function's frame.
+    bool hot_call = false, cold_call = false;
+    for (int bi = 0; bi < be.nord; bi++) {
+        IRBlock *b = be.ord[bi];
+        for (int k = 0; k < b->nins; k++)
+            if (b->ins[k]->op == IR_CALL && emitted(b->ins[k])) {
+                if (bi > 0 && is_cold(b)) cold_call = true;
+                else
+                    hot_call = true;
+            }
+    }
     // A leaf that touches neither the frame nor callee-saved registers needs no
     // frame pointer at all.
-    be.frameless = be.ncall == 0 && be.ncs == 0 && nslots == 0;
+    be.frameless = !hot_call && be.ncs == 0 && nslots == 0;
     for (int k = 0; k < f->nparams; k++)
         if (be.pstk[k] || be.pcls[k] == IRAGG_VALUE8 || be.pcls[k] == IRAGG_VALUE16 ||
             be.pcls[k] == IRAGG_MEMORY)
@@ -2522,6 +2739,15 @@ static void frame_layout(void) {
             if ((i->op == IR_LOAD || i->op == IR_STORE) && i->aux == 1 && emitted(i)) be.frameless = false;
         }
     }
+    be.coldframe = be.frameless && cold_call;
+}
+
+// Frame setup at the start of a cold block when the hot path is frameless: rsp
+// is 8 mod 16 there (nothing was pushed), so the push re-aligns it for the call.
+static void emit_cold_prologue(void) {
+    x86_push(S, X86_RBP);
+    x86_mov_rr(S, 8, X86_RBP, X86_RSP);
+    if (be.frame) x86_sub_ri(S, 8, X86_RSP, be.frame);
 }
 
 static void emit_prologue(void) {
@@ -2637,6 +2863,7 @@ void ir_emit_x86(Program *prog, IRFunc *f, bool emitting_local_copy) {
         for (int k = bi + 1; k < be.nord && !nxt; k++)
             if (!be.tramp[be.ord[k]->id]) nxt = be.ord[k];
         cg_ir_label(blabel(b));
+        if (be.coldframe && bi > 0 && is_cold(b)) emit_cold_prologue();
         for (int k = 0; k < b->nins; k++) {
             IRInstr *i = b->ins[k];
             if (i->op == IR_NOP || (!emitted(i))) continue;

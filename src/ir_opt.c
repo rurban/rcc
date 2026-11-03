@@ -1459,6 +1459,43 @@ static bool gvn(IRFunc *f) {
     return changed;
 }
 
+// ------------------------------------------------------------ known branches
+//
+// A branch on a value that a dominating conditional edge already decided is folded.
+// Rotation leaves one guard per nested loop, all testing the same `0 < n`. The edge
+// T->D is the only way into D (D has the single predecessor T), so every path to a
+// block D dominates crosses it, and since the tested value's definition dominates T
+// the value seen at the later branch is the one the edge decided.
+
+static bool fold_known_branches(IRFunc *f) {
+    Dom d;
+    dom_build(f, &d);
+    bool changed = false;
+    for (int bi = 0; bi < f->nblocks; bi++) {
+        IRBlock *b = f->blocks[bi];
+        if (d.idom[bi] < 0) continue;
+        IRInstr *t = b->ins[b->nins - 1];
+        if (t->op != IR_BR || t->t == t->f) continue;
+        int known = -1;
+        for (int c = bi; known < 0; c = d.idom[c]) {
+            IRBlock *D = f->blocks[c];
+            if (D->npreds == 1) {
+                IRBlock *T = D->preds[0];
+                IRInstr *tt = T->ins[T->nins - 1];
+                if (tt->op == IR_BR && tt->t != tt->f && tt->a == t->a) known = tt->t == D;
+            }
+            if (d.idom[c] == c) break;
+        }
+        if (known < 0) continue;
+        IRBlock *taken = known ? t->t : t->f, *other = known ? t->f : t->t;
+        ir_remove_pred_edge(other, b);
+        make_jmp(t, taken);
+        changed = true;
+    }
+    dom_free(&d);
+    return changed;
+}
+
 // ----------------------------------------------------------------------- LICM
 
 typedef struct {
@@ -1637,14 +1674,16 @@ static void loop_members(Loop *L, int nb, IRBlock **work) {
     }
 }
 
-static bool licm(IRFunc *f) {
+// Natural loops from dominance back edges, one per header, inner loops first. A loop
+// whose header does not dominate every member (irreducible control flow) is skipped.
+// Membership arrays are sized for the CFG as it is now: any pass that adds blocks
+// must rediscover (or loop_members()) before consulting them again.
+static Loop *find_loops(IRFunc *f, int *nl) {
     Dom d;
     dom_build(f, &d);
     IRBlock **work = xcalloc((size_t)f->nblocks, sizeof(*work));
-    // Natural loops from dominance back edges. A loop whose header does not dominate
-    // every member (irreducible control flow) is skipped.
     Loop *loops = xcalloc((size_t)f->nblocks, sizeof(*loops));
-    int nloops = 0;
+    int n = 0;
     for (int i = 0; i < d.n; i++) {
         IRBlock *h = d.rpo[i];
         Loop L = {0};
@@ -1659,7 +1698,7 @@ static bool licm(IRFunc *f) {
                 if (L.in[b] && !dominates(&d, h->id, b)) ok = false;
         }
         if (ok) {
-            loops[nloops++] = L;
+            loops[n++] = L;
         } else {
             free(L.latches);
             free(L.in);
@@ -1667,32 +1706,46 @@ static bool licm(IRFunc *f) {
     }
     dom_free(&d);
     free(work);
-    if (!nloops) {
-        free(loops);
-        return false;
+    qsort(loops, (size_t)n, sizeof(*loops), loop_cmp);
+    *nl = n;
+    return loops;
+}
+
+static void free_loops(Loop *loops, int n) {
+    for (int li = 0; li < n; li++) {
+        free(loops[li].latches);
+        free(loops[li].in);
     }
-    // Preheaders: reuse a lone outside predecessor that has a single successor.
+    free(loops);
+}
+
+// The preheader of L (the unique outside predecessor of the header, ending in
+// `jmp header`), created when the loop has none. *created reports a new block.
+static IRBlock *loop_pre(IRFunc *f, Loop *L, bool *created) {
+    IRBlock *h = L->header;
+    int *out = xcalloc((size_t)h->npreds, sizeof(int));
+    int nout = 0;
+    for (int k = 0; k < h->npreds; k++) {
+        bool latch = false;
+        for (int j = 0; j < L->nlatches; j++)
+            if (L->latches[j] == h->preds[k]) latch = true;
+        if (!latch) out[nout++] = k;
+    }
+    IRBlock *x = h->preds[out[0]], *pre = x;
+    *created = !(nout == 1 && x->ins[x->nins - 1]->op == IR_JMP);
+    if (*created) pre = make_preheader(f, h, out, nout);
+    free(out);
+    return pre;
+}
+
+// Gives every loop a preheader (L->pre), creating blocks where needed, and refreshes
+// the membership arrays for the grown CFG. Returns the number of blocks created.
+static int ensure_preheaders(IRFunc *f, Loop *loops, int nloops) {
     int created = 0;
     for (int li = 0; li < nloops; li++) {
         Loop *L = &loops[li];
-        IRBlock *h = L->header;
-        int *out = xcalloc((size_t)h->npreds, sizeof(int));
-        int nout = 0;
-        for (int k = 0; k < h->npreds; k++) {
-            bool latch = false;
-            for (int j = 0; j < L->nlatches; j++)
-                if (L->latches[j] == h->preds[k]) latch = true;
-            if (!latch) out[nout++] = k;
-        }
-        IRBlock *x = h->preds[out[0]];
-        if (nout == 1 && x->ins[x->nins - 1]->op == IR_JMP) {
-            L->pre = x;
-        } else {
-            L->pre = make_preheader(f, h, out, nout);
-            L->created = true;
-            created++;
-        }
-        free(out);
+        L->pre = loop_pre(f, L, &L->created);
+        created += L->created;
     }
     if (created) {
         // Keep the block layout natural: place each new preheader right before its header.
@@ -1708,11 +1761,22 @@ static bool licm(IRFunc *f) {
         for (int i = 0; i < w; i++) f->blocks[i]->id = i;
         free(nbk);
     }
-    int nb = f->nblocks;
-    work = xcalloc((size_t)nb, sizeof(*work));
-    for (int li = 0; li < nloops; li++) loop_members(&loops[li], nb, work);
+    IRBlock **work = xcalloc((size_t)f->nblocks, sizeof(*work));
+    for (int li = 0; li < nloops; li++) loop_members(&loops[li], f->nblocks, work);
     free(work);
     qsort(loops, (size_t)nloops, sizeof(*loops), loop_cmp); // inner loops first
+    return created;
+}
+
+static bool licm(IRFunc *f) {
+    int nloops;
+    Loop *loops = find_loops(f, &nloops);
+    if (!nloops) {
+        free_loops(loops, 0);
+        return false;
+    }
+    int created = ensure_preheaders(f, loops, nloops);
+    int nb = f->nblocks;
 
     unsigned char *fl = xcalloc((size_t)f->nvals, 1);
     unsigned char *hoist = xcalloc((size_t)f->nvals, 1);
@@ -1778,11 +1842,7 @@ static bool licm(IRFunc *f) {
     free(fl);
     free(hoist);
     free(sel);
-    for (int li = 0; li < nloops; li++) {
-        free(loops[li].latches);
-        free(loops[li].in);
-    }
-    free(loops);
+    free_loops(loops, nloops);
     return changed || created;
 }
 
@@ -2261,21 +2321,901 @@ static bool memopt(IRFunc *f) {
     return changed;
 }
 
+// ------------------------------------------------------------------ loop passes
+//
+//   loop_rotate   guard + do-while: the header's exit test is copied into the
+//                 preheader (the guard) and re-evaluated at the bottom of the loop
+//   iv_widen      i32 induction variables that index memory become i64 phis
+//   hoist_loads   loop-invariant loads that no store in the loop can overwrite
+//
+// They run after the scalar fixpoint, on loops from find_loops(); each pass that
+// changes the CFG rediscovers loops itself, so none relies on stale membership.
+
+typedef struct {
+    IRInstr *u;
+    int slot; // 0..2: a, b, c; 3+j: args[j] (phi incoming value / call argument j)
+} Use;
+
+static int *use_slot(IRInstr *u, int slot) {
+    return slot == 0 ? &u->a : slot == 1 ? &u->b
+        : slot == 2                      ? &u->c
+                                         : &u->args[slot - 3];
+}
+
+static void use_add(Use **us, int *n, int *cap, IRInstr *u, int slot) {
+    if (*n == *cap) {
+        *cap = *cap ? *cap * 2 : 16;
+        *us = realloc(*us, sizeof(**us) * (size_t)*cap);
+        if (!*us) {
+            fprintf(stderr, "rcc: out of memory\n");
+            exit(1);
+        }
+    }
+    (*us)[(*n)++] = (Use){u, slot};
+}
+
+// Appends the not yet linked instr n just before the terminator of b.
+static void put_before_term(IRBlock *b, IRInstr *n) {
+    IRInstr *t = b->ins[b->nins - 1];
+    b->nins--;
+    ir_block_append(b, n);
+    ir_block_append(b, t);
+}
+
+// Links the new instr n into b right before the existing non-phi instr `at`.
+static void put_before(IRBlock *b, const IRInstr *at, IRInstr *n) {
+    ir_block_append(b, n);
+    int pos = 0;
+    while (b->ins[pos] != at) pos++;
+    memmove(b->ins + pos + 1, b->ins + pos, sizeof(*b->ins) * (size_t)(b->nins - 1 - pos));
+    b->ins[pos] = n;
+}
+
+static IRInstr *new_instr(IRFunc *f, IROp op, IRType t, int a, int b) {
+    IRInstr *n = ir_instr_new(f, op, t);
+    n->aux = IR_NONE;
+    n->a = a;
+    n->b = b;
+    return n;
+}
+
+static IRInstr *new_iconst(IRFunc *f, IRType t, int64_t v) {
+    IRInstr *n = new_instr(f, IR_ICONST, t, IR_NONE, IR_NONE);
+    n->imm = v;
+    return n;
+}
+
+// ------------------------------------------------------------ value ranges
+//
+// A tiny, sound range analysis for I32 values, used to prove that an increment
+// cannot wrap. Facts come from (1) constants, (2) conditional edges whose target has
+// that edge as its only entry and dominates the point of interest: the branch
+// condition is a signed compare of the value (an SSA value keeps its value for the
+// whole iteration in which it is defined, and every path from the definition to
+// the dominated point crosses the edge), and (3) phis: the hull of what flows in
+// along each incoming edge (facts of the edge's source block plus the edge itself).
+
+typedef struct {
+    int64_t lo, hi;
+} Rng;
+
+static Rng rng_full(void) { return (Rng){INT32_MIN, INT32_MAX}; }
+
+// Intersection. An empty result means the point is unreachable, so any answer is sound.
+static Rng rng_meet(Rng a, Rng b) {
+    Rng r = {a.lo > b.lo ? a.lo : b.lo, a.hi < b.hi ? a.hi : b.hi};
+    return r.lo <= r.hi ? r : a;
+}
+
+static Rng rng_hull(Rng a, Rng b) {
+    return (Rng){a.lo < b.lo ? a.lo : b.lo, a.hi > b.hi ? a.hi : b.hi};
+}
+
+// Narrows *r by what taking (truth) or not taking the branch on `cmp` says about v.
+static void rng_refine(IRFunc *f, Rng *r, int v, const IRInstr *cmp, bool truth) {
+    if (cmp->op != IR_CMP || V(f, cmp->a)->type != IRT_I32) return;
+    IRCC cc = (IRCC)cmp->cc;
+    int x;
+    if (cmp->a == v) {
+        x = cmp->b;
+    } else if (cmp->b == v) {
+        x = cmp->a;
+        cc = swap_cc(cc);
+    } else {
+        return;
+    }
+    if (x == v) return;
+    if (!truth && !invert_cc(cc, &cc)) return;
+    Rng xr = rng_full();
+    if (V(f, x)->op == IR_ICONST) xr.lo = xr.hi = V(f, x)->imm;
+    switch (cc) {
+    case IRCC_SLT:
+        if (xr.hi - 1 < r->hi) r->hi = xr.hi - 1;
+        break;
+    case IRCC_SLE:
+        if (xr.hi < r->hi) r->hi = xr.hi;
+        break;
+    case IRCC_SGT:
+        if (xr.lo + 1 > r->lo) r->lo = xr.lo + 1;
+        break;
+    case IRCC_SGE:
+        if (xr.lo > r->lo) r->lo = xr.lo;
+        break;
+    case IRCC_EQ: *r = rng_meet(*r, xr); break;
+    default: break;
+    }
+}
+
+// What the conditional edges dominating the start of block bid say about v.
+static Rng rng_dom(IRFunc *f, const Dom *d, int v, int bid) {
+    Rng r = rng_full();
+    if (d->idom[bid] < 0) return r;
+    for (int c = bid;; c = d->idom[c]) {
+        IRBlock *B = f->blocks[c];
+        if (B->npreds == 1) {
+            IRBlock *T = B->preds[0];
+            IRInstr *t = T->ins[T->nins - 1];
+            if (t->op == IR_BR && t->t != t->f) rng_refine(f, &r, v, V(f, t->a), t->t == B);
+        }
+        if (d->idom[c] == c) break;
+    }
+    return r;
+}
+
+static Rng rng_val(IRFunc *f, const Dom *d, int v, int bid, int depth);
+
+// Range of v as it flows along the edge x -> h.
+static Rng rng_edge(IRFunc *f, const Dom *d, int v, IRBlock *x, IRBlock *h, int depth) {
+    Rng r = rng_val(f, d, v, x->id, depth);
+    IRInstr *t = x->ins[x->nins - 1];
+    if (t->op == IR_BR && t->t != t->f) rng_refine(f, &r, v, V(f, t->a), t->t == h);
+    return r;
+}
+
+// Range of the I32 value v at any point of block bid that it dominates.
+static Rng rng_val(IRFunc *f, const Dom *d, int v, int bid, int depth) {
+    IRInstr *i = V(f, v);
+    if (i->op == IR_ICONST) return (Rng){i->imm, i->imm};
+    Rng r = rng_dom(f, d, v, bid);
+    if (i->op == IR_PHI && depth > 0) {
+        Rng u = {INT64_MAX, INT64_MIN};
+        for (int k = 0; k < i->nargs; k++)
+            u = rng_hull(u, rng_edge(f, d, i->args[k], i->blk->preds[k], i->blk, depth - 1));
+        r = rng_meet(r, u);
+    }
+    return r;
+}
+
+// ------------------------------------------------------- induction variable widening
+//
+// p = phi(init, q), q = p + K (K constant) is an I32 value; code often uses it only as
+// sext32(p) for addressing, which costs a movsxd per use. When q provably never wraps,
+// sext32(p) == w for the I64 phi w = phi(sext32(init), w + K), so those sign
+// extensions disappear, and p itself, being dead afterwards, with them. Wrap is
+// observable (rcc compiles signed overflow as 32-bit wrap), hence the proof:
+// range(p) at the increment must leave room for K. The typical proofs are the loop
+// test `p < n` (K = 1: p <= INT_MAX-1 where it is incremented) or `p >= 0` (K = -1).
+//
+// Uses of p/q: sext32 -> w/w'; signed compare against a loop-invariant -> an I64 compare
+// against sext32(invariant) (equal ordering, since both sides are exact); add/sub of a
+// constant that cannot wrap, feeding sext32 -> w + c; anything else gets trunc(w).
+// The rewrite is only done when it removes more in-loop instrs than it adds.
+
+enum { WU_SEXT,
+       WU_CMP,
+       WU_OTHER,
+       WU_GONE };
+
+typedef struct {
+    IRInstr *u;
+    int slot, kind;
+    int src; // narrow value named by the operand: p, q or a derived add of p
+    int64_t off; // WU_SEXT of a derived add: the constant it adds
+    bool der;
+} WUse;
+
+static bool cc_signed_or_eq(int cc) {
+    return cc == IRCC_EQ || cc == IRCC_NE || cc == IRCC_SLT || cc == IRCC_SLE || cc == IRCC_SGT || cc == IRCC_SGE;
+}
+
+// Block where the use of an operand happens (phi arguments are used at the end of the predecessor).
+static IRBlock *use_block(const IRInstr *u, int slot) {
+    return u->op == IR_PHI ? u->blk->preds[slot - 3] : u->blk;
+}
+
+// When the sign extensions of the IV are used only as `mul s, C` with one constant C that
+// addressing modes cannot absorb (not 1, 2, 4, 8: struct strides such as 12, 24, 40), the
+// widened IV can carry the product itself: it steps by C*K, which replaces a multiply per
+// iteration (and a register) by an add. The compares move to the scaled domain too; as
+// the narrow IV never wraps, sext32 values are int32 and C * value cannot overflow I64
+// (C is limited to 2^20). Returns C (0: not applicable) and the products in *mu, with the
+// narrow value (src) each one scales.
+static int64_t sext_scale(IRFunc *f, const WUse *us, int nus, WUse **mu, int *nmu) {
+    unsigned char *is_s = xcalloc((size_t)f->nvals, 1);
+    int *src_of = xcalloc((size_t)f->nvals, sizeof(int));
+    int ns = 0, cm = 0;
+    for (int k = 0; k < nus; k++)
+        if (us[k].kind == WU_SEXT && !us[k].der) {
+            is_s[us[k].u->id] = 1;
+            src_of[us[k].u->id] = us[k].src;
+            ns++;
+        }
+    int64_t C = 0;
+    bool ok = ns > 0;
+    *mu = NULL;
+    *nmu = 0;
+    for (int bi = 0; bi < f->nblocks && ok; bi++) {
+        IRBlock *b = f->blocks[bi];
+        for (int k = 0; k < b->nphis + b->nins && ok; k++) {
+            IRInstr *u = k < b->nphis ? b->phis[k] : b->ins[k - b->nphis];
+            int nsl = 3 + u->nargs;
+            for (int slot = 0; slot < nsl && ok; slot++) {
+                int v = *use_slot(u, slot);
+                if (v == IR_NONE || !is_s[v]) continue;
+                if (u->op != IR_MUL || u->type != IRT_I64 || u->a == u->b) {
+                    ok = false;
+                    break;
+                }
+                IRInstr *oi = V(f, u->a == v ? u->b : u->a);
+                if (oi->op != IR_ICONST || oi->imm < 3 || oi->imm > (1 << 20) || is_pow2((uint64_t)oi->imm) ||
+                    (C && C != oi->imm)) {
+                    ok = false;
+                    break;
+                }
+                C = oi->imm;
+                if (*nmu == cm) {
+                    cm = cm ? cm * 2 : 8;
+                    *mu = realloc(*mu, sizeof(**mu) * (size_t)cm);
+                }
+                (*mu)[(*nmu)++] = (WUse){u, 0, 0, src_of[v], 0, false};
+            }
+        }
+    }
+    free(is_s);
+    free(src_of);
+    if (!ok || !*nmu) {
+        free(*mu);
+        *mu = NULL;
+        *nmu = 0;
+        return 0;
+    }
+    return C;
+}
+
+static bool widen_iv(IRFunc *f, const Dom *d, const Loop *L, IRInstr *p, unsigned char *touched) {
+    IRBlock *H = L->header, *P = L->pre;
+    int pi = pred_index(H, P);
+    if (pi < 0 || p->type != IRT_I32) return false;
+    int init = p->args[pi], q = IR_NONE;
+    int64_t K = 0;
+    for (int k = 0; k < H->npreds; k++) {
+        if (k == pi) continue;
+        IRInstr *s = V(f, p->args[k]);
+        if ((s->op != IR_ADD && s->op != IR_SUB) || s->a != p->id || V(f, s->b)->op != IR_ICONST) return false;
+        if (!L->in[s->blk->id]) return false;
+        int64_t c = s->op == IR_ADD ? V(f, s->b)->imm : -V(f, s->b)->imm;
+        if (q == IR_NONE) {
+            q = s->id;
+            K = c;
+        } else if (q != s->id) {
+            return false;
+        }
+    }
+    if (q == IR_NONE || K == 0) return false;
+    IRInstr *qi = V(f, q);
+    Rng pr = rng_val(f, d, p->id, qi->blk->id, 2);
+    if (K > 0 ? pr.hi + K > INT32_MAX : pr.lo + K < INT32_MIN) return false;
+
+    WUse *us = NULL;
+    int nus = 0, cus = 0;
+    int *der = NULL, nder = 0;
+    int64_t *doff = NULL;
+    bool ok = true;
+    // Direct uses of p and q.
+    for (int bi = 0; bi < f->nblocks && ok; bi++) {
+        IRBlock *b = f->blocks[bi];
+        for (int k = 0; k < b->nphis + b->nins && ok; k++) {
+            IRInstr *u = k < b->nphis ? b->phis[k] : b->ins[k - b->nphis];
+            if (u == p || u == qi) continue;
+            int nsl = 3 + u->nargs;
+            for (int slot = 0; slot < nsl; slot++) {
+                int v = *use_slot(u, slot);
+                if (v != p->id && v != q) continue;
+                WUse w = {u, slot, WU_OTHER, v, 0, false};
+                if (u->op == IR_SEXT32) {
+                    w.kind = WU_SEXT;
+                } else if (u->op == IR_CMP && slot <= 1 && cc_signed_or_eq(u->cc)) {
+                    int o = slot == 0 ? u->b : u->a;
+                    IRInstr *oi = V(f, o);
+                    if (o != p->id && o != q && (oi->op == IR_ICONST || !L->in[oi->blk->id])) w.kind = WU_CMP;
+                } else if ((u->op == IR_ADD || u->op == IR_SUB) && v == p->id && slot == 0 &&
+                           V(f, u->b)->op == IR_ICONST) {
+                    int64_t c = u->op == IR_ADD ? V(f, u->b)->imm : -V(f, u->b)->imm;
+                    Rng r = rng_val(f, d, p->id, u->blk->id, 2);
+                    if (r.lo + c >= INT32_MIN && r.hi + c <= INT32_MAX) {
+                        der = realloc(der, sizeof(*der) * (size_t)(nder + 1));
+                        doff = realloc(doff, sizeof(*doff) * (size_t)(nder + 1));
+                        der[nder] = u->id;
+                        doff[nder++] = c;
+                    }
+                }
+                if (nus == cus) {
+                    cus = cus ? cus * 2 : 16;
+                    us = realloc(us, sizeof(*us) * (size_t)cus);
+                }
+                us[nus++] = w;
+                if (nus > 256) ok = false; // not worth the bookkeeping
+            }
+        }
+    }
+    // Users of the derived adds: sext32 of them become w + c, any other user keeps the add alive.
+    int *drem = xcalloc((size_t)nder + 1, sizeof(int));
+    for (int bi = 0; bi < f->nblocks && ok && nder; bi++) {
+        IRBlock *b = f->blocks[bi];
+        for (int k = 0; k < b->nphis + b->nins && ok; k++) {
+            IRInstr *u = k < b->nphis ? b->phis[k] : b->ins[k - b->nphis];
+            int nsl = 3 + u->nargs;
+            for (int slot = 0; slot < nsl; slot++) {
+                int v = *use_slot(u, slot);
+                for (int e = 0; e < nder; e++) {
+                    if (v != der[e]) continue;
+                    if (u->op == IR_SEXT32) {
+                        if (nus == cus) {
+                            cus = cus ? cus * 2 : 16;
+                            us = realloc(us, sizeof(*us) * (size_t)cus);
+                        }
+                        us[nus++] = (WUse){u, slot, WU_SEXT, der[e], doff[e], true};
+                        if (nus > 256) ok = false;
+                    } else {
+                        drem[e]++;
+                    }
+                }
+            }
+        }
+    }
+    // A derived add without other users disappears, taking its use of p along.
+    for (int e = 0; e < nder; e++)
+        if (!drem[e])
+            for (int k = 0; k < nus; k++)
+                if (us[k].u->id == der[e]) us[k].kind = WU_GONE;
+    // Profit: sign extensions removed vs truncations added, counted on in-loop code.
+    int nsext = 0, nother = 0, nother_all = 0;
+    for (int k = 0; k < nus && ok; k++) {
+        if (us[k].kind == WU_GONE) continue;
+        nother_all += us[k].kind == WU_OTHER;
+        IRBlock *ub = use_block(us[k].u, us[k].slot);
+        if (!L->in[ub->id]) continue;
+        if (us[k].kind == WU_SEXT) nsext++;
+        else if (us[k].kind == WU_OTHER)
+            nother++;
+    }
+    if (!ok || nother >= nsext) {
+        free(us);
+        free(der);
+        free(doff);
+        free(drem);
+        return false;
+    }
+    // Strength reduction: a pure index IV whose sign extensions only feed `mul C`.
+    WUse *mu = NULL;
+    int nmu = 0;
+    int64_t C = 0;
+    if (nother_all == 0 && nder == 0) C = sext_scale(f, us, nus, &mu, &nmu);
+
+    // Commit. New values: sext32(init), K, the I64 phi w and its increment w2 (before q).
+    // With a scale C (strength reduction) w stands for C * sext32(p) instead: it starts at
+    // C * init, steps by C * K, and is compared against C * bound.
+    int64_t sc = C ? C : 1;
+    IRInstr *ii = V(f, init), *w0;
+    if (ii->op == IR_ICONST) {
+        w0 = new_iconst(f, IRT_I64, ii->imm * sc);
+    } else {
+        w0 = new_instr(f, IR_SEXT32, IRT_I64, init, IR_NONE);
+        if (sc != 1) {
+            put_before_term(P, w0);
+            IRInstr *c64 = new_iconst(f, IRT_I64, sc);
+            put_before_term(P, c64);
+            w0 = new_instr(f, IR_MUL, IRT_I64, w0->id, c64->id);
+        }
+    }
+    put_before_term(P, w0);
+    IRInstr *k64 = new_iconst(f, IRT_I64, K * sc);
+    put_before_term(P, k64);
+    IRInstr *w = ir_instr_new(f, IR_PHI, IRT_I64);
+    w->aux = IR_NONE;
+    w->nargs = H->npreds;
+    w->args = xcalloc((size_t)H->npreds, sizeof(int32_t));
+    IRInstr *w2 = new_instr(f, IR_ADD, IRT_I64, w->id, k64->id);
+    put_before(qi->blk, qi, w2);
+    for (int k = 0; k < H->npreds; k++) w->args[k] = k == pi ? w0->id : w2->id;
+    ir_block_add_phi(H, w);
+    // Sign-extended (scaled) copies of loop-invariant compare operands, one per distinct operand.
+    int *yv = NULL, *y64 = NULL, ny = 0;
+    for (int k = 0; k < nus; k++) {
+        WUse *x = &us[k];
+        IRInstr *u = x->u;
+        IRBlock *ublk = u->blk; // kill() unlinks u
+        int wide = x->src == p->id ? w->id : w2->id;
+        switch (x->kind) {
+        case WU_SEXT:
+            if (x->der) { // sext32(p + c) -> w + c
+                IRInstr *c64 = new_iconst(f, IRT_I64, x->off);
+                put_before_term(P, c64);
+                u->op = IR_ADD;
+                u->a = w->id;
+                u->b = c64->id;
+            } else if (!C) {
+                fwd_set(f, u->id, wide);
+                kill(u);
+            }
+            break;
+        case WU_CMP: {
+            int oslot = x->slot == 0 ? 1 : 0, o = *use_slot(u, oslot), m = -1;
+            for (int j = 0; j < ny; j++)
+                if (yv[j] == o) m = y64[j];
+            if (m < 0) {
+                IRInstr *oi = V(f, o), *n;
+                if (oi->op == IR_ICONST) {
+                    n = new_iconst(f, IRT_I64, oi->imm * sc);
+                    put_before_term(P, n);
+                } else {
+                    n = new_instr(f, IR_SEXT32, IRT_I64, o, IR_NONE);
+                    put_before_term(P, n);
+                    if (sc != 1) {
+                        IRInstr *c64 = new_iconst(f, IRT_I64, sc);
+                        put_before_term(P, c64);
+                        n = new_instr(f, IR_MUL, IRT_I64, n->id, c64->id);
+                        put_before_term(P, n);
+                    }
+                }
+                yv = realloc(yv, sizeof(*yv) * (size_t)(ny + 1));
+                y64 = realloc(y64, sizeof(*y64) * (size_t)(ny + 1));
+                yv[ny] = o;
+                y64[ny++] = m = n->id;
+            }
+            *use_slot(u, x->slot) = wide;
+            *use_slot(u, oslot) = m;
+            break;
+        }
+        case WU_OTHER: {
+            IRInstr *t = new_instr(f, IR_TRUNC, IRT_I32, wide, IR_NONE);
+            IRBlock *ub = use_block(u, x->slot);
+            if (u->op == IR_PHI) put_before_term(ub, t);
+            else
+                put_before(u->blk, u, t);
+            *use_slot(u, x->slot) = t->id;
+            break;
+        }
+        default:
+            break;
+        }
+        if (x->kind == WU_SEXT && !x->der && !C) touched[ublk->id] = 1;
+    }
+    for (int k = 0; k < nmu; k++) { // the C * sext32 products are the scaled IV itself
+        IRBlock *mb = mu[k].u->blk;
+        fwd_set(f, mu[k].u->id, mu[k].src == p->id ? w->id : w2->id);
+        kill(mu[k].u);
+        touched[mb->id] = 1;
+    }
+    free(mu);
+    free(yv);
+    free(y64);
+    free(us);
+    free(der);
+    free(doff);
+    free(drem);
+    return true;
+}
+
+static bool iv_widen(IRFunc *f) {
+    int nl;
+    Loop *loops = find_loops(f, &nl);
+    bool any = false;
+    for (int li = 0; li < nl && !any; li++)
+        for (int k = 0; k < loops[li].header->nphis && !any; k++) any = loops[li].header->phis[k]->type == IRT_I32;
+    if (!any) {
+        free_loops(loops, nl);
+        return false;
+    }
+    ensure_preheaders(f, loops, nl);
+    Dom d;
+    dom_build(f, &d);
+    fwd_reset(f);
+    unsigned char *touched = xcalloc((size_t)f->nblocks, 1);
+    bool changed = false;
+    for (int li = 0; li < nl; li++) {
+        Loop *L = &loops[li];
+        int np = L->header->nphis;
+        for (int k = 0; k < np; k++) {
+            if (!widen_iv(f, &d, L, L->header->phis[k], touched)) continue;
+            // Later candidates must not see operands that name the sign extensions just removed.
+            fwd_apply(f);
+            for (int bi = 0; bi < f->nblocks; bi++)
+                if (touched[bi]) compact_block(f->blocks[bi]);
+            memset(touched, 0, (size_t)f->nblocks);
+            changed = true;
+        }
+    }
+    free(touched);
+    dom_free(&d);
+    free_loops(loops, nl);
+    return changed;
+}
+
+// ------------------------------------------------------------------ loop rotation
+//
+// `for (i = 0; i < n; i++) body` is built as header{phis; test} -> body -> latch ->
+// header, so every iteration runs the header test plus a jump. Rotation copies the
+// header's non-phi instrs into the preheader (header phis replaced by their incoming
+// value from it), which then guards the loop (br test' ? body : exit), and leaves
+// the old header as the loop's bottom test: the body block becomes the loop header.
+// A value defined in the old header and used elsewhere now has two definitions, the
+// guard's copy and the bottom test's; SSA is restored with phis placed by on-demand
+// backward reads (Braun et al.): at the body entry (guard edge vs bottom edge) and
+// wherever else the two paths meet. The result is also what lets hoist_loads() move
+// loads into the guarded preheader. A loop whose latch already exits is considered
+// rotated, which makes the pass idempotent.
+
+#define ROT_MAX_INSTRS 8
+#define ROT_MAX_LOOPS 64
+
+static bool rot_cloneable(int op) {
+    switch (op) {
+    case IR_ICONST:
+    case IR_FCONST:
+    case IR_FRAMEADDR:
+    case IR_GADDR:
+    case IR_ADD:
+    case IR_SUB:
+    case IR_MUL:
+    case IR_AND:
+    case IR_OR:
+    case IR_XOR:
+    case IR_SHL:
+    case IR_SHR:
+    case IR_SAR:
+    case IR_NEG:
+    case IR_NOT:
+    case IR_FADD:
+    case IR_FSUB:
+    case IR_FMUL:
+    case IR_FDIV:
+    case IR_FNEG:
+    case IR_CMP:
+    case IR_FCMP:
+    case IR_SEXT8:
+    case IR_SEXT16:
+    case IR_ZEXT8:
+    case IR_ZEXT16:
+    case IR_SEXT32:
+    case IR_ZEXT32:
+    case IR_TRUNC:
+    case IR_SITOF:
+    case IR_UITOF:
+    case IR_FTOSI:
+    case IR_FTOU64:
+    case IR_FEXT:
+    case IR_FTRUNC:
+    case IR_LOAD:
+        return true;
+    default:
+        return false;
+    }
+}
+
+typedef struct {
+    IRFunc *f;
+    IRBlock *H, *P;
+    int *map; // old header value -> its definition at the end of the guard block P
+} Rot;
+
+static int rot_end(Rot *r, int v, int *memo, IRBlock *y);
+
+// Definition of the old-header value v that reaches the start of block u.
+static int rot_start(Rot *r, int v, int *memo, IRBlock *u) {
+    if (memo[u->id] != -2) return memo[u->id];
+    if (u->npreds < 2) { // a cycle needs a join, which memoizes its phi before recursing
+        int x = u->npreds ? rot_end(r, v, memo, u->preds[0]) : v;
+        memo[u->id] = x;
+        return x;
+    }
+    IRFunc *f = r->f;
+    IRInstr *phi = ir_instr_new(f, IR_PHI, (IRType)V(f, v)->type);
+    phi->aux = IR_NONE;
+    phi->nargs = u->npreds;
+    phi->args = xcalloc((size_t)u->npreds, sizeof(int32_t));
+    ir_block_add_phi(u, phi);
+    memo[u->id] = phi->id;
+    for (int k = 0; k < u->npreds; k++) phi->args[k] = rot_end(r, v, memo, u->preds[k]);
+    return phi->id;
+}
+
+static int rot_end(Rot *r, int v, int *memo, IRBlock *y) {
+    if (y == r->H) return v;
+    if (y == r->P) return r->map[v];
+    return rot_start(r, v, memo, y);
+}
+
+// Rotates L when it has the header-tested shape; true if the CFG changed (including
+// the creation of a preheader), after which the caller must rediscover loops.
+static bool rotate_loop(IRFunc *f, Loop *L) {
+    IRBlock *H = L->header;
+    IRInstr *term = H->ins[H->nins - 1];
+    if (term->op != IR_BR || term->t == term->f) return false;
+    bool tin = L->in[term->t->id], fin = L->in[term->f->id];
+    if (tin == fin) return false;
+    IRBlock *B = tin ? term->t : term->f, *X = tin ? term->f : term->t;
+    if (B == H || B->npreds != 1) return false;
+    for (int j = 0; j < L->nlatches; j++) { // a latch that exits: already bottom-tested
+        IRBlock *s[2];
+        int ns = ir_succs(L->latches[j], s);
+        for (int k = 0; k < ns; k++)
+            if (!L->in[s[k]->id]) return false;
+    }
+    if (H->nins - 1 > ROT_MAX_INSTRS || H->nphis > 24) return false;
+    for (int k = 0; k < H->nins - 1; k++)
+        if (!rot_cloneable(H->ins[k]->op)) return false;
+    bool created;
+    IRBlock *P = loop_pre(f, L, &created);
+    if (X == P) return created;
+    int nb = f->nblocks, nv0 = f->nvals;
+    int pi = pred_index(H, P);
+    Rot r = {f, H, P, xcalloc((size_t)nv0, sizeof(int))};
+    for (int i = 0; i < nv0; i++) r.map[i] = i;
+
+    // Uses of old-header values elsewhere (including the latch edges of the header phis).
+    Use *us = NULL;
+    int nus = 0, cus = 0;
+    for (int bi = 0; bi < f->nblocks; bi++) {
+        IRBlock *b = f->blocks[bi];
+        for (int k = 0; k < b->nphis + b->nins; k++) {
+            IRInstr *u = k < b->nphis ? b->phis[k] : b->ins[k - b->nphis];
+            if (b == H && u->op != IR_PHI) continue;
+            int nsl = 3 + u->nargs;
+            for (int slot = 0; slot < nsl; slot++) {
+                int v = *use_slot(u, slot);
+                if (v == IR_NONE || V(f, v)->blk != H) continue;
+                if (b == H && slot - 3 == pi) continue;
+                use_add(&us, &nus, &cus, u, slot);
+            }
+        }
+    }
+
+    // The guard: a copy of the header's instrs in P, ending in the header's branch.
+    for (int k = 0; k < H->nphis; k++) r.map[H->phis[k]->id] = H->phis[k]->args[pi];
+    for (int k = 0; k < H->nins - 1; k++) {
+        IRInstr *o = H->ins[k];
+        IRInstr *n = ir_instr_new(f, (IROp)o->op, (IRType)o->type);
+        n->aux = IR_NONE;
+        n->cc = o->cc;
+        n->mw = o->mw;
+        n->msign = o->msign;
+        n->scale = o->scale;
+        n->imm = o->imm;
+        n->fimm = o->fimm;
+        n->sym = o->sym;
+        n->line = o->line;
+        n->a = o->a == IR_NONE ? IR_NONE : r.map[o->a];
+        n->b = o->b == IR_NONE ? IR_NONE : r.map[o->b];
+        n->c = o->c == IR_NONE ? IR_NONE : r.map[o->c];
+        r.map[o->id] = n->id;
+        put_before_term(P, n);
+    }
+    IRInstr *g = P->ins[P->nins - 1];
+    g->op = IR_BR;
+    g->a = r.map[term->a];
+    g->t = term->t;
+    g->f = term->f;
+    int bi0 = pred_index(B, H), xi0 = pred_index(X, H);
+    ir_add_pred(B, P);
+    for (int k = 0; k < B->nphis; k++) phi_add_arg(B->phis[k], r.map[B->phis[k]->args[bi0]]);
+    ir_add_pred(X, P);
+    for (int k = 0; k < X->nphis; k++) phi_add_arg(X->phis[k], r.map[X->phis[k]->args[xi0]]);
+
+    // Re-establish SSA for the recorded uses.
+    int *vl = NULL, **memo = NULL, nvl = 0;
+    for (int k = 0; k < nus; k++) {
+        IRInstr *u = us[k].u;
+        int v = *use_slot(u, us[k].slot), j = 0;
+        while (j < nvl && vl[j] != v) j++;
+        if (j == nvl) {
+            vl = realloc(vl, sizeof(*vl) * (size_t)(nvl + 1));
+            memo = realloc(memo, sizeof(*memo) * (size_t)(nvl + 1));
+            memo[nvl] = xcalloc((size_t)nb, sizeof(int));
+            for (int i = 0; i < nb; i++) memo[nvl][i] = -2;
+            vl[nvl++] = v;
+        }
+        *use_slot(u, us[k].slot) = u->op == IR_PHI ? rot_end(&r, v, memo[j], u->blk->preds[us[k].slot - 3])
+                                                   : rot_start(&r, v, memo[j], u->blk);
+    }
+    ir_remove_pred_edge(H, P);
+    for (int j = 0; j < nvl; j++) free(memo[j]);
+    free(memo);
+    free(vl);
+    free(us);
+    free(r.map);
+    return true;
+}
+
+static bool loop_rotate(IRFunc *f) {
+    bool any = false;
+    for (int n = 0; n < ROT_MAX_LOOPS; n++) {
+        int nl;
+        Loop *loops = find_loops(f, &nl);
+        bool done = false;
+        for (int li = 0; li < nl && !done; li++) done = rotate_loop(f, &loops[li]);
+        free_loops(loops, nl);
+        if (!done) break;
+        any = true;
+    }
+    return any;
+}
+
+// ------------------------------------------------------------------ load hoisting
+//
+// A load whose address is loop-invariant is hoisted into the preheader when the value
+// it reads cannot change while the loop runs and the hoisted load cannot fault where
+// the original would not have:
+//  - the loop has no call (a callee may write anything, or never return) and no
+//    divide that can trap (a fault the load would then precede);
+//  - no store in the loop may alias it (acc_alias, the facts memopt uses);
+//  - the load's block dominates every exit of the loop, so some iteration executes it
+//    before control leaves, and the preheader runs only when the loop is entered.
+// Address computations the load needs and that the loop only contains (pure,
+// invariant operands) move along; they are what licm() leaves behind as free_at_use.
+
+static bool inv_ok(IRFunc *f, const Loop *L, const unsigned char *hoist, int v, int depth) {
+    IRInstr *o = V(f, v);
+    if (!L->in[o->blk->id] || hoist[v] || is_leaf(o)) return true;
+    if (depth == 0 || !hoistable(f, o)) return false;
+    int32_t ops[3] = {o->a, o->b, o->c};
+    for (int j = 0; j < 3; j++)
+        if (ops[j] != IR_NONE && !inv_ok(f, L, hoist, ops[j], depth - 1)) return false;
+    return true;
+}
+
+static void inv_mark(IRFunc *f, const Loop *L, unsigned char *hoist, int *sel, int *nsel, int v) {
+    IRInstr *o = V(f, v);
+    if (!L->in[o->blk->id] || hoist[v]) return;
+    int32_t ops[3] = {o->a, o->b, o->c};
+    for (int j = 0; j < 3; j++)
+        if (ops[j] != IR_NONE) inv_mark(f, L, hoist, sel, nsel, ops[j]);
+    hoist[v] = 1;
+    sel[(*nsel)++] = v;
+}
+
+#define HOIST_MAX_STORES 64
+
+static bool hoist_loads(IRFunc *f) {
+    bool anyload = false;
+    for (int bi = 0; bi < f->nblocks && !anyload; bi++)
+        for (int k = 0; k < f->blocks[bi]->nins && !anyload; k++) anyload = f->blocks[bi]->ins[k]->op == IR_LOAD;
+    if (!anyload) return false;
+    int nl;
+    Loop *loops = find_loops(f, &nl);
+    if (!nl) {
+        free_loops(loops, 0);
+        return false;
+    }
+    ensure_preheaders(f, loops, nl);
+    fwd_reset(f);
+    Mem m;
+    mem_init(&m, f);
+    Dom d;
+    dom_build(f, &d);
+    int nb = f->nblocks;
+    IRBlock **rpo = xcalloc((size_t)nb, sizeof(*rpo)), **ex = xcalloc((size_t)nb, sizeof(*ex));
+    int nrpo = ir_rpo(f, rpo);
+    unsigned char *hoist = xcalloc((size_t)f->nvals, 1);
+    int *sel = xcalloc((size_t)f->nvals, sizeof(int));
+    Acc st[HOIST_MAX_STORES];
+    bool changed = false;
+    for (int li = 0; li < nl; li++) {
+        Loop *L = &loops[li];
+        int nst = 0, nex = 0;
+        bool bad = false;
+        for (int bi = 0; bi < nrpo && !bad; bi++) {
+            IRBlock *b = rpo[bi];
+            if (!L->in[b->id]) continue;
+            for (int k = 0; k < b->nins && !bad; k++) {
+                IRInstr *i = b->ins[k];
+                if (i->op == IR_CALL || ((i->op == IR_SDIV || i->op == IR_UDIV || i->op == IR_SREM || i->op == IR_UREM) && !div_safe(f, i)))
+                    bad = true;
+                else if (i->op == IR_STORE) {
+                    if (nst == HOIST_MAX_STORES) bad = true;
+                    else
+                        acc_make(&m, i, &st[nst++]);
+                }
+            }
+            IRBlock *s[2];
+            int ns = ir_succs(b, s);
+            bool exits = ns == 0;
+            for (int k = 0; k < ns; k++)
+                if (!L->in[s[k]->id]) exits = true;
+            if (exits) ex[nex++] = b;
+        }
+        if (bad || !nex) continue;
+        int nsel = 0;
+        for (int bi = 0; bi < nrpo; bi++) {
+            IRBlock *b = rpo[bi];
+            if (!L->in[b->id]) continue;
+            bool all = true;
+            for (int e = 0; e < nex && all; e++) all = dominates(&d, b->id, ex[e]->id);
+            if (!all) continue;
+            for (int k = 0; k < b->nins; k++) {
+                IRInstr *i = b->ins[k];
+                if (i->op != IR_LOAD || hoist[i->id]) continue;
+                if (!inv_ok(f, L, hoist, i->a, 3) || (i->b != IR_NONE && !inv_ok(f, L, hoist, i->b, 3))) continue;
+                Acc a;
+                acc_make(&m, i, &a);
+                bool alias = false;
+                for (int s = 0; s < nst && !alias; s++) alias = acc_alias(&m, &a, &st[s]);
+                if (alias) continue;
+                inv_mark(f, L, hoist, sel, &nsel, i->a);
+                if (i->b != IR_NONE) inv_mark(f, L, hoist, sel, &nsel, i->b);
+                hoist[i->id] = 1;
+                sel[nsel++] = i->id;
+            }
+        }
+        if (!nsel) continue;
+        IRBlock *pre = L->pre;
+        for (int bi = 0; bi < nrpo; bi++) {
+            IRBlock *b = rpo[bi];
+            if (!L->in[b->id]) continue;
+            int w = 0;
+            for (int k = 0; k < b->nins; k++) {
+                IRInstr *i = b->ins[k];
+                if (hoist[i->id]) put_before_term(pre, i);
+                else
+                    b->ins[w++] = i;
+            }
+            b->nins = w;
+        }
+        for (int k = 0; k < nsel; k++) hoist[sel[k]] = 0;
+        changed = true;
+    }
+    free(rpo);
+    free(ex);
+    free(hoist);
+    free(sel);
+    mem_free(&m);
+    dom_free(&d);
+    free_loops(loops, nl);
+    return changed;
+}
+
 // ---------------------------------------------------------------------- driver
 
-void ir_opt(IRFunc *f) {
-    if (f->nblocks == 0) return;
-    cfg_cleanup(f);
+// The scalar fixpoint: simplify / CFG cleanup / DCE / GVN / memopt until nothing changes.
+static void scalar_opts(IRFunc *f) {
     for (int round = 0; round < OPT_ROUNDS; round++) {
         bool ch = simplify(f);
         ch |= cfg_cleanup(f);
         ch |= dce(f);
         ch |= gvn(f);
+        ch |= fold_known_branches(f);
         ch |= memopt(f);
         if (!ch) break;
     }
     dce(f);
+}
+
+void ir_opt(IRFunc *f) {
+    if (f->nblocks == 0) return;
+    cfg_cleanup(f);
+    scalar_opts(f);
+    // Loop shape. Rotation first: its guard is a range fact for iv_widen, and its
+    // result (trivial phis, a mergeable bottom test) must be cleaned up before the
+    // induction variables can be recognized. The passes below create preheaders that
+    // the CFG cleanup would dissolve again, so they run last.
+    if (loop_rotate(f)) scalar_opts(f);
+    if (iv_widen(f)) scalar_opts(f);
     // Hoisting can land equal expressions from sibling loops in one preheader.
-    if (licm(f)) gvn(f);
+    bool hoisted = licm(f);
+    if (hoist_loads(f)) { // loads in the preheaders make more pure instrs invariant
+        licm(f);
+        hoisted = true;
+    }
+    if (hoisted) gvn(f);
     ir_analyze_loops(f);
 }

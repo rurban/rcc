@@ -63,19 +63,32 @@
      ir_x86.c. Wider eligibility: ~77% of unit-test functions.
      Remaining rejections: bitfields, inline asm, atomics, volatile, complex/
      decimal/int128/long double, labeled loops (C2Y), special callees.
-  3. PARTLY DONE: IR inliner (small same-TU callees without frame slots,
+  3. MOSTLY DONE: IR inliner (small same-TU callees without frame slots,
      multi-block/multi-return bodies spliced before ir_opt; IR built for the
-     whole TU up front so callees defined later inline too; respects the new
-     __attribute__((noinline)) flag, which the AST inliner now honors as well;
-     call-heavy benchmark 0.21s -> 0.13s, gcc -O2 0.14s). Redundant-load
-     elimination, store-to-load forwarding (exact-width and exact TRUNC/SEXT/
-     ZEXT cases), dead-store elimination and non-escaping frame-slot analysis
-     in ir_opt. Still open: inline callees with frame slots (rebase slots),
-     recursive-call tail calls to loops, loads/stores across join points
-     (needs dataflow instead of the dominator-tree walk), LICM of loads with
-     alias info, induction-variable widening and strength reduction, loop
-     rotation, memory operands in ALU/FP ops, scalar replacement of
-     non-escaping structs and arrays (AWFY).
+     whole TU up front so callees defined later inline too; templates are
+     ir_opt'd once so the size caps see optimized code; honors
+     __attribute__((noinline)), which the AST inliner now also honors;
+     -fno-ir-inline; call-heavy 0.77s old / 0.21s no-inline / 0.13s inlined /
+     gcc 0.14s). ir_opt: redundant-load elimination, store-to-load
+     forwarding (exact-width + TRUNC/SEXT/ZEXT), dead stores, non-escaping
+     frame-slot analysis. abs/labs/llabs lowered inline. Tail-recursive calls
+     become loops (ir_tailrec in ir_inline.c; weak/aliased/interposable
+     self-calls kept as calls). IR frames sized from surviving FRAMEADDRs
+     (AST stack_size counted slots SSA had promoted). Noreturn calls
+     (__attribute__((noreturn)) / _Noreturn / [[noreturn]]; glibc
+     abort/exit/__assert_fail) cut their block with UNREACHABLE so cold
+     assert/abort paths no longer force a frame or callee-saved saves;
+     qualifying functions shrink-wrap (frameless hot path, per-cold-block
+     prologue). Memory operands: single-use loads fold into add/sub/and/
+     or/xor/imul/cmp (incl. cmp in br)/SSE add/sub/mul/div/ucomis when no
+     store/call/divide intervenes. AWFY -O2: 5.9s old -> ~4.8s, gcc 4.6s
+     (Bounce 107->56ms, CD ~1.0x). Still open: inline callees with frame
+     slots (rebase slots), loads/stores across join points (needs dataflow,
+     not the dominator-tree walk), LICM of loads with alias info,
+     induction-variable widening/strength reduction, loop rotation (in
+     progress), scalar replacement of non-escaping structs and arrays.
+     Remaining rejections: bitfields, inline asm, atomics, volatile,
+     complex/decimal/int128/long double, labeled loops (C2Y).
   4. ARM64 IR emitter.
 
   Gate every step on `./run_tests "./rcc -O2" --all --parallel`

@@ -19956,6 +19956,10 @@ bool cg_ir_try_function(Program *prog, Function *fn, bool emitting_local_copy) {
         ir_dump(f, stderr);
     }
     if (!opt_fno_ir_inline) ir_inline(f, cg_ir_lookup, NULL);
+    // Self tail calls become a loop, unless the self-call could bind to another
+    // definition (weak/aliased/asm-named, or an interposable non-static function).
+    if (!fn->is_weak && !fn->asm_name && !fn->alias_target && (fn->is_static || !(opt_pic || opt_shared)))
+        ir_tailrec(f);
     ir_opt(f);
     if (opt_fdump_ir) {
         fprintf(stderr, "=== IR after inline + ir_opt ===\n");

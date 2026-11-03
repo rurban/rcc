@@ -125,6 +125,7 @@ rcc-preview2.png
 bench/sqlite3.c
 bench/sqlite3.h
 bench/bench
+bench/awfy_*
 
 # macOS debug symbols
 *.dSYM

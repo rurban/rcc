@@ -3,7 +3,9 @@
 // Pipeline, per eligible function (see TODO "-O2 performance"):
 //   ir_build()   AST -> IR, SSA built on the fly (Braun et al.), scalar locals
 //                whose address is never taken become SSA values (ir_build.c)
-//   ir_opt()     fold / simplify / DCE / CFG cleanup           (ir_opt.c)
+//   ir_opt()     scalar fixpoint (fold/simplify/DCE/GVN/memopt), then loop
+//                rotation, induction-variable widening (+ scaled strength
+//                reduction), invariant-load hoisting and LICM   (ir_opt.c)
 //   ir_emit_x86() address+imm folding, phi elimination, linear-scan register
 //                allocation, instruction selection, emit into cg_sec (ir_x86.c)
 // Functions ir_build() rejects (returns NULL) are compiled by the old
@@ -192,6 +194,10 @@ typedef struct IRInstr {
     uint8_t msign; // LOAD of I8/I16: 1 = sign-extend, 0 = zero-extend
     uint8_t scale; // LOAD/STORE index scale: 1, 2, 4, 8
     uint8_t variadic; // CALL
+    uint8_t noret; // CALL: the callee is noreturn (abort, exit, __assert_fail, ...). Only the
+    // x86 backend reads it: it cuts the block after the call (no successors, nothing live
+    // across it) and may build the stack frame inside that cold block alone. Every other pass
+    // keeps treating the call as an ordinary one followed by the block's terminator.
     int32_t id; // index in IRFunc.vals
     int32_t a, b, c; // operand value ids, IR_NONE if unused
     int64_t imm;
@@ -292,18 +298,37 @@ void ir_verify(IRFunc *f);
 // The pass decides profitability and legality of the IR itself: see ir_inline.c.
 // Leaves `caller` verifiable and `caller->has_calls` correct.
 void ir_inline(IRFunc *caller, IRFunc *(*lookup)(const char *sym, void *ud), void *ud);
+// Turn self-recursive tail calls of `f` into a loop (run after ir_inline, before
+// ir_opt). Only direct scalar calls of f's own symbol whose result is returned
+// unchanged (through empty jmp blocks / a `phi; ret phi` merge) qualify, and only
+// in functions without IR_FRAMEADDR. Adds a loop-header block with one phi per
+// changed param and refreshes has_calls and loop_depth. Callers must additionally
+// skip functions whose self-call may bind elsewhere (weak, or interposable under -fPIC).
+void ir_tailrec(IRFunc *f);
 
 // ---------------------------------------------------------------- ir_opt.c
-// Constant folding, algebraic simplification, copy/phi simplification, DCE,
-// unreachable-block removal, branch folding, empty-block threading, block
-// merging, dominator-tree GVN of pure instrs and LICM of pure non-trapping
-// instrs (which may add loop preheader blocks). Output block ids are dense and
-// loop_depth is refreshed. Memory (all LOAD/STORE are plain accesses): redundant
-// loads and store->load pairs are forwarded along single-predecessor chains,
+// Scalar fixpoint: constant folding, algebraic simplification, copy/phi
+// simplification, DCE, unreachable-block removal, branch folding (incl. branches
+// on values a dominating edge already decided), empty-block threading, block
+// merging, dominator-tree GVN of pure instrs, and memopt (below).
+// Loop passes (after the fixpoint; loops from dominance back edges, irreducible
+// loops skipped): loop rotation turns a header-tested loop into a guarded
+// do-while (the header's test is copied into the preheader; SSA uses of header
+// values are re-merged with phis); iv_widen turns an I32 induction variable whose
+// wrap is provably unobservable (a tiny sound range analysis over dominating
+// conditional edges proves the increment cannot wrap) into an I64 phi, removing
+// per-iteration sign extensions, and folds the scaled variant (sext(i) * C with
+// a stride C the addressing modes cannot absorb) into a pointer-style IV;
+// hoist_loads moves a loop-invariant load into the preheader when no store in the
+// loop may alias it, the loop has no call or trapping divide, and the load's
+// block dominates every exit; licm hoists invariant pure instrs into (created)
+// loop preheaders. Memory (all LOAD/STORE are plain accesses): redundant loads
+// and store->load pairs are forwarded along single-predecessor chains,
 // same-address overwritten stores and stores to never-read non-escaping frame
 // slots are removed; unused LOADs are deleted. CALLs and trapping divides are
 // never removed, merged or reordered, nor is a store moved past an aliasing access.
 // Must preserve exact C-visible semantics (incl. wrap, trap-capable divides).
+// Output block ids are dense and loop_depth is refreshed.
 void ir_opt(IRFunc *f);
 
 // ---------------------------------------------------------------- ir_x86.c

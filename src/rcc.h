@@ -560,6 +560,7 @@ struct LVar {
     bool is_weak;
     bool is_used; // __attribute__((used)) — see Function.is_used
     bool is_noinline; // __attribute__((noinline)) on a declaration; copied to Function.is_noinline
+    bool is_noreturn; // noreturn on a declaration; copied to Function.is_noreturn
     bool has_init;
     bool has_visibility; // __attribute__((visibility("..."))) seen
     uint8_t visibility; // STV_* (obj.h) when has_visibility
@@ -918,6 +919,7 @@ struct Function {
     bool is_gnu_inline; // GNU89 semantics: extern inline is never emitted
     bool is_always_inline; // __attribute__((always_inline)): force inline at -O0 too
     bool is_noinline; // __attribute__((noinline)): neither the AST inliner nor the IR inliner may inline it
+    bool is_noreturn; // __attribute__((noreturn)) / _Noreturn / [[noreturn]]: calls never return
     bool is_static;
     bool is_extern;
     bool is_weak;

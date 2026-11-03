@@ -279,3 +279,217 @@ void ir_inline(IRFunc *caller, IRFunc *(*lookup)(const char *sym, void *ud), voi
                 break;
             }
 }
+
+// ---------------------------------------------------------------- ir_tailrec
+//
+// Self-recursive tail calls become a loop. Runs once on a freshly built (and
+// inlined) function, before ir_opt().
+//
+// A tail call is a direct, scalar, non-variadic IR_CALL of f's own symbol that
+// is the last instr before a `ret` of exactly its result (void: a value-less
+// `ret`), possibly through a chain of empty `jmp` blocks, possibly ending in a
+// merge block that holds only `phi; ret phi` where the phi's incoming value on
+// this edge is the call. The result must have no other use, and the function
+// must contain no IR_FRAMEADDR: no frame slot can have been handed to the
+// callee, so reusing this frame for the next iteration is invisible.
+//
+// Rewrite (E = old entry, keeps only the IR_PARAMs so it stays blocks[0]):
+//     E: params; jmp H
+//     H: one phi per CHANGED param [E: the IR_PARAM, tail block: the call arg];
+//        everything that used to follow the params in E
+//     tail block: call removed, `ret` / jmp chain replaced by `jmp H`
+// Every use of a changed param is rewritten to its phi. A param that all tail
+// calls pass through unchanged gets no phi, so no trivial phi is left behind.
+// The phis are evaluated in parallel (f(a,b) -> f(b,a) swaps), which is the
+// semantics of the call's simultaneous argument passing.
+// The edge a tail block had into the jmp chain / merge block is dropped; blocks
+// that lose their last predecessor become UNREACHABLE for ir_opt to delete.
+typedef struct {
+    IRInstr *call;
+    IRBlock *first; // first block after the call block (the chain's head), NULL if `ret` follows directly
+} Tail;
+
+static int count_uses(const IRFunc *f, int id) {
+    int n = 0;
+    for (int bi = 0; bi < f->nblocks; bi++) {
+        const IRBlock *b = f->blocks[bi];
+        for (int k = 0; k < b->nphis + b->nins; k++) {
+            const IRInstr *i = k < b->nphis ? b->phis[k] : b->ins[k - b->nphis];
+            n += (i->a == id) + (i->b == id) + (i->c == id);
+            for (int j = 0; j < i->nargs; j++) n += i->args[j] == id;
+        }
+    }
+    return n;
+}
+
+// True when `call` (an IR_CALL in some block of f) is a self tail call.
+static bool tail_site(const IRFunc *f, IRInstr *call, Tail *t) {
+    if (call->op != IR_CALL || !call->sym || call->a != IR_NONE || call->variadic || call->ret_agg != 0) return false;
+    if (strcmp(call->sym, f->fn->name) != 0 || call->type != f->ret_type || call->nargs != f->nparams) return false;
+    if (!all_scalar(call->arg_class, call->nargs)) return false;
+    for (int j = 0; j < call->nargs; j++)
+        if (f->vals[call->args[j]]->type != f->param_types[j]) return false;
+
+    IRBlock *b = call->blk;
+    int k = b->nins - 2; // the call must be the last real instr before the terminator
+    while (k >= 0 && b->ins[k]->op == IR_NOP) k--;
+    if (k < 0 || b->ins[k] != call) return false;
+    const IRInstr *term = b->ins[b->nins - 1];
+    const bool is_void = f->ret_type == IRT_VOID;
+
+    // Follow empty jmp blocks. A value flows through them only if the call
+    // dominates nothing but this path: every such block has this edge alone.
+    const IRBlock *last = b, *r = NULL;
+    t->first = NULL;
+    if (term->op == IR_JMP) {
+        r = term->t;
+        t->first = term->t;
+        for (int steps = 0; steps < f->nblocks && r->nphis == 0 && r->nins == 1 && r->ins[0]->op == IR_JMP; steps++) {
+            if (!is_void && r->npreds != 1) return false;
+            last = r;
+            r = r->ins[0]->t;
+        }
+        if (r->nins != 1 || r->ins[0]->op != IR_RET) return false;
+        term = r->ins[0];
+    } else if (term->op != IR_RET) {
+        return false;
+    }
+
+    if (is_void) return term->a == IR_NONE && (!r || r->nphis == 0);
+    if (count_uses(f, call->id) != 1) return false;
+    if (!r) return term->a == call->id;
+    if (r->nphis == 0) return term->a == call->id && r->npreds == 1;
+    // merge block `phi; ret phi`: this edge must carry the call
+    if (r->nphis != 1 || term->a != r->phis[0]->id) return false;
+    for (int j = 0; j < r->npreds; j++)
+        if (r->preds[j] == last) return r->phis[0]->args[j] == call->id;
+    return false;
+}
+
+// Removes the edge from->to; a block that loses its last predecessor dies
+// (UNREACHABLE terminator) and so on down the jmp chain.
+static void drop_edge(IRBlock *from, IRBlock *to) {
+    ir_remove_pred_edge(to, from);
+    while (to->npreds == 0) {
+        IRInstr *t = to->ins[to->nins - 1];
+        IRBlock *s[2];
+        int ns = ir_succs(to, s);
+        t->op = IR_UNREACHABLE;
+        t->a = IR_NONE;
+        t->t = t->f = NULL;
+        if (ns != 1) break; // chain blocks have exactly one successor; a dead `ret` ends the walk
+        ir_remove_pred_edge(s[0], to);
+        to = s[0];
+    }
+}
+
+void ir_tailrec(IRFunc *f) {
+    if (!f->fn || !f->fn->name || f->fn->is_variadic || f->ret_agg || f->ret_sret || !f->has_calls) return;
+    if (!all_scalar(f->param_class, f->nparams)) return;
+    int ncalls = 0;
+    for (int bi = 0; bi < f->nblocks; bi++)
+        for (int k = 0; k < f->blocks[bi]->nins; k++) {
+            const IRInstr *i = f->blocks[bi]->ins[k];
+            if (i->op == IR_FRAMEADDR) return;
+            ncalls += i->op == IR_CALL;
+        }
+    if (ncalls == 0) return;
+
+    IRBlock *entry = f->blocks[0];
+    int *pv = xmalloc(sizeof(*pv) * (size_t)(f->nparams ? f->nparams : 1)); // param index -> IR_PARAM value
+    for (int j = 0; j < f->nparams; j++) pv[j] = IR_NONE;
+    for (int k = 0; k < entry->nins; k++) {
+        const IRInstr *i = entry->ins[k];
+        if (i->op != IR_PARAM) continue;
+        if (i->imm < 0 || i->imm >= f->nparams || pv[i->imm] != IR_NONE) {
+            free(pv);
+            return;
+        }
+        pv[i->imm] = i->id;
+    }
+
+    Tail *tails = xmalloc(sizeof(*tails) * (size_t)ncalls);
+    int nt = 0;
+    for (int bi = 0; bi < f->nblocks; bi++)
+        for (int k = 0; k < f->blocks[bi]->nins; k++)
+            if (tail_site(f, f->blocks[bi]->ins[k], &tails[nt])) {
+                tails[nt].call = f->blocks[bi]->ins[k];
+                nt++;
+            }
+    if (nt == 0) {
+        free(tails);
+        free(pv);
+        return;
+    }
+
+    // Split: the params stay in the entry, the rest moves to the loop header H.
+    IRBlock *h = ir_block_new(f);
+    ir_add_pred(h, entry); // preds[0] = entry edge, then one per tail block in order
+    int keep = 0;
+    for (int k = 0; k < entry->nins; k++) {
+        IRInstr *i = entry->ins[k];
+        if (i->op == IR_PARAM) entry->ins[keep++] = i;
+        else
+            ir_block_append(h, i);
+    }
+    entry->nins = keep;
+    IRBlock *succ[2];
+    int ns = ir_succs(h, succ);
+    for (int k = 0; k < ns; k++)
+        for (int j = 0; j < succ[k]->npreds; j++)
+            if (succ[k]->preds[j] == entry) succ[k]->preds[j] = h; // same slot: phi args stay aligned
+    IRInstr *jmp = ir_instr_new(f, IR_JMP, IRT_VOID);
+    jmp->t = h;
+    jmp->line = h->ins[h->nins - 1]->line;
+    ir_block_append(entry, jmp);
+    h->loop_depth = 0;
+
+    // One phi per param some tail call changes; uses are rewritten before the
+    // phi operands are filled in (so the entry operand keeps the raw IR_PARAM).
+    int *phi = xmalloc(sizeof(*phi) * (size_t)(f->nparams ? f->nparams : 1));
+    for (int j = 0; j < f->nparams; j++) {
+        phi[j] = IR_NONE;
+        if (pv[j] == IR_NONE) continue;
+        bool changed = false;
+        for (int t = 0; t < nt; t++) changed |= tails[t].call->args[j] != pv[j];
+        if (!changed) continue;
+        IRInstr *p = ir_instr_new(f, IR_PHI, (IRType)f->vals[pv[j]]->type);
+        p->args = xmalloc(sizeof(*p->args) * (size_t)(nt + 1));
+        p->line = jmp->line;
+        ir_block_add_phi(h, p);
+        phi[j] = p->id;
+    }
+    for (int j = 0; j < f->nparams; j++)
+        if (phi[j] != IR_NONE) ir_replace_uses(f, pv[j], phi[j]);
+    for (int j = 0; j < f->nparams; j++) {
+        if (phi[j] == IR_NONE) continue;
+        IRInstr *p = f->vals[phi[j]];
+        p->args[p->nargs++] = pv[j];
+        for (int t = 0; t < nt; t++) p->args[p->nargs++] = tails[t].call->args[j];
+    }
+
+    for (int t = 0; t < nt; t++) {
+        IRInstr *call = tails[t].call;
+        IRBlock *b = call->blk;
+        IRInstr *term = b->ins[b->nins - 1];
+        if (tails[t].first) drop_edge(b, tails[t].first);
+        ir_block_remove(b, call);
+        term->op = IR_JMP;
+        term->a = IR_NONE;
+        term->t = h;
+        term->f = NULL;
+        ir_add_pred(h, b);
+    }
+
+    f->has_calls = false;
+    for (int bi = 0; bi < f->nblocks && !f->has_calls; bi++)
+        for (int k = 0; k < f->blocks[bi]->nins; k++)
+            if (f->blocks[bi]->ins[k]->op == IR_CALL) {
+                f->has_calls = true;
+                break;
+            }
+    ir_analyze_loops(f); // H is a new loop header: loop_depth feeds LICM and the allocator's spill weights
+    free(phi);
+    free(tails);
+    free(pv);
+}

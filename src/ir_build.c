@@ -1302,6 +1302,7 @@ static int gen_call(B *b, Node *n) {
     if (agg_ret) // > 0: two-reg RAX[:RDX] return; < 0: hidden return pointer
         c->ret_agg = ir_ret_two_reg(n->ty) ? (int32_t)n->ty->size : -(int32_t)n->ty->size;
     c->variadic = !fty || fty->is_variadic || fty->is_oldstyle;
+    c->noret = callee && callee->kind == ND_LVAR && callee->var && callee->var->is_function && callee->var->is_noreturn;
     b->f->has_calls = true;
     if (is_void) return IR_NONE;
     if (agg_ret) return c->id; // address of the returned bytes
