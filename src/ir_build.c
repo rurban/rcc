@@ -40,6 +40,15 @@ typedef struct {
     int *users; // phis that use this phi as an operand
 } PhiAux;
 
+// Innermost-first stack of enclosing switch statements: maps ND_CASE nodes
+// (which can nest inside loops — Duff's device) to their pre-created blocks.
+typedef struct {
+    Node *node; // the ND_SWITCH
+    IRBlock **cblk; // per case_next entry
+    int nc;
+    IRBlock *dflt; // NULL when the switch has no default
+} SwCtx;
+
 typedef struct {
     Program *prog;
     Function *fn;
@@ -61,9 +70,16 @@ typedef struct {
     PhiAux *aux; // indexed by value id
     int auxcap;
     IRBlock *entry;
+    int retbuf_off; // frame offset of the parser's __retbuf local (sret functions)
     IRBlock *cur_blk; // insertion block, NULL after a terminator
     IRBlock **brk, **cont; // loop target stacks
     int depth, capdepth;
+    SwCtx *sw;
+    int swdepth, capsw;
+    // goto targets: label name (interned) -> block, created lazily
+    char **label_name;
+    IRBlock **label_blk;
+    int nlabels, caplabels;
 } B;
 
 // ------------------------------------------------------------------ helpers
@@ -527,6 +543,15 @@ static void mark_spine(B *b, Node *x) {
     }
 }
 
+// Does the parser-recorded cleanup range [begin, end) contain any variable
+// that actually needs a cleanup run? The range is non-empty for every nested
+// scope exit (locals grew); only cleanup_func/defer_stmt vars matter.
+static bool range_has_cleanup(LVar *begin, LVar *end) {
+    for (LVar *v = begin; v && v != end; v = v->next)
+        if (v->cleanup_func || v->defer_stmt) return true;
+    return false;
+}
+
 static void scan(B *b, Node *n) {
     if (!n || b->fail) return;
     switch (n->kind) {
@@ -534,11 +559,20 @@ static void scan(B *b, Node *n) {
     case ND_FNUM:
     case ND_STR:
     case ND_NULL:
+        return;
     case ND_BREAK:
     case ND_CONTINUE:
+        // Non-empty cleanup range with actual cleanups: exiting here must run
+        // them (see ND_RETURN).
+        if (range_has_cleanup(n->cleanup_begin, n->cleanup_end)) fail(b, "cleanup on control flow");
         return;
     case ND_LVAR:
         if (n->chain_depth) fail(b, "nested-function variable");
+        // Block-scoped cleanup/defer/VLA locals are gone from fn->locals by the
+        // time fn_eligible walks it, so every use must be rejected here.
+        if (n->var && (n->var->cleanup_func || n->var->defer_stmt)) fail(b, "cleanup local");
+        if (n->var && n->var->ty && (n->var->ty->kind == TY_VLA || n->var->ty->cleanup_func))
+            fail(b, "VLA/cleanup local");
         return;
     case ND_ADDR:
         mark_spine(b, n->lhs);
@@ -592,6 +626,11 @@ static void scan(B *b, Node *n) {
         scan(b, n->lhs);
         return;
     case ND_RETURN:
+        // A cleanup range holding actual cleanup vars means reaching this
+        // return must run them first -- the IR lowering does not emit them.
+        // (defer_retspill is reserved for ANY non-empty range, so it is not
+        // a usable predicate by itself.)
+        if (range_has_cleanup(n->cleanup_begin, n->cleanup_end)) fail(b, "cleanup on return");
         scan(b, n->lhs);
         return;
     case ND_COND:
@@ -618,6 +657,23 @@ static void scan(B *b, Node *n) {
         scan(b, n->cond);
         return;
     case ND_BLOCK:
+        scan_chain(b, n->body);
+        return;
+    case ND_SWITCH:
+        scan_chain(b, n->init);
+        scan(b, n->cond);
+        scan_chain(b, n->then); // case markers with their bodies
+        return;
+    case ND_CASE:
+        scan(b, n->lhs);
+        return;
+    case ND_LABEL:
+        scan(b, n->lhs);
+        return;
+    case ND_GOTO:
+        if (range_has_cleanup(n->cleanup_begin, n->cleanup_end)) fail(b, "cleanup on control flow");
+        return;
+    case ND_STMT_EXPR:
         scan_chain(b, n->body);
         return;
     default:
@@ -675,6 +731,7 @@ static int convert(B *b, int v, Sc from, Sc to) {
 // ---------------------------------------------------------------- expressions
 
 static int gen_expr(B *b, Node *n);
+static void gen_stmt(B *b, Node *n);
 static int address_of(B *b, Node *n);
 static void cond_br(B *b, Node *n, IRBlock *t, IRBlock *f);
 static void gen_zero_init(B *b, Node *n);
@@ -746,8 +803,14 @@ static int address_of(B *b, Node *n) {
     case ND_COMMA:
         gen_expr(b, n->lhs);
         return address_of(b, n->rhs);
+    case ND_CAST: // a cast does not change the address: &((T)lv) == &lv
+        return address_of(b, n->lhs);
     case ND_STR:
         return gaddr(b, format(".LC%d", n->str_id), 0);
+    case ND_FUNCALL: // struct/union call result: gen_call's value IS the address
+        return gen_expr(b, n);
+    case ND_ASSIGN: // struct assignment: gen_assign's value IS the address (side effects once)
+        return gen_expr(b, n);
     default:
         return fail_kind(b, "unsupported lvalue", n->kind);
     }
@@ -925,11 +988,58 @@ static int assign_to(B *b, Node *lhs, int val) {
     return val;
 }
 
+// Copy `size` bytes from src to dst (both I64 addresses): unrolled
+// exact-width loads/stores, or a memcpy call for large copies. Struct copies
+// may not overlap in defined programs, so a forward copy is fine.
+static void gen_copy_bytes(B *b, int dst, int src, int64_t size) {
+    if (size <= 0 || b->fail) return;
+    if (size > 256) {
+        IRInstr *c = emit(b, IR_CALL, IRT_VOID);
+        c->sym = "memcpy";
+        c->nargs = 3;
+        c->args = xcalloc(3, sizeof(int32_t));
+        c->args[0] = dst;
+        c->args[1] = src;
+        c->args[2] = iconst(b, IRT_I64, size);
+        b->f->has_calls = true;
+        return;
+    }
+    static const struct {
+        int bytes;
+        IRMem mw;
+    } w[] = {{8, IRM_I64}, {4, IRM_I32}, {2, IRM_I16}, {1, IRM_I8}};
+    int64_t off = 0;
+    for (int k = 0; k < 4 && !b->fail; k++) {
+        while (size - off >= w[k].bytes) {
+            IRInstr *li = emit(b, IR_LOAD, w[k].bytes == 8 ? IRT_I64 : IRT_I32);
+            li->a = src;
+            li->mw = (uint8_t)w[k].mw;
+            li->imm = off;
+            IRInstr *s = emit(b, IR_STORE, IRT_VOID);
+            s->a = dst;
+            s->c = li->id;
+            s->mw = (uint8_t)w[k].mw;
+            s->imm = off;
+            off += w[k].bytes;
+        }
+    }
+}
+
 static int gen_assign(B *b, Node *n) {
+    Type *lty = n->lhs->ty;
+    // struct/union copy, or whole-array assignment (GNU extension rcc allows);
+    // the value is the address of lhs.
+    if (lty && (lty->kind == TY_STRUCT || lty->kind == TY_UNION || lty->kind == TY_ARRAY)) {
+        int dst = address_of(b, n->lhs);
+        int src = address_of(b, n->rhs);
+        if (b->fail) return IR_NONE;
+        gen_copy_bytes(b, dst, src, lty->size);
+        return dst;
+    }
     Sc ls, rs;
-    if (n->lhs->ty && (n->lhs->ty->kind == TY_ARRAY || n->lhs->ty->kind == TY_FUNC))
-        return fail(b, "array assignment"); // sc_of() models arrays as pointers; assigning copies bytes
-    if (!sc_of(n->lhs->ty, &ls) || !sc_of(n->rhs->ty, &rs)) return fail(b, "assign type");
+    if (lty && lty->kind == TY_FUNC)
+        return fail(b, "function assignment"); // sc_of() models arrays as pointers; assigning copies bytes
+    if (!sc_of(lty, &ls) || !sc_of(n->rhs->ty, &rs)) return fail(b, "assign type");
     int v = gen_expr(b, n->rhs);
     if (b->fail) return IR_NONE;
     v = convert(b, v, rs, ls);
@@ -1115,23 +1225,37 @@ static int gen_call(B *b, Node *n) {
     int nargs = 0;
     for (Node *a = n->args; a; a = a->next) nargs++;
     int32_t *args = xcalloc((size_t)nargs, sizeof(int32_t));
+    int32_t *arg_class = xcalloc((size_t)nargs, sizeof(int32_t));
+    bool any_agg = false;
+    bool unproto = !proto;
     int k = 0;
     for (Node *a = n->args; a; a = a->next, k++) {
+        int cls = ir_agg_class(a->ty);
+        if (cls != IRAGG_NONE) { // aggregate: the argument is the address of the bytes
+            if (unproto) {
+                fail(b, "aggregate argument to unprototyped/variadic call");
+                goto fail_call;
+            }
+            int v = address_of(b, a);
+            if (b->fail) goto fail_call;
+            args[k] = v;
+            arg_class[k] = ((int32_t)a->ty->size << 3) | cls;
+            any_agg = true;
+            pt = pt ? pt->param_next : NULL;
+            continue;
+        }
         Sc as;
         if (!sc_of(a->ty, &as)) {
-            free(args);
-            return fail(b, "argument type");
+            fail(b, "argument type");
+            goto fail_call;
         }
         int v = gen_expr(b, a);
-        if (b->fail) {
-            free(args);
-            return IR_NONE;
-        }
+        if (b->fail) goto fail_call;
         if (pt) { // prototyped parameter: convert to its type
             Sc ps;
             if (!sc_of(pt, &ps)) {
-                free(args);
-                return fail(b, "parameter type");
+                fail(b, "parameter type");
+                goto fail_call;
             }
             v = convert(b, v, as, ps);
             pt = pt->param_next;
@@ -1142,21 +1266,31 @@ static int gen_call(B *b, Node *n) {
         args[k] = v;
     }
 
+    bool agg_ret = n->ty && (n->ty->kind == TY_STRUCT || n->ty->kind == TY_UNION || n->ty->is_vector) && n->ty->size > 0;
     bool is_void = !n->ty || n->ty->kind == TY_VOID;
     Sc rs = {0};
-    if (!is_void && !sc_of(n->ty, &rs)) {
-        free(args);
-        return fail(b, "return type");
+    if (!is_void && !agg_ret && !sc_of(n->ty, &rs)) {
+        fail(b, "return type");
+        goto fail_call;
     }
-    IRInstr *c = emit(b, IR_CALL, is_void ? IRT_VOID : rs.t);
+    IRInstr *c = emit(b, IR_CALL, agg_ret ? IRT_I64 : (is_void ? IRT_VOID : rs.t));
     c->sym = sym;
     c->a = target;
     c->args = args;
     c->nargs = nargs;
+    c->arg_class = any_agg ? arg_class : NULL;
+    if (!any_agg) free(arg_class);
+    if (agg_ret) // > 0: two-reg RAX[:RDX] return; < 0: hidden return pointer
+        c->ret_agg = ir_ret_two_reg(n->ty) ? (int32_t)n->ty->size : -(int32_t)n->ty->size;
     c->variadic = !fty || fty->is_variadic || fty->is_oldstyle;
     b->f->has_calls = true;
     if (is_void) return IR_NONE;
+    if (agg_ret) return c->id; // address of the returned bytes
     return norm(b, c->id, rs); // callers may not rely on the callee normalizing narrow results
+fail_call:
+    free(args);
+    free(arg_class);
+    return IR_NONE;
 }
 
 static int gen_expr(B *b, Node *n) {
@@ -1240,6 +1374,13 @@ static int gen_expr(B *b, Node *n) {
     case ND_COMMA:
         gen_expr(b, n->lhs);
         return gen_expr(b, n->rhs);
+    case ND_STMT_EXPR: { // GNU ({ ...; expr; }): the value is the last expression
+        Node *last = NULL;
+        for (Node *s = n->body; s; s = s->next) last = s;
+        for (Node *s = n->body; s && s != last; s = s->next) gen_stmt(b, s);
+        if (!last || last->kind != ND_EXPR_STMT || !last->lhs) return fail(b, "statement expression value");
+        return gen_expr(b, last->lhs);
+    }
     case ND_ASSIGN:
         return gen_assign(b, n);
     case ND_POST_INC:
@@ -1319,6 +1460,24 @@ static void push_loop(B *b, IRBlock *brk, IRBlock *cont) {
     b->depth++;
 }
 
+// The block a label names; created lazily so forward gotos can target it.
+// Label blocks stay unsealed until the driver seals everything at the end.
+static IRBlock *label_block(B *b, const char *name, bool create) {
+    for (int i = 0; i < b->nlabels; i++)
+        if (!strcmp(b->label_name[i], name)) return b->label_blk[i];
+    if (!create) return NULL;
+    if (b->nlabels == b->caplabels) {
+        b->caplabels = b->caplabels ? b->caplabels * 2 : 8;
+        b->label_name = xrealloc(b->label_name, sizeof(char *) * (size_t)b->caplabels);
+        b->label_blk = xrealloc(b->label_blk, sizeof(IRBlock *) * (size_t)b->caplabels);
+    }
+    IRBlock *blk = new_block(b);
+    b->label_name[b->nlabels] = (char *)name;
+    b->label_blk[b->nlabels] = blk;
+    b->nlabels++;
+    return blk;
+}
+
 // ND_ZERO_INIT: zero-fill a local variable (`= {0}` / `= {}`): a scalar SSA
 // variable gets a zero constant, small memory variables get zero stores, large
 // ones a memset call.
@@ -1380,10 +1539,30 @@ static void gen_stmt(B *b, Node *n) {
         return;
     case ND_RETURN: {
         int v = IR_NONE;
-        if (n->lhs) {
+        if (b->f->ret_agg > 0) { // aggregate return: the result is the address of the bytes
+            if (n->lhs) {
+                int addr = address_of(b, n->lhs); // struct rvalue = address
+                if (b->fail) return;
+                if (b->f->ret_sret) {
+                    int rb = emit_load(b, IRM_I64, false, IRT_I64, op0(b, IR_FRAMEADDR, IRT_I64, b->retbuf_off));
+                    gen_copy_bytes(b, rb, addr, b->f->ret_agg);
+                    v = rb;
+                } else {
+                    v = addr; // the backend loads RAX[:RDX] from it
+                }
+            } else if (b->f->ret_sret) {
+                v = emit_load(b, IRM_I64, false, IRT_I64, op0(b, IR_FRAMEADDR, IRT_I64, b->retbuf_off));
+            } else {
+                IRInstr *u = emit(b, IR_UNDEF, IRT_I64); // falling off: unspecified value
+                v = u->id;
+            }
+        } else if (n->lhs) {
             Sc from, to;
             if (b->f->ret_type == IRT_VOID) {
-                gen_expr(b, n->lhs);
+                // Callers ignore the value, but it still lands in rax -- the
+                // parser's implicit `return 0` in main defines the exit code.
+                v = gen_expr(b, n->lhs);
+                if (b->fail) return;
             } else {
                 if (!sc_of(n->lhs->ty, &from) || !sc_of(b->fn->ty->return_ty, &to)) {
                     fail(b, "return type");
@@ -1461,6 +1640,118 @@ static void gen_stmt(B *b, Node *n) {
         start_block(b, exit);
         return;
     }
+    case ND_SWITCH: {
+        if (n->target_loop || n->label_name) {
+            fail(b, "labeled switch");
+            return;
+        }
+        gen_stmts(b, n->init);
+        Sc cs;
+        if (!sc_of(n->cond->ty, &cs) || cs.flt || cs.boolean) {
+            fail(b, "switch type");
+            return;
+        }
+        int v = gen_expr(b, n->cond);
+        if (b->fail) return;
+        int nc = 0;
+        for (Node *c = n->case_next; c; c = c->case_next) nc++;
+        IRBlock **cblk = xcalloc((size_t)(nc ? nc : 1), sizeof(IRBlock *));
+        {
+            int i = 0;
+            for (Node *c = n->case_next; c; c = c->case_next, i++) cblk[i] = new_block(b);
+        }
+        IRBlock *dflt = n->default_case ? new_block(b) : NULL;
+        IRBlock *end = new_block(b);
+        if (nc == 0) { // switch with only a default
+            jump(b, dflt ? dflt : end);
+        } else {
+            // Linear compare chain (jump tables/binary search would need
+            // backend support; keep the semantics, revisit hot switches later).
+            int i = 0;
+            for (Node *c = n->case_next; c; c = c->case_next, i++) {
+                IRBlock *nxt = (i + 1 < nc) ? new_block(b) : (dflt ? dflt : end);
+                int take;
+                if (c->is_case_range) { // case lo ... hi
+                    IRCC ge = cs.uns ? IRCC_UGE : IRCC_SGE;
+                    IRCC le = cs.uns ? IRCC_ULE : IRCC_SLE;
+                    int g = cmp_i(b, ge, v, iconst(b, cs.t, c->case_val));
+                    int l = cmp_i(b, le, v, iconst(b, cs.t, c->case_end));
+                    take = op2(b, IR_AND, IRT_I32, g, l);
+                } else {
+                    take = cmp_i(b, IRCC_EQ, v, iconst(b, cs.t, c->case_val));
+                }
+                branch(b, take, cblk[i], nxt);
+                if (i + 1 < nc) {
+                    seal_block(b, nxt); // exactly one predecessor: this compare
+                    start_block(b, nxt);
+                }
+            }
+            b->cur_blk = NULL; // the chain's last block already jumped away
+        }
+        // Generate the bodies; ND_CASE statements (wherever they nest) start
+        // their blocks, wiring fallthrough from the previous body.
+        if (b->swdepth == b->capsw) {
+            b->capsw = b->capsw ? b->capsw * 2 : 4;
+            b->sw = xrealloc(b->sw, sizeof(SwCtx) * (size_t)b->capsw);
+        }
+        SwCtx *sx = &b->sw[b->swdepth++];
+        sx->node = n;
+        sx->cblk = cblk;
+        sx->nc = nc;
+        sx->dflt = dflt;
+        IRBlock *outer_cont = b->depth ? b->cont[b->depth - 1] : NULL;
+        push_loop(b, end, outer_cont); // continue inside a switch targets the enclosing loop
+        gen_stmts(b, n->then);
+        b->depth--;
+        b->swdepth--;
+        free(cblk);
+        if (b->cur_blk) jump(b, end);
+        if (dflt) seal_block(b, dflt);
+        seal_block(b, end);
+        start_block(b, end);
+        return;
+    }
+    case ND_CASE: {
+        SwCtx *sx = b->swdepth ? &b->sw[b->swdepth - 1] : NULL;
+        IRBlock *blk = NULL;
+        if (sx) {
+            if (n == sx->node->default_case) {
+                blk = sx->dflt;
+            } else {
+                int i = 0;
+                for (Node *c = sx->node->case_next; c; c = c->case_next, i++)
+                    if (c == n) {
+                        blk = sx->cblk[i];
+                        break;
+                    }
+            }
+        }
+        if (!blk) {
+            fail(b, "case outside switch");
+            return;
+        }
+        if (b->cur_blk) jump(b, blk); // fallthrough from the previous body
+        seal_block(b, blk);
+        start_block(b, blk);
+        gen_stmt(b, n->lhs);
+        return;
+    }
+    case ND_LABEL: {
+        // NOT sealed here: forward gotos may still add predecessors; the
+        // driver seals every block (and resolves the resulting phis) at the end.
+        IRBlock *blk = label_block(b, n->label_name, true);
+        if (b->cur_blk) jump(b, blk);
+        start_block(b, blk);
+        if (n->lhs) gen_stmt(b, n->lhs);
+        return;
+    }
+    case ND_GOTO:
+        if (!n->label_name) {
+            fail(b, "computed goto");
+            return;
+        }
+        jump(b, label_block(b, n->label_name, true));
+        return;
     case ND_BREAK:
         if (n->target_loop || !b->depth) {
             fail(b, "labeled break");
@@ -1469,8 +1760,8 @@ static void gen_stmt(B *b, Node *n) {
         jump(b, b->brk[b->depth - 1]);
         return;
     case ND_CONTINUE:
-        if (n->target_loop || !b->depth) {
-            fail(b, "labeled continue");
+        if (n->target_loop || !b->depth || !b->cont[b->depth - 1]) {
+            fail(b, "stray or labeled continue");
             return;
         }
         jump(b, b->cont[b->depth - 1]);
@@ -1495,6 +1786,9 @@ static void free_builder(B *b) {
     free(b->aux);
     free(b->brk);
     free(b->cont);
+    free(b->sw);
+    free(b->label_name);
+    free(b->label_blk);
 }
 
 static bool fn_eligible(B *b) {
@@ -1534,15 +1828,33 @@ IRFunc *ir_build(Program *prog, Function *fn) {
         if (!rt || rt->kind == TY_VOID) f->ret_type = IRT_VOID;
         else if (sc_of(rt, &rsc))
             f->ret_type = rsc.t;
-        else {
+        else if ((rt->kind == TY_STRUCT || rt->kind == TY_UNION || rt->is_vector) && rt->size > 0) {
+            f->ret_agg = (int32_t)rt->size;
+            f->ret_sret = !ir_ret_two_reg(rt); // two-reg RAX[:RDX] vs hidden return pointer
+            if (f->ret_sret) { // the parser created a __retbuf local holding the hidden pointer
+                for (LVar *v = fn->locals; v; v = v->next)
+                    if (v->name && !strcmp(v->name, "__retbuf")) {
+                        b->retbuf_off = v->offset;
+                        break;
+                    }
+                if (!b->retbuf_off) {
+                    fail(b, "missing __retbuf");
+                    ok = false;
+                }
+            }
+        } else {
             fail(b, "return type");
             ok = false;
         }
     }
-    // Parameters: scalar only.
+    // Parameters: scalars and aggregates per ir_agg_class().
     int nparams = 0;
     if (ok)
         for (LVar *p = fn->params; p; p = p->param_next) {
+            if (ir_agg_class(p->ty) != IRAGG_NONE) {
+                nparams++;
+                continue;
+            }
             Sc ps;
             if (!sc_of(p->ty, &ps) || p->ty->kind == TY_ARRAY || p->ty->kind == TY_FUNC) {
                 fail(b, "parameter type");
@@ -1580,10 +1892,28 @@ IRFunc *ir_build(Program *prog, Function *fn) {
     start_block(b, entry);
 
     // Incoming parameters.
-    f->nparams = nparams;
-    f->param_types = xcalloc((size_t)(nparams ? nparams : 1), sizeof(IRType));
+    int total_params = nparams + (f->ret_sret ? 1 : 0);
+    f->nparams = total_params;
+    f->param_types = xcalloc((size_t)(total_params ? total_params : 1), sizeof(IRType));
+    f->param_class = xcalloc((size_t)(total_params ? total_params : 1), sizeof(int32_t));
     int idx = 0;
+    if (f->ret_sret) { // hidden return buffer pointer, stored into __retbuf like the AST prologue
+        f->param_types[0] = IRT_I64;
+        int pv = op0(b, IR_PARAM, IRT_I64, 0);
+        emit_store(b, IRM_I64, op0(b, IR_FRAMEADDR, IRT_I64, b->retbuf_off), pv);
+        idx = 1;
+    }
     for (LVar *p = fn->params; p; p = p->param_next, idx++) {
+        int cls = ir_agg_class(p->ty);
+        if (cls != IRAGG_NONE) { // the param value is the address of the incoming bytes
+            int pv = op0(b, IR_PARAM, IRT_I64, idx);
+            f->param_types[idx] = IRT_I64;
+            f->param_class[idx] = ((int32_t)p->ty->size << 3) | cls;
+            // Give the local its own storage (the incoming bytes may live in the
+            // caller's outgoing stack area, which the callee must not modify).
+            gen_copy_bytes(b, op0(b, IR_FRAMEADDR, IRT_I64, p->offset), pv, p->ty->size);
+            continue;
+        }
         Sc ps;
         sc_of(p->ty, &ps);
         f->param_types[idx] = ps.t;
@@ -1598,8 +1928,23 @@ IRFunc *ir_build(Program *prog, Function *fn) {
     gen_stmts(b, fn->body);
 
     if (!b->fail && b->cur_blk) { // fell off the end
-        // Falling off the end: main returns 0 (C99 5.1.2.2.3); elsewhere unspecified.
-        int v = f->ret_type == IRT_VOID ? IR_NONE : zero_of(b, f->ret_type);
+        // Falling off the end: main returns 0 (C99 5.1.2.2.3, applied to void
+        // main too -- the exit status would otherwise be whatever rax happened
+        // to hold). Everywhere else the value is unspecified.
+        bool is_main = fn->name && !strcmp(fn->name, "main");
+        int v;
+        if (f->ret_agg > 0) {
+            if (f->ret_sret)
+                v = emit_load(b, IRM_I64, false, IRT_I64, op0(b, IR_FRAMEADDR, IRT_I64, b->retbuf_off));
+            else {
+                IRInstr *u = emit(b, IR_UNDEF, IRT_I64);
+                v = u->id;
+            }
+        } else if (f->ret_type == IRT_VOID) {
+            v = is_main ? iconst(b, IRT_I32, 0) : IR_NONE;
+        } else {
+            v = zero_of(b, f->ret_type);
+        }
         IRInstr *r = emit(b, IR_RET, IRT_VOID);
         r->a = v;
         b->cur_blk = NULL;

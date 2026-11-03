@@ -99,6 +99,10 @@ static struct {
     int *mu; // value -> uses as an address operand in its own block (isel prep)
     int *pabi; // param index -> ABI register / -1
     int *pstk; // param index -> incoming stack offset / 0
+    int *p2nd; // VALUE16 param: second GP register / -1
+    int *pcls; // param index -> IRAggClass
+    int *paggoff; // materialized aggregate param: rbp offset of its frame temp
+    int *ctemp; // CALL value id -> rbp offset of its aggregate-return temp
 } be;
 
 static SecBuf *sec(void) { return cg_sec; }
@@ -633,22 +637,112 @@ static bool emitted(const IRInstr *i) {
         !be.vi[i->id].dead;
 }
 
+// Callee side: walk the parameter list with the same GP / XMM / stack-slot
+// counting the caller uses (see call_arg_slot). Aggregate entries encode
+// (bytes << 3) | IRAggClass; IRAGG_PTR params are plain pointer values and
+// classified exactly like scalar GP arguments.
 static void classify_params(void) {
     IRFunc *f = be.f;
     be.pabi = NEW(int, f->nparams + 1);
     be.pstk = NEW(int, f->nparams + 1);
+    be.p2nd = NEW(int, f->nparams + 1);
+    be.pcls = NEW(int, f->nparams + 1);
+    be.paggoff = NEW(int, f->nparams + 1);
     int ng = 0, nx = 0, nst = 0;
     for (int k = 0; k < f->nparams; k++) {
         be.pabi[k] = -1;
-        if (tflt(f->param_types[k])) {
-            if (nx < 8) be.pabi[k] = nx++;
-            else
-                be.pstk[k] = 16 + 8 * nst++;
-        } else {
+        be.p2nd[k] = -1;
+        int e = f->param_class ? f->param_class[k] : 0;
+        int cls = e & 7;
+        int szb = e >> 3;
+        be.pcls[k] = cls;
+        if (!cls || cls == IRAGG_PTR) {
+            if (tflt(f->param_types[k])) {
+                if (nx < 8) be.pabi[k] = nx++;
+                else
+                    be.pstk[k] = 16 + 8 * nst++;
+            } else {
+                if (ng < 6) be.pabi[k] = abi_gpr[ng++];
+                else
+                    be.pstk[k] = 16 + 8 * nst++;
+            }
+        } else if (cls == IRAGG_VALUE8) {
             if (ng < 6) be.pabi[k] = abi_gpr[ng++];
             else
                 be.pstk[k] = 16 + 8 * nst++;
+        } else if (cls == IRAGG_VALUE16) {
+            if (ng + 1 < 6) {
+                be.pabi[k] = abi_gpr[ng];
+                be.p2nd[k] = abi_gpr[ng + 1];
+                ng += 2;
+            } else {
+                be.pstk[k] = 16 + 8 * nst;
+                nst += (szb + 7) / 8;
+            }
+        } else { // IRAGG_MEMORY: raw bytes in incoming stack slots, 0 GP regs
+            be.pstk[k] = 16 + 8 * nst;
+            nst += (szb + 7) / 8;
         }
+    }
+}
+
+// Caller side: advance the ABI counters for argument k of CALL instr i.
+// *rg / *rg2 receive the destination GP register (or XMM index for scalar
+// floats) or -1; *slot0 / *nslot describe outgoing stack placement. A
+// register-placed IRAGG_VALUE8 / IRAGG_VALUE16 still needs the backend to
+// load the bytes (the IR value is an ADDRESS): those go through a staging
+// slot, counted by the caller via the return value (extra staging slots).
+static int call_arg_slot(IRInstr *i, int k, int *ng, int *nx, int *nst, int *rg, int *rg2,
+                         int *slot0, int *nslot) {
+    int e = i->arg_class ? i->arg_class[k] : 0;
+    int cls = e & 7;
+    int szb = e >> 3;
+    *rg = -1;
+    *rg2 = -1;
+    *slot0 = *nst;
+    *nslot = 0;
+    if (!cls) {
+        if (tflt(V(i->args[k])->type)) {
+            if (*nx < 8) *rg = (*nx)++;
+            else
+                (*nst)++;
+        } else {
+            if (*ng < 6) *rg = abi_gpr[(*ng)++];
+            else
+                (*nst)++;
+        }
+        return 0;
+    }
+    switch (cls) {
+    case IRAGG_VALUE8:
+        if (*ng < 6) {
+            *rg = abi_gpr[(*ng)++];
+            return 1;
+        }
+        *nslot = 1;
+        (*nst)++;
+        return 0;
+    case IRAGG_VALUE16:
+        if (*ng + 1 < 6) {
+            *rg = abi_gpr[*ng];
+            *rg2 = abi_gpr[*ng + 1];
+            *ng += 2;
+            return 2;
+        }
+        *nslot = (szb + 7) / 8;
+        *nst += *nslot;
+        return 0;
+    case IRAGG_PTR: // the value IS the pointer: like a scalar GP argument
+        if (*ng < 6) *rg = abi_gpr[(*ng)++];
+        else {
+            *nslot = 1;
+            (*nst)++;
+        }
+        return 0;
+    default: // IRAGG_MEMORY
+        *nslot = (szb + 7) / 8;
+        *nst += *nslot;
+        return 0;
     }
 }
 
@@ -935,15 +1029,17 @@ static void build_intervals(void) {
                 add_hint(i->id, i->a);
                 break;
             case IR_CALL: { // an argument computed into its ABI register needs no move at the call
-                int ng = 0, nx = 0;
+                int ng = i->ret_agg < 0 ? 1 : 0, nx = 0, nst = 0; // sret: hidden pointer takes GP slot 0
                 for (int a = 0; a < i->nargs; a++) {
                     int v = i->args[a];
-                    bool fl = tflt(V(v)->type);
-                    int reg = fl ? (nx < 8 ? nx : -1) : (ng < 6 ? (int)abi_gpr[ng] : -1);
-                    if (fl) nx++;
-                    else
-                        ng++;
-                    if (reg >= 0 && needs_loc(v) && be.vi[v].abi < 0 && !be.vi[v].stk) be.vi[v].abi = (int8_t)reg;
+                    int rg, rg2, slot0, nsl;
+                    call_arg_slot(i, a, &ng, &nx, &nst, &rg, &rg2, &slot0, &nsl);
+                    int cls = i->arg_class ? i->arg_class[a] & 7 : 0;
+                    // VALUE8 / VALUE16 args are loaded through memory at the
+                    // call; only scalar and PTR values want the ABI register.
+                    if (rg >= 0 && cls != IRAGG_VALUE8 && cls != IRAGG_VALUE16 &&
+                        needs_loc(v) && be.vi[v].abi < 0 && !be.vi[v].stk)
+                        be.vi[v].abi = (int8_t)rg;
                 }
                 break;
             }
@@ -1247,6 +1343,9 @@ static void mat_g(int v, X86Reg r) {
         break;
     case IR_FRAMEADDR:
         x86_lea(S, 8, r, off_mem((int)d->imm));
+        break;
+    case IR_PARAM: // materialized aggregate param: the value is its frame temp
+        x86_lea(S, 8, r, off_mem(be.paggoff[d->imm]));
         break;
     default:
         abort();
@@ -2058,49 +2157,110 @@ static void emit_store(IRInstr *i) {
 }
 
 static void emit_call(IRInstr *c) {
-    int ng = 0, nx = 0, nst = 0;
+    int ng = c->ret_agg < 0 ? 1 : 0, nx = 0, nst = 0; // sret: hidden result pointer takes GP slot 0
     Mv *mv = NEW(Mv, c->nargs + 1);
-    int *stk = NEW(int, c->nargs + 1);
-    int nm = 0;
+    int *prg = NEW(int, c->nargs), *prg2 = NEW(int, c->nargs);
+    int *pslot = NEW(int, c->nargs), *pnsl = NEW(int, c->nargs);
+    int nm = 0, stage = 0;
+    for (int k = 0; k < c->nargs; k++)
+        stage += call_arg_slot(c, k, &ng, &nx, &nst, &prg[k], &prg2[k], &pslot[k], &pnsl[k]);
+    int stbase = nst; // staging slots sit above the stack argument copies
+    stage = 0;
     for (int k = 0; k < c->nargs; k++) {
         int a = c->args[k], t = V(a)->type;
-        if (tflt(t)) {
-            if (nx < 8) mv[nm++] = (Mv){pl_reg(RC_X, nx++), pl_of(a), t};
-            else
-                stk[nst++] = a;
-        } else {
-            if (ng < 6) mv[nm++] = (Mv){pl_reg(RC_G, abi_gpr[ng++]), pl_of(a), t};
-            else
-                stk[nst++] = a;
+        int e = c->arg_class ? c->arg_class[k] : 0;
+        int cls = e & 7, szb = e >> 3;
+        if (!cls || cls == IRAGG_PTR) { // scalar / pointer value
+            if (prg[k] >= 0) {
+                mv[nm++] = (Mv){pl_reg(tflt(t) ? RC_X : RC_G, prg[k]), pl_of(a), t};
+            } else {
+                X86Mem m = x86_mem(X86_RSP, 8 * pslot[k]);
+                int64_t imm;
+                if (tflt(t)) {
+                    st_x(t, m, use_x(a, X_S0));
+                } else if (imm32(a, &imm)) {
+                    x86_mov_mi(S, tsz(t), m, (int32_t)imm);
+                } else {
+                    x86_mov_mr(S, tsz(t), m, use_g(a, R_S0));
+                }
+            }
+            continue;
         }
-    }
-    for (int j = 0; j < nst; j++) {
-        int a = stk[j], t = V(a)->type;
-        X86Mem m = x86_mem(X86_RSP, 8 * j);
-        int64_t imm;
-        if (tflt(t)) {
-            st_x(t, m, use_x(a, X_S0));
-        } else if (imm32(a, &imm)) {
-            x86_mov_mi(S, tsz(t), m, (int32_t)imm);
-        } else {
-            x86_mov_mr(S, tsz(t), m, use_g(a, R_S0));
+        X86Reg ar = use_g(a, R_S0); // address of the argument bytes
+        if (cls == IRAGG_VALUE8) {
+            int w = szb <= 4 ? 4 : 8;
+            x86_mov_rm(S, w, R_S1, x86_mem(ar, 0));
+            if (prg[k] >= 0) {
+                x86_mov_mr(S, 8, x86_mem(X86_RSP, 8 * (stbase + stage)), R_S1);
+                stage++;
+            } else {
+                x86_mov_mr(S, w, x86_mem(X86_RSP, 8 * pslot[k]), R_S1);
+            }
+        } else { // VALUE16 (2 slots) or MEMORY ((szb+7)/8 slots); the tail slot
+            // loads only the remaining bytes (chunk <= 4 ? 4 : 8), like the AST
+            // codegen, so we never read past the source object.
+            int pn = (szb + 7) / 8;
+            int base = prg[k] >= 0 ? stbase + stage : pslot[k];
+            if (prg[k] >= 0) stage += 2;
+            for (int j = 0; j < pn; j++) {
+                int chunk = szb - 8 * j;
+                int ld = chunk <= 4 ? 4 : 8;
+                x86_mov_rm(S, ld, R_S1, x86_mem(ar, 8 * j));
+                x86_mov_mr(S, 8, x86_mem(X86_RSP, 8 * (base + j)), R_S1);
+            }
         }
     }
     // The indirect target goes through r10: not an argument register and never
     // a pm temporary.
     if (!c->sym) mv[nm++] = (Mv){pl_reg(RC_G, X86_R10), pl_of(c->a), IRT_I64};
     pm_run(mv, nm);
+    // sret: the result temp address is the hidden first argument. rdi is never
+    // a pm destination here (the walks above start GP counting at 1) and no
+    // interval is live in rdi across the call (caller-saved).
+    if (c->ret_agg < 0) x86_lea(S, 8, X86_RDI, off_mem(be.ctemp[c->id]));
+    // Register-placed aggregates were staged in the outgoing area; load them
+    // into their ABI registers now that pm_run has freed them.
+    stage = 0;
+    for (int k = 0; k < c->nargs; k++) {
+        int cls = c->arg_class ? c->arg_class[k] & 7 : 0;
+        if (cls == IRAGG_VALUE8 && prg[k] >= 0) {
+            int e = c->arg_class[k];
+            int w = (e >> 3) <= 4 ? 4 : 8;
+            x86_mov_rm(S, w, (X86Reg)prg[k], x86_mem(X86_RSP, 8 * (stbase + stage)));
+            stage++;
+        } else if (cls == IRAGG_VALUE16 && prg[k] >= 0) {
+            x86_mov_rm(S, 8, (X86Reg)prg[k], x86_mem(X86_RSP, 8 * (stbase + stage)));
+            x86_mov_rm(S, 8, (X86Reg)prg2[k], x86_mem(X86_RSP, 8 * (stbase + stage + 1)));
+            stage += 2;
+        }
+    }
     if (c->variadic) x86_mov_ri(S, 4, R_S0, nx);
     if (c->sym) cg_ir_call(c->sym);
     else
         x86_call_r(S, X86_R10);
-    if (c->type != IRT_VOID && LOC(c->id)->kind != LK_NONE) {
+    if (c->ret_agg > 0 && LOC(c->id)->kind != LK_NONE) {
+        // VALUE16-class return: RAX[:RDX] hold the bytes; spill to the temp.
+        int tmp = be.ctemp[c->id];
+        x86_mov_mr(S, 8, off_mem(tmp), X86_RAX);
+        if (c->ret_agg > 8) x86_mov_mr(S, 8, off_mem(tmp - 8), X86_RDX);
+        X86Reg rd = def_g(c->id);
+        x86_lea(S, 8, rd, off_mem(tmp));
+        fin_g(c->id, rd);
+    } else if (c->ret_agg < 0 && LOC(c->id)->kind != LK_NONE) {
+        // sret: the callee returns the same address, but materialize ours.
+        X86Reg rd = def_g(c->id);
+        x86_lea(S, 8, rd, off_mem(be.ctemp[c->id]));
+        fin_g(c->id, rd);
+    } else if (c->type != IRT_VOID && LOC(c->id)->kind != LK_NONE) {
         if (tflt(c->type)) fin_x(c->id, X86_XMM0);
         else
             fin_g(c->id, R_S0);
     }
     free(mv);
-    free(stk);
+    free(prg);
+    free(prg2);
+    free(pslot);
+    free(pnsl);
 }
 
 static void emit_epilogue(void) {
@@ -2249,9 +2409,17 @@ static void emit_ins(IRBlock *b, IRInstr *i, IRBlock *nxt) {
         break;
     case IR_RET:
         if (i->a != IR_NONE) {
-            if (tflt(V(i->a)->type)) load_x(X86_XMM0, i->a);
-            else
+            if (be.f->ret_agg > 0 && !be.f->ret_sret) {
+                // VALUE16-class aggregate return: RAX = [a], RDX = [a+8].
+                X86Reg r = use_g(i->a, R_S1);
+                x86_mov_rm(S, 8, R_S0, x86_mem(r, 0));
+                if (be.f->ret_agg > 8) x86_mov_rm(S, 8, X86_RDX, x86_mem(r, 8));
+            } else if (tflt(V(i->a)->type)) {
+                load_x(X86_XMM0, i->a);
+            } else {
+                // scalars, and sret (a IS the hidden return pointer value)
                 load_g(R_S0, i->a);
+            }
         }
         emit_epilogue();
         break;
@@ -2265,12 +2433,45 @@ static void emit_ins(IRBlock *b, IRInstr *i, IRBlock *nxt) {
 
 static void frame_layout(void) {
     IRFunc *f = be.f;
+    // Aggregate params (VALUE8 / VALUE16 / MEMORY) are materialized into frame
+    // temps; their PARAM value rematerializes as the temp address.
+    IRBlock *entry = f->blocks[0];
+    for (int k = 0; k < entry->nins; k++) {
+        IRInstr *p = entry->ins[k];
+        if (p->op != IR_PARAM || p->imm >= f->nparams) continue;
+        if (be.pcls[p->imm] == IRAGG_VALUE8 || be.pcls[p->imm] == IRAGG_VALUE16 ||
+            be.pcls[p->imm] == IRAGG_MEMORY)
+            LOC(p->id)->kind = LK_REMAT;
+    }
     uint32_t used = 0;
     for (int v = 0; v < be.nv; v++)
         if (LOC(v)->kind == LK_REG && rc_of(v) == RC_G) used |= 1u << LOC(v)->reg;
     for (size_t k = 0; k < sizeof gpr_callee_order; k++)
         if (used >> gpr_callee_order[k] & 1) be.cs_reg[be.ncs++] = gpr_callee_order[k];
-    be.locals = (f->frame_size + 7) & ~7;
+    // Aggregate temp area below the address-taken locals: materialized
+    // aggregate params first, then one temp per aggregate-returning call.
+    // An offset o addresses bytes [rbp-o, rbp-o+sz): o is the distance from
+    // rbp at which the storage ENDS, matching the FRAMEADDR/LVar convention.
+    int aggbase = (f->frame_size + 7) & ~7;
+    int aggtotal = 0;
+    for (int k = 0; k < f->nparams; k++) {
+        if (be.pcls[k] != IRAGG_VALUE8 && be.pcls[k] != IRAGG_VALUE16 && be.pcls[k] != IRAGG_MEMORY)
+            continue;
+        int szb = ((f->param_class[k] >> 3) + 7) & ~7;
+        aggtotal += szb;
+        be.paggoff[k] = aggbase + aggtotal;
+    }
+    for (int bi = 0; bi < be.nord; bi++) {
+        IRBlock *b = be.ord[bi];
+        for (int k = 0; k < b->nins; k++) {
+            IRInstr *i = b->ins[k];
+            if (i->op != IR_CALL || be.vi[i->id].dead || !i->ret_agg) continue;
+            int szb = ((i->ret_agg < 0 ? -i->ret_agg : i->ret_agg) + 7) & ~7;
+            aggtotal += szb;
+            be.ctemp[i->id] = aggbase + aggtotal;
+        }
+    }
+    be.locals = aggbase + aggtotal;
     be.cs_base = be.locals;
     be.spill_base = be.cs_base + 8 * be.ncs;
     int nslots = be.nspill[RC_G] + be.nspill[RC_X];
@@ -2285,15 +2486,12 @@ static void frame_layout(void) {
         for (int k = 0; k < b->nins; k++) {
             IRInstr *i = b->ins[k];
             if (i->op != IR_CALL || be.vi[i->id].dead) continue;
-            int ng = 0, nx = 0, nst = 0;
+            int ng = i->ret_agg < 0 ? 1 : 0, nx = 0, nst = 0, stage = 0;
             for (int a = 0; a < i->nargs; a++) {
-                if (tflt(V(i->args[a])->type)) {
-                    if (nx++ >= 8) nst++;
-                } else if (ng++ >= 6) {
-                    nst++;
-                }
+                int rg, rg2, slot0, nsl;
+                stage += call_arg_slot(i, a, &ng, &nx, &nst, &rg, &rg2, &slot0, &nsl);
             }
-            if (8 * nst > be.outgoing) be.outgoing = 8 * nst;
+            if (8 * (nst + stage) > be.outgoing) be.outgoing = 8 * (nst + stage);
         }
     }
     int total = be.spill_base + 8 * nslots + be.outgoing;
@@ -2302,9 +2500,12 @@ static void frame_layout(void) {
     // frame pointer at all.
     be.frameless = be.ncall == 0 && be.ncs == 0 && nslots == 0;
     for (int k = 0; k < f->nparams; k++)
-        if (be.pstk[k]) be.frameless = false;
+        if (be.pstk[k] || be.pcls[k] == IRAGG_VALUE8 || be.pcls[k] == IRAGG_VALUE16 ||
+            be.pcls[k] == IRAGG_MEMORY)
+            be.frameless = false;
     for (int v = 0; v < be.nv; v++)
         if (LOC(v)->kind == LK_REMAT && V(v)->op == IR_FRAMEADDR) be.frameless = false;
+    if (aggtotal) be.frameless = false;
     for (int bi = 0; bi < be.nord; bi++) {
         IRBlock *b = be.ord[bi];
         for (int k = 0; k < b->nins; k++) {
@@ -2323,12 +2524,47 @@ static void emit_prologue(void) {
         for (int k = 0; k < be.ncs; k++) x86_mov_mr(S, 8, off_mem(be.cs_base + 8 * (k + 1)), be.cs_reg[k]);
     }
     IRBlock *entry = f->blocks[0];
+    // Materialize aggregate params (VALUE8 / VALUE16 / MEMORY) into their
+    // frame temps; the PARAM value rematerializes as the temp address.
+    for (int k = 0; k < entry->nins; k++) {
+        IRInstr *p = entry->ins[k];
+        if (p->op != IR_PARAM || p->imm >= f->nparams) continue;
+        int idx = (int)p->imm;
+        int cls = be.pcls[idx];
+        if (cls != IRAGG_VALUE8 && cls != IRAGG_VALUE16 && cls != IRAGG_MEMORY) continue;
+        int szb = f->param_class[idx] >> 3;
+        int toff = be.paggoff[idx];
+        if (cls == IRAGG_VALUE8) {
+            int w = szb <= 4 ? 4 : 8;
+            if (be.pstk[idx]) {
+                x86_mov_rm(S, w, R_S1, x86_mem(X86_RBP, be.pstk[idx]));
+                x86_mov_mr(S, w, off_mem(toff), R_S1);
+            } else {
+                x86_mov_mr(S, w, off_mem(toff), (X86Reg)be.pabi[idx]);
+            }
+        } else {
+            int pn = (szb + 7) / 8;
+            for (int j = 0; j < pn; j++) {
+                if (be.pstk[idx]) {
+                    x86_mov_rm(S, 8, R_S1, x86_mem(X86_RBP, be.pstk[idx] + 8 * j));
+                } else if (j == 0) {
+                    x86_mov_rr(S, 8, R_S1, (X86Reg)be.pabi[idx]);
+                } else {
+                    x86_mov_rr(S, 8, R_S1, (X86Reg)be.p2nd[idx]);
+                }
+                x86_mov_mr(S, 8, off_mem(toff - 8 * j), R_S1);
+            }
+        }
+    }
     Mv *mv = NEW(Mv, entry->nins + 1);
     int nm = 0;
     for (int k = 0; k < entry->nins; k++) {
         IRInstr *p = entry->ins[k];
         if (p->op != IR_PARAM || !needs_loc(p->id) || LOC(p->id)->kind == LK_NONE) continue;
         int idx = (int)p->imm;
+        if (be.pcls[idx] == IRAGG_VALUE8 || be.pcls[idx] == IRAGG_VALUE16 ||
+            be.pcls[idx] == IRAGG_MEMORY)
+            continue; // rematerialized as its frame temp address
         if (be.pstk[idx]) {
             if (LOC(p->id)->kind == LK_SPILL) continue; // lives in its incoming slot
             mv[nm++] = (Mv){pl_of(p->id), (PL){PL_M, 0, -be.pstk[idx], 0}, p->type};
@@ -2357,6 +2593,7 @@ void ir_emit_x86(Program *prog, IRFunc *f, bool emitting_local_copy) {
     be.loc = NEW(Loc, be.nv + 1);
     be.lbl = NEW(const char *, f->nblocks);
     be.tramp = NEW(uint8_t, f->nblocks);
+    be.ctemp = NEW(int, be.nv + 1);
     prep_ir();
     build_intervals();
     regalloc();
@@ -2413,4 +2650,8 @@ void ir_emit_x86(Program *prog, IRFunc *f, bool emitting_local_copy) {
     free(be.blk[1]);
     free(be.pabi);
     free(be.pstk);
+    free(be.p2nd);
+    free(be.pcls);
+    free(be.paggoff);
+    free(be.ctemp);
 }

@@ -108,6 +108,17 @@ typedef enum {
     // slots). `variadic` => set %al = number of XMM registers used.
     // Result type = IRInstr.type (IRT_VOID, I32, I64, F32, F64).
     // Clobbers every caller-saved register.
+    //
+    // Aggregate arguments (struct/union/vector): arg_class[i] != IRAGG_NONE
+    // means args[i] is the ADDRESS of an argument of arg_class[i] bytes and the
+    // backend must pass it per that class (see IRAggClass). arg_class is NULL
+    // or all-NONE when every argument is scalar.
+    //
+    // ret_agg: 0 = scalar/void result. > 0: VALUE16-class aggregate return of
+    // ret_agg bytes; the result value is the ADDRESS of a backend temp holding
+    // the bytes the backend stored from RAX[:RDX]. < 0: SRET-class return of
+    // -ret_agg bytes; the backend allocates the temp and passes its address
+    // itself as the hidden first GP argument (GP slot 0); result = temp address.
     IR_CALL,
 
     // ---- SSA ----
@@ -116,7 +127,11 @@ typedef enum {
     // ---- terminators (last instr of every block, nothing after) ----
     IR_JMP, // -> t
     IR_BR, // a (I32) != 0 ? t : f
-    IR_RET, // a = return value or IR_NONE
+    // a = return value or IR_NONE. When the function returns an aggregate
+    // (IRFunc.ret_agg > 0), a is the ADDRESS of the result bytes: for
+    // ret_sret the backend moves that address into RAX (it IS the hidden
+    // return pointer), otherwise (VALUE16 class) it loads RAX=[a], RDX=[a+8].
+    IR_RET,
     IR_UNREACHABLE,
 
     IR_NOP, // removed instr (passes may leave these; emitters skip them)
@@ -150,6 +165,23 @@ typedef enum { IRM_I8,
                IRM_F32,
                IRM_F64 } IRMem;
 
+// How an aggregate argument or parameter is passed, mirroring the AST
+// codegen's SysV simplification EXACTLY (caller and callee must agree or the
+// ABI breaks). Computed once by ir_agg_class() from the C type.
+typedef enum {
+    IRAGG_NONE = 0, // not an aggregate: ordinary scalar value argument
+    IRAGG_VALUE8, // struct/union/vector <= 8 bytes: raw value, 1 GP reg or 1 stack slot
+    IRAGG_VALUE16, // struct/union 9..16B, all-integer leaves: raw value, 2 consecutive
+    // GP regs (only if 2 are available) or 2+ stack slots
+    IRAGG_PTR, // passed by pointer: 1 GP reg or 1 stack slot holding the address
+    // (9..16B with a float/complex member; vectors > 8 bytes)
+    IRAGG_MEMORY // struct/union > 16B: raw bytes in outgoing stack slots, 0 GP regs
+} IRAggClass;
+// arg_class / param_class entries encode the size: entry = (bytes << 3) | class,
+// 0 = scalar. The only >8-aligned case in the AST codegen (long double/vector
+// members) never reaches the IR builder, so backends need no align encoding:
+// VALUE16 stack placement assumes align <= 8 (no odd-slot padding).
+
 typedef struct IRBlock IRBlock;
 
 typedef struct IRInstr {
@@ -167,6 +199,8 @@ typedef struct IRInstr {
     const char *sym; // GADDR / direct CALL target (assembler-level name)
     int32_t *args; // CALL args, PHI incoming values
     int nargs;
+    int32_t *arg_class; // CALL: per-arg (bytes<<3)|IRAggClass, 0 = scalar value
+    int32_t ret_agg; // CALL: <0 sret of -ret_agg bytes, >0 two-reg return of ret_agg bytes
     IRBlock *t, *f; // JMP/BR targets
     IRBlock *blk; // owning block (NULL when dead)
     int line; // source line for -g / diagnostics, 0 if none
@@ -196,11 +230,24 @@ typedef struct IRFunc {
     IRInstr **vals; // id -> instr (never shrinks; dead instrs become IR_NOP)
     int nvals, capvals;
     IRType ret_type; // IRT_VOID if none
-    int nparams; // incoming ABI args, all scalar I32/I64/F32/F64
+    int32_t ret_agg; // >0: returns a struct/union of this many bytes (RET.a = address)
+    int32_t ret_sret; // ret_agg > 0 and the ABI uses a hidden return pointer:
+    // incoming parameter 0 is that pointer (I64, IRAGG_NONE)
+    int nparams; // incoming ABI args (including the hidden sret pointer, if any)
     IRType *param_types;
+    int32_t *param_class; // per-param (bytes<<3)|IRAggClass, 0 = scalar; >0 means
+    // the IR_PARAM value is the ADDRESS of the bytes
     bool has_calls;
     int frame_size; // bytes of address-taken locals/arrays = fn->stack_size
 } IRFunc;
+
+// Classify an aggregate argument/parameter type per the IRAggClass rules
+// above; IRAGG_NONE for scalars. Must match the AST codegen's decisions.
+int ir_agg_class(Type *ty);
+// True when a struct/union return goes in RAX[:RDX] (all-integer, <= 16B,
+// not a vector); otherwise it uses the hidden return pointer. Mirrors
+// codegen.c's struct_returns_in_gp_regs().
+bool ir_ret_two_reg(Type *ty);
 
 // ---------------------------------------------------------------- ir_build.c
 // Returns NULL when the function is not eligible (caller falls back to the old

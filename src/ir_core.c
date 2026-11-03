@@ -31,6 +31,7 @@ void ir_func_free(IRFunc *f) {
     if (!f) return;
     for (int i = 0; i < f->nvals; i++) {
         free(f->vals[i]->args);
+        free(f->vals[i]->arg_class);
         free(f->vals[i]);
     }
     free(f->vals);
@@ -43,6 +44,7 @@ void ir_func_free(IRFunc *f) {
     }
     free(f->blocks);
     free(f->param_types);
+    free(f->param_class);
     free(f);
 }
 
@@ -381,8 +383,13 @@ static void dump_instr(IRInstr *i, FILE *o) {
     if (i->op == IR_CALL) {
         if (i->sym) fprintf(o, " %s", i->sym);
         fprintf(o, " (");
-        for (int k = 0; k < i->nargs; k++) fprintf(o, "%sv%d", k ? ", " : "", i->args[k]);
-        fprintf(o, ")%s", i->variadic ? " variadic" : "");
+        for (int k = 0; k < i->nargs; k++) {
+            if (i->arg_class && i->arg_class[k])
+                fprintf(o, "%sagg%d:v%d", k ? ", " : "", i->arg_class[k], i->args[k]);
+            else
+                fprintf(o, "%sv%d", k ? ", " : "", i->args[k]);
+        }
+        fprintf(o, ")%s%s", i->variadic ? " variadic" : "", i->ret_agg ? " aggret" : "");
     }
     if (i->op == IR_PHI) {
         fprintf(o, " [");
@@ -600,4 +607,57 @@ void ir_verify(IRFunc *f) {
     free(rpo);
     free(num);
     free(idom);
+}
+
+// ------------------------------------------------------------------ ABI
+
+// True when no float/double/long-double/complex leaf occurs anywhere in the
+// (recursive) layout. Mirrors codegen.c's type_is_all_integer() EXACTLY,
+// including the union merge rule: a union is all-integer when ANY member is
+// (INTEGER dominates SSE in the eightbyte merge).
+static bool ir_type_all_integer(Type *ty) {
+    if (!ty) return true;
+    switch (ty->kind) {
+    case TY_FLOAT:
+    case TY_DOUBLE:
+    case TY_LDOUBLE:
+    case TY_COMPLEX:
+        return false;
+    case TY_ARRAY:
+        return ir_type_all_integer(ty->base);
+    case TY_STRUCT:
+        for (Member *m = ty->members; m; m = m->next)
+            if (!ir_type_all_integer(m->ty)) return false;
+        return true;
+    case TY_UNION:
+        for (Member *m = ty->members; m; m = m->next)
+            if (ir_type_all_integer(m->ty)) return true;
+        return false;
+    default:
+        return true;
+    }
+}
+
+int ir_agg_class(Type *ty) {
+    if (!ty) return IRAGG_NONE;
+    int kind = ty->kind;
+    bool aggregate = kind == TY_STRUCT || kind == TY_UNION || ty->is_vector;
+    if (!aggregate) return IRAGG_NONE;
+    int64_t size = ty->size;
+    if (size <= 0) return IRAGG_PTR; // incomplete: cannot happen for real args
+    if (size <= 8) return IRAGG_VALUE8;
+    if (size <= 16) {
+        if (!ty->is_vector && ir_type_all_integer(ty)) return IRAGG_VALUE16;
+        return IRAGG_PTR;
+    }
+    if (!ty->is_vector) return IRAGG_MEMORY;
+    return IRAGG_PTR;
+}
+
+// True when `ty` (struct/union) is returned in RAX[:RDX] per the AST codegen's
+// simplification (all-integer leaves, <= 16 bytes, not a vector) -- mirrors
+// codegen.c's struct_returns_in_gp_regs().
+bool ir_ret_two_reg(Type *ty) {
+    return ty && (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && !ty->is_vector &&
+        ty->size > 0 && ty->size <= 16 && ir_type_all_integer(ty);
 }

@@ -51,8 +51,18 @@
      Kernels (ms, was -> now; antcc): sum 1217->938 (929), axpy 2262->520
      (606), norm 5219->662 (1209), mm 2062->288 (376), fib 431->349 (323).
      Suites green at -O2 and default: 431/431 units, TCC 118/118, torture 0.
-  2. Struct returns/params/copies (the biggest current rejections), switch,
-     STMT_EXPR, inline asm, atomic nodes; wider eligibility.
+  2. DONE (builder): struct/union copies and array assignment (unrolled
+     copies / memcpy), calls with aggregate args (VALUE8/VALUE16/PTR/MEMORY per
+     ir_agg_class, mirroring the AST codegen's SysV simplification), aggregate
+     params (incl. >16B MEMORY-class copies to local storage), struct returns
+     (two-reg RAX:RDX for all-integer <=16B, hidden __retbuf pointer otherwise),
+     switch (compare chains incl. case ranges, Duff's device, fallthrough),
+     goto/labels, GNU statement expressions, casts on address spines.
+     IR ABI encoding: arg_class/param_class entries (bytes<<3)|class;
+     CALL.ret_agg >0 = two-reg return, <0 = sret. Backend aggregate support in
+     ir_x86.c. Wider eligibility: ~77% of unit-test functions.
+     Remaining rejections: bitfields, inline asm, atomics, volatile, complex/
+     decimal/int128/long double, labeled loops (C2Y), special callees.
   3. IR inliner (multi-block bodies, size caps, recursion guard); tail
      recursion to loop; load CSE with a volatile flag; store-to-load
      forwarding/DSE; LICM of loads with alias info; induction-variable
