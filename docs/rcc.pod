@@ -277,8 +277,16 @@ constant arguments at compile time.
 =item B<-O2>
 
 Everything B<-O1> does, plus B<-finline> (tiny C<return EXPR;>
-function inlining) and B<-funroll> (constant-trip-count C<for>-loop
-unrolling).
+function inlining), B<-funroll> (constant-trip-count C<for>-loop
+unrolling) and, on x86-64 ELF targets, the SSA IR backend: every function
+made of scalar integer/pointer/C<float>/C<double> code (loops, branches,
+calls, array and struct-field access) is lowered to an SSA IR, optimized
+(constant folding, value numbering, loop-invariant code motion), and compiled
+with linear-scan register allocation and scaled-index addressing. Functions
+using anything else (bitfields, C<switch>, C<goto>, aggregates by value,
+C<long double>, variadic definitions, VLAs, cleanups, C<volatile>, or any
+sanitizer/B<-g>/B<-fstack-protector>) are compiled by the regular code
+generator. See B<-fno-ir> and B<-fdump-ir>.
 
 =item B<-O3>
 
@@ -362,6 +370,17 @@ Dump the parsed AST to stderr, for compiler debugging.
 
 Dump the AST after all -O optimizations to stderr, for optimizer
 debugging.
+
+=item B<-fdump-ir>
+
+Dump the SSA IR of every function the B<-O2> IR backend compiles, before and
+after its optimizer, to stderr; functions it rejects are reported with the
+reason. For optimizer/backend debugging.
+
+=item B<-fno-ir>
+
+Disable the B<-O2> SSA IR backend: compile every function with the regular
+AST code generator. Useful to bisect a miscompile.
 
 =item B<-print-search-dirs>
 

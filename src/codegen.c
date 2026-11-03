@@ -5,6 +5,8 @@
 #include "asm.h"
 #include "codegen_asm.h"
 #include "bitint_rt.h"
+#include "ir.h"
+#include "cg_ir.h"
 
 AsmFixupNode *asm_fixup_htab[CG_HT_SIZE];
 int asm_fixup_count = 0;
@@ -19327,26 +19329,35 @@ static const char *node_kind_name(NodeKind k) {
     }
 }
 
-static void dump_node(FILE *f, Node *node, int depth) {
+static void dump_node(FILE *f, Node *node, int depth, const char *role);
+
+// Print every node of a ->next chain (statement lists, call arguments, `for`
+// init lists) under the same role label.
+static void dump_chain(FILE *f, Node *n, int depth, const char *role) {
+    for (; n; n = n->next) dump_node(f, n, depth, role);
+}
+
+static void dump_node(FILE *f, Node *node, int depth, const char *role) {
     if (!node) return;
     for (int i = 0; i < depth; i++) fputc(' ', f);
+    if (role) fprintf(f, "%s: ", role);
     fprintf(f, "%s", node_kind_name(node->kind));
     if (node->kind == ND_NUM) fprintf(f, " %lld", (long long)node->val);
     if (node->kind == ND_LVAR && node->var) fprintf(f, " '%s'", node->var->name ? node->var->name : "(anon)");
     if (node->kind == ND_FUNCALL && node->lhs && node->lhs->kind == ND_LVAR && node->lhs->var)
         fprintf(f, " %s", node->lhs->var->name);
     fprintf(f, "\n");
-    if (node->kind == ND_BLOCK)
-        for (Node *n = node->body; n; n = n->next) dump_node(f, n, depth + 2);
-    if (node->lhs) dump_node(f, node->lhs, depth + 2);
-    if (node->rhs) dump_node(f, node->rhs, depth + 2);
-    if (node->then) dump_node(f, node->then, depth + 2);
-    if (node->els) dump_node(f, node->els, depth + 2);
-    if (node->cond) dump_node(f, node->cond, depth + 2);
-    if (node->body) dump_node(f, node->body, depth + 2);
-    if (node->init) dump_node(f, node->init, depth + 2);
-    if (node->inc) dump_node(f, node->inc, depth + 2);
-    if (node->kind == ND_CASE && node->lhs) dump_node(f, node->lhs, depth + 2);
+    if (node->lhs) dump_node(f, node->lhs, depth + 2, "lhs");
+    if (node->rhs) dump_node(f, node->rhs, depth + 2, "rhs");
+    dump_chain(f, node->init, depth + 2, "init");
+    if (node->cond) dump_node(f, node->cond, depth + 2, "cond");
+    if (node->inc) dump_node(f, node->inc, depth + 2, "inc");
+    if (node->then) dump_node(f, node->then, depth + 2, "then");
+    if (node->els) dump_node(f, node->els, depth + 2, "else");
+    // `for` keeps its loop body in `then`; `body` is the statement list of a
+    // block (and is aliased to `then` on loops, so skip that duplicate).
+    if (node->body && node->body != node->then) dump_chain(f, node->body, depth + 2, "body");
+    dump_chain(f, node->args, depth + 2, "arg");
 }
 
 void dump_ast(Program *prog) {
@@ -19354,7 +19365,7 @@ void dump_ast(Program *prog) {
     for (TLItem *item = prog->items; item; item = item->next) {
         if (item->kind == TL_FUNC && item->fn->body) {
             fprintf(stderr, "function %s:\n", item->fn->name);
-            dump_node(stderr, item->fn->body, 2);
+            dump_chain(stderr, item->fn->body, 2, "stmt");
         }
     }
     fprintf(stderr, "=== end AST dump ===\n");
@@ -19778,6 +19789,118 @@ static void vr_apply(Function *fn) {
         if (vr_seen[i]->vreg > 0) cg_pinned_regs |= 1 << (vr_seen[i]->vreg - 1);
     used_regs |= cg_pinned_regs;
     ever_used_regs |= cg_pinned_regs;
+}
+
+// Define the function symbol for `fn` at the current .text offset (global /
+// weak / local per the C99 vs GNU89 inline rules), apply its visibility, and
+// return the start offset for cg_patch_fn_size(). Shared by the AST codegen
+// and the IR backend. x86-64 only (the ARM64 path keeps its own copy).
+static size_t cg_begin_fn_symbol(Program *prog, Function *fn, bool emitting_local_copy, const char **sym_out) {
+    // For inline functions, check:
+    // 1. If there's a non-inline declaration (has_init) in globals
+    // 2. If prior non-weak declaration had extern (LVar is_extern=true)
+    bool has_noninline_decl = false;
+    bool had_extern_decl = false;
+    bool inline_addr_taken = false;
+    if (fn->is_inline && !fn->is_extern && !fn->is_static) {
+        for (LVar *g = prog->globals; g; g = g->next) {
+            if (g->is_function && g->name == fn->name) {
+                if (g->has_init)
+                    has_noninline_decl = true;
+                // Only consider non-weak extern declarations
+                if (g->is_extern && !g->is_weak)
+                    had_extern_decl = true;
+                inline_addr_taken = g->addr_taken;
+                break;
+            }
+        }
+    }
+    char *fn_label = fn->name;
+    if (is_asm_reserved(fn->name))
+        fn_label = format(".L_rcc_%s", fn->name);
+    // GNU89 gnu_inline: a plain (non-extern) gnu_inline function DOES get an
+    // ordinary global definition; only `extern inline` + gnu_inline (declaration
+    // only) suppresses it, and that case never reaches here.
+    bool fn_exported = !fn->is_static && !emitting_local_copy &&
+        (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl || fn->is_gnu_inline);
+    const char *fn_sym_name = fn->asm_name ? fn->asm_name : asm_sym_name(sym_name(fn_label));
+    size_t fn_sym_start = cg_sec->len;
+    if (fn->is_weak) {
+        cg_weak_label(fn_sym_name); // .weak_definition %s
+    } else if (fn_exported) {
+        cg_global_label(fn_sym_name); // .globl %s
+    } else if (inline_addr_taken) {
+        // Address genuinely taken somewhere in this TU (rcc.h's
+        // LVar.addr_taken): SB_WEAK so `&fn` compares equal across every TU
+        // that takes it.
+        cg_weak_label(fn_sym_name);
+    } else {
+        // Never address-taken, only ever called: SB_LOCAL, matching real
+        // GCC/Clang's effectively-private copy and keeping same-TU calls on
+        // the fast label-hashtable direct branch.
+        cg_def_fn_label(fn_sym_name);
+    }
+    cg_apply_sym_visibility(fn_sym_name, fn->has_visibility, fn->visibility);
+    *sym_out = fn_sym_name;
+    return fn_sym_start;
+}
+
+// ---- IR backend interface (cg_ir.h) ----
+size_t cg_ir_begin_fn(Program *prog, Function *fn, bool emitting_local_copy, const char **sym_out) {
+    cg_dry_run = false;
+    cg_label_ht_reset();
+    cg_branch_sites_reset();
+    asm_fixup_ht_reset();
+    return cg_begin_fn_symbol(prog, fn, emitting_local_copy, sym_out);
+}
+void cg_ir_end_fn(const char *sym, size_t start_off) {
+    cg_patch_fn_size(sym, start_off);
+    cg_thread_jumps(cg_sec);
+}
+size_t cg_ir_jcc(int cond, const char *label) { return emit_jcc_fixup(cg_sec, cond, label); }
+void cg_ir_jmp(const char *label) { emit_jmp_fixup(cg_sec, label); }
+void cg_ir_label(const char *name) { cg_def_label(name); }
+void cg_ir_call(const char *name) { emit_direct_call(name, false); }
+const char *cg_ir_var_sym(LVar *v) { return var_sym_label(v); }
+// Name of an AST node kind (NodeKind as int), for IR eligibility diagnostics.
+const char *cg_ir_node_kind_name(int kind) { return node_kind_name((NodeKind)kind); }
+// How IR_GADDR must reach `v`: -1 = unsupported by the IR backend (global
+// register variable, thread-local, alias); 0 = plain `lea sym(%rip)`; 1 = load
+// the address from `sym@GOTPCREL(%rip)` (weak symbols, PIC/extern data, extern
+// functions -- their address must match the defining module's). Weak symbols
+// are declared weak here, exactly as the AST codegen does when taking an address.
+int cg_ir_global_access(LVar *v) {
+    if (v->is_global_reg || v->is_tls || v->alias_target) return -1;
+    if (v->is_weak) cg_weak_declare(asm_sym_name(var_sym_label(v)));
+    return (v->is_weak || var_needs_got(v) || (v->is_function && v->is_extern)) ? 1 : 0;
+}
+
+// Try to compile `fn` through the SSA IR (-O2+, x86-64 SysV only).
+bool cg_ir_try_function(Program *prog, Function *fn, bool emitting_local_copy) {
+#if defined(ARCH_ARM64) || defined(_WIN32)
+    (void)prog;
+    (void)fn;
+    (void)emitting_local_copy;
+    return false;
+#else
+    // Nested functions reach their parent's locals through its frame (static
+    // chain): a parent's scalars must stay in memory, which the IR cannot see.
+    if (opt_fno_ir || opt_O < 2 || cg_has_nested_fns) return false;
+    IRFunc *f = ir_build(prog, fn);
+    if (!f) return false;
+    if (opt_fdump_ir) {
+        fprintf(stderr, "=== IR as built ===\n");
+        ir_dump(f, stderr);
+    }
+    ir_opt(f);
+    if (opt_fdump_ir) {
+        fprintf(stderr, "=== IR after ir_opt ===\n");
+        ir_dump(f, stderr);
+    }
+    ir_emit_x86(prog, f, emitting_local_copy);
+    ir_func_free(f);
+    return true;
+#endif
 }
 
 struct ObjFile *codegen(Program *prog) {
@@ -20279,6 +20402,8 @@ struct ObjFile *codegen(Program *prog) {
         cg_dbg_fn = fn->name;
         current_fn_def = fn;
         current_fn_stack_size = fn->stack_size;
+        if (cg_ir_try_function(prog, fn, fn_emitting_local_copy))
+            continue;
         memset(spill_slot, 0, sizeof(spill_slot));
         memset(spill_depth, 0, sizeof(spill_depth));
         next_spill_slot = 8;
@@ -21536,51 +21661,8 @@ struct ObjFile *codegen(Program *prog) {
         if (sub_amount % 16 != 0) sub_amount += 8;
 
         // Emit prologue - handle is_weak, inline, and static linkage.
-        // For inline functions, check:
-        // 1. If there's a non-inline declaration (has_init) in globals
-        // 2. If prior non-weak declaration had extern (LVar is_extern=true)
-        bool has_noninline_decl = false;
-        bool had_extern_decl = false;
-        bool inline_addr_taken = false;
-        if (fn->is_inline && !fn->is_extern && !fn->is_static) {
-            for (LVar *g = prog->globals; g; g = g->next) {
-                if (g->is_function && g->name == fn->name) {
-                    if (g->has_init)
-                        has_noninline_decl = true;
-                    // Only consider non-weak extern declarations
-                    if (g->is_extern && !g->is_weak)
-                        had_extern_decl = true;
-                    inline_addr_taken = g->addr_taken;
-                    break;
-                }
-            }
-        }
-        char *fn_label = fn->name;
-        if (is_asm_reserved(fn->name))
-            fn_label = format(".L_rcc_%s", fn->name);
-        // See the ARM64 fn_exported computation above for the GNU89
-        // gnu_inline rationale.
-        bool fn_exported = !fn->is_static && !fn_emitting_local_copy &&
-            (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl || fn->is_gnu_inline);
-        const char *fn_sym_name = fn->asm_name ? fn->asm_name : asm_sym_name(sym_name(fn_label));
-        size_t fn_sym_start = cg_sec->len;
-        if (fn->is_weak) {
-            cg_weak_label(fn_sym_name); // .weak_definition %s
-        } else if (fn_exported) {
-            cg_global_label(fn_sym_name); // .globl %s
-        } else if (inline_addr_taken) {
-            // See the identical ARM64 comment above this function's
-            // mirror decision: address genuinely taken somewhere in this
-            // TU (rcc.h's LVar.addr_taken) needs SB_WEAK so `&fn`
-            // compares equal across every TU that takes it.
-            cg_weak_label(fn_sym_name);
-        } else {
-            // Never address-taken, only ever called: SB_LOCAL, matching
-            // real GCC/Clang's own effectively-private copy and keeping
-            // same-TU calls on the fast label-hashtable direct branch.
-            cg_def_fn_label(fn_sym_name);
-        }
-        cg_apply_sym_visibility(fn_sym_name, fn->has_visibility, fn->visibility);
+        const char *fn_sym_name;
+        size_t fn_sym_start = cg_begin_fn_symbol(prog, fn, fn_emitting_local_copy, &fn_sym_name);
 
         // -fstack-protector-strong: canary needed if any local is an
         // array/VLA, any local's address is taken, or the frame is > 8B.

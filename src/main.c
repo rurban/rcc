@@ -305,6 +305,8 @@ void help(void) {
            "-dM                 dump all macro definitions (use with -E)\n"
            "-fdump-ast          dump AST for debugging\n"
            "-fdump-ast-optimized  dump AST after -O optimization (for debugging)\n"
+           "-fdump-ir           dump the -O2 SSA IR of each function compiled through it\n"
+           "-fno-ir             disable the -O2 SSA IR backend (use the AST codegen)\n"
            "-fexec-charset=cs   set execution character set (default UTF-8)\n"
            "-print-search-dirs  print install, include and library paths\n"
            "-dumpmachine        print target version\n"
@@ -369,6 +371,8 @@ bool opt_dM = false;
 bool opt_E = false;
 bool opt_fdump_ast = false;
 bool opt_fdump_ast_opt = false;
+bool opt_fdump_ir = false;
+bool opt_fno_ir = false;
 bool opt_g = false;
 bool opt_pie = false;
 bool opt_pic = false;
@@ -718,6 +722,10 @@ int main(int argc, char **argv) {
             opt_fdump_ast = true;
         } else if (!strcmp(argv[i], "-fdump-ast-optimized")) {
             opt_fdump_ast_opt = true;
+        } else if (!strcmp(argv[i], "-fdump-ir")) {
+            opt_fdump_ir = true;
+        } else if (!strcmp(argv[i], "-fno-ir")) {
+            opt_fno_ir = true;
         } else if (!strcmp(argv[i], "-g") || !strcmp(argv[i], "-g1") ||
                    !strcmp(argv[i], "-g2") || !strcmp(argv[i], "-g3") ||
                    !strcmp(argv[i], "-ggdb") || !strcmp(argv[i], "-ggdb1") ||

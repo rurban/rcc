@@ -1,18 +1,66 @@
-- -fsanitize=adress,undefined
-
-- interchange and extended float types (just aliased, no __STDC_IEC_60559_TYPES__)
-
-- -O2 miscompile: test/test_csmith_ternary_spill.c gets the wrong checksum
-  under -finline/-funroll (passes at -O1; still fails with the -O2 tail-jmp
-  fast path above forced off, so it's an -finline/-funroll bug, not a tail-
-  call one -- reproduces identically on a352075d, before tail calls existed
-  at all). Not yet isolated to inlining vs unrolling vs their interaction;
-  csmith-generated, 1450 lines, needs delta-reduction to a minimal repro.
-
-- -O2 Tail calls — return f(args) → jmp f. Still open for multiple arguments
+- -O2 tail calls: return f(args) -> jmp f. Still open for multiple arguments
   (needs the same argument-overlap care GCC's sibcall pass takes --
   see torture/20050713-1.c's own comment).
 
-- SSA conversion for -O2, and the usual optimizations with SSA, as in xcc, antcc or ccc.
+- -O2 performance: IR backend for eligible functions
 
-- optional solver backend for the optimizer and contracts prover with -O3
+  Problem. -O2 is currently as slow as -O0 (bench: 763 vs 786 ms; AWFY 6499 vs
+  6504 ms), slower than TCC, ~4x behind gcc -O2 and antcc. Kernel timings (ms):
+      kernel   rcc -O2   antcc   gcc -O0   gcc -O2
+      sum        1217      929     3417       671
+      axpy       2262      606     3615       234
+      fib         431      323      393        82
+      norm       5219     1209     2743       649
+      mm         2062      376     1049       260
+  On norm and mm rcc -O2 is slower than gcc -O0.
+
+  Causes (all in the AST-walking codegen, not in opt.c):
+  - hot-local promotion (codegen.c "-O2+: hot scalar locals") is 3 regs
+    (rbx, r12, r13), int/long/ptr only, params excluded: no FP, no structs,
+    loop bounds reloaded from the stack each iteration.
+  - float/double values live in GPR vregs: every op is movq xmm<->gpr + mulsd.
+  - no scaled-index addressing for a[i]/p->f (shl+movslq+add per access);
+    no memory-operand ALU/FP forms in the asm layer.
+  - loops test at the top plus a back jmp; ?: and if materialize setcc+movzx+cmp.
+  - oversized frames for leaf functions, scalar returns round-trip the stack,
+    "mov $0,%eax" before non-variadic calls.
+  - the -O3 ssa_rename_pass renames then un-renames: no pass consumes SSA, so
+    -O3 == -O2. CSE is a tiny ring buffer; ssa_unroll is disabled.
+  - inliner only takes single-return-expression callees.
+
+  Plan: Do not add more special cases to the
+  tree codegen; lower eligible functions to a basic-block SSA IR instead:
+    AST -> IR -> mem2reg (Braun et al., no dominance frontiers) -> IR passes
+        -> linear-scan regalloc (loop-weighted spill cost, ABI fixed intervals,
+           copy hints) -> isel with address folding -> existing x86_* encoder.
+  - Per-function eligibility, fallback to the current codegen otherwise: scalar
+    int/ptr/float/double, loads/stores, calls, structured control flow. Not
+    eligible: VLA, asm, complex, int128/bitint/decimal/vector, setjmp, cleanup,
+    nested fns, computed goto.
+  - x86-64 first; ARM64 keeps the old path until an IR emitter exists.
+  - Retire the dead AST CFG/dom/DF/phi code and the no-op -O3 rename pass once
+    the IR consumes SSA.
+
+  Steps:
+  0. DONE: IR and old-codegen functions share one object (no CFI to keep
+     in sync; -g/ubsan/asan/stack-protector TUs disable the IR path).
+  1. DONE: ir_build (Braun SSA), ir_opt (fold/DCE/GVN/LICM), ir_x86
+     (address folding, linear-scan regalloc, emit). Calls (direct/indirect,
+     variadic, stack args), struct field access, globals (plain + GOT),
+     ZERO_INIT, GNU `?:`. ~70% of unit-test functions go through the IR.
+     Kernels (ms, was -> now; antcc): sum 1217->938 (929), axpy 2262->520
+     (606), norm 5219->662 (1209), mm 2062->288 (376), fib 431->349 (323).
+     Suites green at -O2 and default: 431/431 units, TCC 118/118, torture 0.
+  2. Struct returns/params/copies (the biggest current rejections), switch,
+     STMT_EXPR, inline asm, atomic nodes; wider eligibility.
+  3. IR inliner (multi-block bodies, size caps, recursion guard); tail
+     recursion to loop; load CSE with a volatile flag; store-to-load
+     forwarding/DSE; LICM of loads with alias info; induction-variable
+     widening and strength reduction; loop rotation; memory operands in
+     ALU/FP ops; escape analysis + scalar replacement of non-escaping
+     structs and arrays (AWFY).
+  4. ARM64 IR emitter.
+
+  Gate every step on `./run_tests "./rcc -O2" --all --parallel`
+
+- interchange and extended float types (just aliased, no __STDC_IEC_60559_TYPES__)

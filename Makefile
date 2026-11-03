@@ -82,7 +82,7 @@ SRCS += src/coff_write.c src/link_pe.c src/x86_enc.c
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
 else
-SRCS += src/elf_write.c src/link_elf.c src/x86_enc.c
+SRCS += src/elf_write.c src/link_elf.c src/x86_enc.c src/ir_core.c src/ir_build.c src/ir_opt.c src/ir_x86.c
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
 TARGET_DEPS += $(MINGW_O)
