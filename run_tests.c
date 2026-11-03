@@ -1754,6 +1754,21 @@ static const char *test_args(const char *base) {
     if (streq(base, "128_run_atexit")) return "1";
     return "";
 }
+// The -O level rcc is being tested at (parsed from rccflags in main()). Some
+// ubsan tests' expected exit depends on it: a compile-time-constant overflow
+// is folded away at -O2/-O3 (no runtime check, matching gcc), so the ubsan
+// halt never fires and the expected exit is 0 there rather than a halt.
+static int g_rcc_optlevel = 1;
+static int optlevel_from_flags(const char *flags) {
+    int lvl = 1;
+    for (const char *p = flags; p && *p; p++) {
+        if (p[0] == '-' && p[1] == 'O' && p[2] >= '0' && p[2] <= '3') {
+            lvl = p[2] - '0';
+            break;
+        }
+    }
+    return lvl;
+}
 static int test_expected_exit(const char *base) {
     if (streq(base, "101_cleanup")) return 105;
     return 0;
@@ -1775,7 +1790,7 @@ static int ubsan_halt_exit(void) {
 }
 static int test_unit_expected_exit(const char *base) {
     if (streq(base, "test_ubsan_divzero")) return ubsan_halt_exit();
-    if (streq(base, "test_ubsan_intoverflow")) return ubsan_halt_exit();
+    if (streq(base, "test_ubsan_intoverflow")) return g_rcc_optlevel >= 2 ? 0 : ubsan_halt_exit();
     if (streq(base, "test_ubsan_shift")) return ubsan_halt_exit();
     if (streq(base, "test_ubsan_null")) return ubsan_halt_exit();
     if (streq(base, "test_ubsan_nonnull")) return ubsan_halt_exit();
@@ -6980,6 +6995,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "rcc binary not found\n");
         return 1;
     }
+    g_rcc_optlevel = optlevel_from_flags(rccflags);
 
     /* External/unknown compiler (not one of rcc's own binaries: rcc,
      * rcc.exe, rcc-arm64, rcc-darwin, ...): remember its basename (as

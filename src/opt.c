@@ -618,6 +618,12 @@ static Node *try_inline(Node *call) {
     Function *fn = inline_htab_lookup(name);
     if (!fn || !fn->body || fn->is_variadic || (fn->ty && fn->ty->is_variadic))
         return NULL;
+    // A returns_nonnull callee emits a libubsan check on its return under
+    // -fsanitize=undefined; splicing that return into the caller drops the
+    // check (the caller is not returns_nonnull), diverging from gcc, which
+    // preserves the check across the inlined call. Refuse to inline such a
+    // callee when ubsan is enabled.
+    if (fn->is_returns_nonnull && opt_ubsan) return NULL;
     // __attribute__((always_inline)) forces inlining at every -O level
     // (real GCC semantics); everything else only inlines under -finline.
     // Without this the real GCC headers' wrappers with runtime immediate
