@@ -63,12 +63,19 @@
      ir_x86.c. Wider eligibility: ~77% of unit-test functions.
      Remaining rejections: bitfields, inline asm, atomics, volatile, complex/
      decimal/int128/long double, labeled loops (C2Y), special callees.
-  3. IR inliner (multi-block bodies, size caps, recursion guard); tail
-     recursion to loop; load CSE with a volatile flag; store-to-load
-     forwarding/DSE; LICM of loads with alias info; induction-variable
-     widening and strength reduction; loop rotation; memory operands in
-     ALU/FP ops; escape analysis + scalar replacement of non-escaping
-     structs and arrays (AWFY).
+  3. PARTLY DONE: IR inliner (small same-TU callees without frame slots,
+     multi-block/multi-return bodies spliced before ir_opt; IR built for the
+     whole TU up front so callees defined later inline too; respects the new
+     __attribute__((noinline)) flag, which the AST inliner now honors as well;
+     call-heavy benchmark 0.21s -> 0.13s, gcc -O2 0.14s). Redundant-load
+     elimination, store-to-load forwarding (exact-width and exact TRUNC/SEXT/
+     ZEXT cases), dead-store elimination and non-escaping frame-slot analysis
+     in ir_opt. Still open: inline callees with frame slots (rebase slots),
+     recursive-call tail calls to loops, loads/stores across join points
+     (needs dataflow instead of the dominator-tree walk), LICM of loads with
+     alias info, induction-variable widening and strength reduction, loop
+     rotation, memory operands in ALU/FP ops, scalar replacement of
+     non-escaping structs and arrays (AWFY).
   4. ARM64 IR emitter.
 
   Gate every step on `./run_tests "./rcc -O2" --all --parallel`

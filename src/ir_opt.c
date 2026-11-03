@@ -5,13 +5,14 @@
 //   simplify      constant folding, algebraic rewrites, trivial-phi/copy propagation
 //   dce           mark/sweep dead code (handles dead phi cycles)
 //   gvn           dominator-tree value numbering of pure instrs
+//   memopt        load forwarding / redundant-load elimination, dead-store elimination
 //   licm          hoist invariant pure instrs into (created) loop preheaders
 //
 // Semantics preserved exactly: I32 values stay sign-extended in imm, shifts only fold
 // with an in-range count, signed div/rem only fold when the hardware would not trap,
 // float folds use the host's IEEE arithmetic at the instr's own precision and never
 // produce NaN constants, trapping divides are never removed, hoisted or merged, and
-// loads/stores/calls are never moved or merged.
+// no memory access is moved across an access or call that may alias it.
 //
 // Value forwarding: a pass that replaces instr X by value Y records X->aux = Y
 // (fwd_set) and applies all forwards to every operand once at the end (fwd_apply),
@@ -1785,6 +1786,481 @@ static bool licm(IRFunc *f) {
     return changed || created;
 }
 
+// ------------------------------------------------------------ memory optimization
+//
+// Every LOAD/STORE in the IR is a plain access (the builder rejects volatile, atomics
+// and asm), so loads can be forwarded/merged and stores dropped subject to aliasing.
+// An access is an address root (frame slot / global symbol / unknown pointer) plus
+// either a constant offset from the root (cst) or (base, idx, scale, disp).
+// Alias facts used (all valid C):
+//  - constant-offset accesses to frame slots/globals compare by byte interval (the
+//    frame address of slot imm is rbp - imm);
+//  - different global symbols, and frame vs global, are distinct objects;
+//  - a frame slot whose address never escapes is distinct from every pointer not
+//    derived from it, and calls cannot touch it. A slot escapes when a pointer derived
+//    from its FRAMEADDR (through ADD) is used other than as the address operand of a
+//    LOAD/STORE (call arg, stored value, phi, compare, return, index operand, ...).
+// Everything not proven distinct may alias.
+
+enum { R_NONE,
+       R_FRAME,
+       R_GLOBAL };
+#define MEM_CAP 48 // availability-table entries per path; the oldest is forgotten when full
+#define PEND_CAP 32
+
+typedef struct {
+    bool cst; // root + constant offset (no base value / index)
+    int rk; // R_*
+    int slot; // R_FRAME: slot index
+    const char *sym; // R_GLOBAL
+    int base, idx, scale; // !cst: base value, index value or IR_NONE, scale
+    int64_t disp; // cst frame: rbp-relative byte offset; cst global: offset from sym; else displacement
+    int size;
+} Acc;
+
+typedef struct {
+    IRFunc *f;
+    int *root; // per value: slot index+1 (frame-derived), -(GADDR id+1) (global-derived), 0 none
+    int64_t *slot_imm;
+    bool *slot_esc;
+    int nslots;
+} Mem;
+
+static int mem_size(int mw) {
+    static const int sz[] = {1, 2, 4, 8, 4, 8};
+    return sz[mw];
+}
+
+// Result type of a LOAD of width mw.
+static IRType mem_type(int mw) {
+    switch (mw) {
+    case IRM_I64: return IRT_I64;
+    case IRM_F32: return IRT_F32;
+    case IRM_F64: return IRT_F64;
+    default: return IRT_I32;
+    }
+}
+
+static int slot_index(Mem *m, int64_t imm) {
+    for (int k = 0; k < m->nslots; k++)
+        if (m->slot_imm[k] == imm) return k;
+    m->slot_imm[m->nslots] = imm;
+    return m->nslots++;
+}
+
+static void esc_use(Mem *m, const IRInstr *user, int pos, int v) {
+    int r = m->root[v];
+    if (r <= 0) return;
+    if ((user->op == IR_LOAD || user->op == IR_STORE) && pos == 0) return;
+    if (user->op == IR_ADD && m->root[user->id] == r) return;
+    m->slot_esc[r - 1] = true;
+}
+
+static void mem_init(Mem *m, IRFunc *f) {
+    m->f = f;
+    m->root = xcalloc((size_t)f->nvals, sizeof(int));
+    m->slot_imm = xcalloc((size_t)f->nvals, sizeof(int64_t));
+    m->slot_esc = xcalloc((size_t)f->nvals, 1);
+    m->nslots = 0;
+    IRBlock **rpo = xcalloc((size_t)f->nblocks, sizeof(*rpo));
+    int n = ir_rpo(f, rpo);
+    for (int bi = 0; bi < n; bi++) {
+        IRBlock *b = rpo[bi];
+        for (int k = 0; k < b->nins; k++) {
+            IRInstr *i = b->ins[k];
+            if (i->op == IR_FRAMEADDR) {
+                m->root[i->id] = slot_index(m, i->imm) + 1;
+            } else if (i->op == IR_GADDR) {
+                m->root[i->id] = -(i->id + 1);
+            } else if (i->op == IR_ADD) {
+                int ra = m->root[i->a], rb = m->root[i->b];
+                if (ra && !rb) m->root[i->id] = ra;
+                else if (!ra && rb)
+                    m->root[i->id] = rb;
+            }
+        }
+    }
+    free(rpo);
+    for (int bi = 0; bi < f->nblocks; bi++) {
+        IRBlock *b = f->blocks[bi];
+        for (int k = 0; k < b->nphis + b->nins; k++) {
+            IRInstr *i = k < b->nphis ? b->phis[k] : b->ins[k - b->nphis];
+            if (i->a != IR_NONE) esc_use(m, i, 0, i->a);
+            if (i->b != IR_NONE) esc_use(m, i, 1, i->b);
+            if (i->c != IR_NONE) esc_use(m, i, 2, i->c);
+            for (int j = 0; j < i->nargs; j++) esc_use(m, i, 3, i->args[j]);
+        }
+    }
+}
+
+static void mem_free(Mem *m) {
+    free(m->root);
+    free(m->slot_imm);
+    free(m->slot_esc);
+}
+
+// Describes the address of LOAD/STORE i (operands already resolved).
+static void acc_make(Mem *m, const IRInstr *i, Acc *o) {
+    IRFunc *f = m->f;
+    int a = i->a;
+    int64_t disp = i->imm;
+    for (;;) { // peel constant additions off the base
+        IRInstr *d = V(f, a);
+        if (d->op != IR_ADD) break;
+        int x = res(f, d->a), y = res(f, d->b);
+        if (V(f, y)->op == IR_ICONST) {
+            disp += V(f, y)->imm;
+            a = x;
+        } else if (V(f, x)->op == IR_ICONST) {
+            disp += V(f, x)->imm;
+            a = y;
+        } else {
+            break;
+        }
+    }
+    int idx = i->b, scale = i->scale;
+    if (idx != IR_NONE && V(f, idx)->op == IR_ICONST) {
+        disp += V(f, idx)->imm * scale;
+        idx = IR_NONE;
+    }
+    if (idx == IR_NONE) scale = 1;
+    memset(o, 0, sizeof *o);
+    o->size = mem_size(i->mw);
+    o->idx = idx;
+    o->scale = scale;
+    o->base = a;
+    IRInstr *d = V(f, a);
+    int r = m->root[a];
+    if (d->op == IR_FRAMEADDR) {
+        o->rk = R_FRAME;
+        o->slot = r - 1;
+        if (idx == IR_NONE) {
+            o->cst = true;
+            disp -= d->imm;
+        }
+    } else if (d->op == IR_GADDR) {
+        o->rk = R_GLOBAL;
+        o->sym = d->sym;
+        if (idx == IR_NONE) {
+            o->cst = true;
+            disp += d->imm;
+        }
+    } else if (r > 0) {
+        o->rk = R_FRAME;
+        o->slot = r - 1;
+    } else if (r < 0) {
+        o->rk = R_GLOBAL;
+        o->sym = V(f, -r - 1)->sym;
+    }
+    o->disp = disp;
+}
+
+static bool overlap(int64_t a, int sa, int64_t b, int sb) { return a < b + sb && b < a + sa; }
+
+// Same start address, provably.
+static bool acc_equal(Mem *m, const Acc *x, const Acc *y) {
+    if (x->cst != y->cst || x->rk != y->rk || x->disp != y->disp) return false;
+    if (x->cst) return x->rk == R_FRAME || strcmp(x->sym, y->sym) == 0;
+    return x->scale == y->scale && res(m->f, x->base) == res(m->f, y->base) &&
+        res(m->f, x->idx) == res(m->f, y->idx);
+}
+
+static bool acc_alias(Mem *m, const Acc *x, const Acc *y) {
+    if (x->cst && y->cst) {
+        if (x->rk != y->rk) return false;
+        if (x->rk == R_GLOBAL && strcmp(x->sym, y->sym) != 0) return false;
+        return overlap(x->disp, x->size, y->disp, y->size);
+    }
+    if (!x->cst && !y->cst && x->scale == y->scale && res(m->f, x->base) == res(m->f, y->base) &&
+        res(m->f, x->idx) == res(m->f, y->idx))
+        return overlap(x->disp, x->size, y->disp, y->size);
+    // different bases: only provably distinct roots separate them
+    if ((x->rk == R_FRAME && y->rk == R_GLOBAL) || (x->rk == R_GLOBAL && y->rk == R_FRAME)) return false;
+    if (x->rk == R_GLOBAL && y->rk == R_GLOBAL) return strcmp(x->sym, y->sym) == 0;
+    if (x->rk == R_FRAME && y->rk == R_NONE) return m->slot_esc[x->slot];
+    if (x->rk == R_NONE && y->rk == R_FRAME) return m->slot_esc[y->slot];
+    return true;
+}
+
+// A call cannot touch a frame slot whose address never escapes.
+static bool acc_call_safe(const Mem *m, const Acc *a) { return a->rk == R_FRAME && !m->slot_esc[a->slot]; }
+
+typedef struct {
+    Acc acc;
+    int val; // loaded value (LOAD entry) or stored value (STORE entry)
+    uint8_t mw, msign;
+    bool is_store;
+} Ent;
+
+static void tab_add(Ent *e, int *n, const Ent *x) {
+    if (*n == MEM_CAP) {
+        memmove(e, e + 1, sizeof(*e) * (MEM_CAP - 1));
+        (*n)--;
+    }
+    e[(*n)++] = *x;
+}
+
+// How a LOAD of value type/width L can be produced from stored value v of the same
+// width: 1 = v itself, 2 = TRUNC(v), 3 = *op(v) (narrow sign/zero extension), 0 = no.
+static int fwd_from_store(const IRInstr *L, const IRInstr *v, IROp *op) {
+    if (L->type != mem_type(L->mw)) return 0;
+    switch (L->mw) {
+    case IRM_I64: return v->type == IRT_I64;
+    case IRM_I32: return v->type == IRT_I32 ? 1 : v->type == IRT_I64 ? 2
+                                                                     : 0;
+    case IRM_I16:
+    case IRM_I8:
+        if (v->type != IRT_I32) return 0;
+        *op = L->mw == IRM_I8 ? (L->msign ? IR_SEXT8 : IR_ZEXT8) : (L->msign ? IR_SEXT16 : IR_ZEXT16);
+        return 3;
+    case IRM_F32: return v->type == IRT_F32;
+    default: return v->type == IRT_F64;
+    }
+}
+
+typedef struct {
+    Ent *e;
+    int n, refs;
+} Saved;
+
+// Redundant-load elimination and store-to-load forwarding along single-predecessor
+// chains (a block with several predecessors starts with an empty table).
+static bool forward_loads(Mem *m, IRBlock **rpo, int nrpo) {
+    IRFunc *f = m->f;
+    Saved **sv = xcalloc((size_t)f->nblocks, sizeof(*sv));
+    Ent *tab = xcalloc(MEM_CAP, sizeof(*tab));
+    bool changed = false;
+    for (int bi = 0; bi < nrpo; bi++) {
+        IRBlock *b = rpo[bi];
+        int n = 0;
+        if (b->npreds == 1 && sv[b->preds[0]->id]) {
+            Saved *s = sv[b->preds[0]->id];
+            memcpy(tab, s->e, sizeof(*tab) * (size_t)s->n);
+            n = s->n;
+            if (--s->refs == 0) {
+                free(s->e);
+                free(s);
+                sv[b->preds[0]->id] = NULL;
+            }
+        }
+        bool dirty = false;
+        for (int k = 0; k < b->nins; k++) {
+            IRInstr *i = b->ins[k];
+            if (i->op == IR_LOAD) {
+                i->a = res(f, i->a);
+                i->b = res(f, i->b);
+                Acc a;
+                acc_make(m, i, &a);
+                int how = 0;
+                IROp xop = IR_NOP;
+                IRInstr *hv = NULL;
+                for (int e = n - 1; e >= 0 && !how; e--) {
+                    Ent *E = &tab[e];
+                    if (E->mw != i->mw || !acc_equal(m, &E->acc, &a)) continue;
+                    IRInstr *v = V(f, res(f, E->val));
+                    if (!E->is_store) {
+                        if (v->type == i->type && (i->mw >= IRM_I32 || E->msign == i->msign)) how = 1;
+                    } else {
+                        how = fwd_from_store(i, v, &xop);
+                    }
+                    hv = v;
+                }
+                if (how == 1) {
+                    fwd_set(f, i->id, hv->id);
+                    kill(i);
+                } else if (how >= 2) { // exact in-place rewrite of the load
+                    i->op = how == 2 ? IR_TRUNC : xop;
+                    i->a = hv->id;
+                    i->b = IR_NONE;
+                    i->imm = 0;
+                    i->mw = i->msign = 0;
+                    i->scale = 1;
+                } else {
+                    Ent x = {a, i->id, i->mw, i->msign, false};
+                    tab_add(tab, &n, &x);
+                    continue;
+                }
+                changed = dirty = true;
+            } else if (i->op == IR_STORE) {
+                i->a = res(f, i->a);
+                i->b = res(f, i->b);
+                i->c = res(f, i->c);
+                Acc a;
+                acc_make(m, i, &a);
+                int w = 0;
+                for (int e = 0; e < n; e++)
+                    if (!acc_alias(m, &tab[e].acc, &a)) tab[w++] = tab[e];
+                n = w;
+                Ent x = {a, i->c, i->mw, 0, true};
+                tab_add(tab, &n, &x);
+            } else if (i->op == IR_CALL) {
+                int w = 0;
+                for (int e = 0; e < n; e++)
+                    if (acc_call_safe(m, &tab[e].acc)) tab[w++] = tab[e];
+                n = w;
+            }
+        }
+        if (dirty) compact_block(b);
+        IRBlock *s[2];
+        int ns = ir_succs(b, s), refs = 0;
+        for (int k = 0; k < ns; k++)
+            if (s[k]->npreds == 1) refs++;
+        if (refs && n) {
+            Saved *sa = xcalloc(1, sizeof *sa);
+            sa->e = xcalloc((size_t)n, sizeof(*tab));
+            memcpy(sa->e, tab, sizeof(*tab) * (size_t)n);
+            sa->n = n;
+            sa->refs = refs;
+            sv[b->id] = sa;
+        }
+    }
+    for (int i = 0; i < f->nblocks; i++)
+        if (sv[i]) {
+            free(sv[i]->e);
+            free(sv[i]);
+        }
+    free(sv);
+    free(tab);
+    return changed;
+}
+
+typedef struct {
+    IRInstr *st;
+    Acc acc;
+} Pend;
+
+// A STORE overwritten by a later same-address STORE of equal or greater width, with no
+// possibly-aliasing load, call or trapping divide in between, is dead. (A trapping
+// divide ends the program, whose memory state is observable, so it counts as a reader.)
+static bool dse_block(Mem *m, IRBlock *b) {
+    Pend pend[PEND_CAP];
+    int np = 0;
+    bool changed = false;
+    for (int k = 0; k < b->nins; k++) {
+        IRInstr *i = b->ins[k];
+        switch (i->op) {
+        case IR_STORE: {
+            Acc a;
+            acc_make(m, i, &a);
+            int w = 0;
+            for (int j = 0; j < np; j++) {
+                if (acc_equal(m, &pend[j].acc, &a) && a.size >= pend[j].acc.size) {
+                    kill(pend[j].st);
+                    changed = true;
+                } else {
+                    pend[w++] = pend[j];
+                }
+            }
+            np = w;
+            if (np == PEND_CAP) {
+                memmove(pend, pend + 1, sizeof(*pend) * (PEND_CAP - 1));
+                np--;
+            }
+            pend[np].st = i;
+            pend[np++].acc = a;
+            break;
+        }
+        case IR_LOAD: {
+            Acc a;
+            acc_make(m, i, &a);
+            int w = 0;
+            for (int j = 0; j < np; j++)
+                if (!acc_alias(m, &pend[j].acc, &a)) pend[w++] = pend[j];
+            np = w;
+            break;
+        }
+        case IR_CALL: {
+            int w = 0;
+            for (int j = 0; j < np; j++)
+                if (acc_call_safe(m, &pend[j].acc)) pend[w++] = pend[j];
+            np = w;
+            break;
+        }
+        case IR_SDIV:
+        case IR_UDIV:
+        case IR_SREM:
+        case IR_UREM:
+            if (!div_safe(m->f, i)) np = 0;
+            break;
+        default:
+            break;
+        }
+    }
+    if (changed) compact_block(b);
+    return changed;
+}
+
+// Stores to a non-escaping frame slot that no load in the function can read.
+static bool dead_local_stores(Mem *m) {
+    IRFunc *f = m->f;
+    int nloads = 0, nstores = 0;
+    for (int bi = 0; bi < f->nblocks; bi++) {
+        IRBlock *b = f->blocks[bi];
+        for (int k = 0; k < b->nins; k++) {
+            if (b->ins[k]->op == IR_LOAD) nloads++;
+            else if (b->ins[k]->op == IR_STORE)
+                nstores++;
+        }
+    }
+    if (!nstores || (int64_t)nloads * nstores > 4000000) return false;
+    Acc *loads = xcalloc((size_t)nloads, sizeof(*loads));
+    int nl = 0;
+    for (int bi = 0; bi < f->nblocks; bi++) {
+        IRBlock *b = f->blocks[bi];
+        for (int k = 0; k < b->nins; k++)
+            if (b->ins[k]->op == IR_LOAD) {
+                acc_make(m, b->ins[k], &loads[nl]);
+                if (loads[nl].rk == R_FRAME) nl++;
+            }
+    }
+    bool changed = false;
+    for (int bi = 0; bi < f->nblocks; bi++) {
+        IRBlock *b = f->blocks[bi];
+        bool dirty = false;
+        for (int k = 0; k < b->nins; k++) {
+            IRInstr *i = b->ins[k];
+            if (i->op != IR_STORE) continue;
+            Acc a;
+            acc_make(m, i, &a);
+            if (a.rk != R_FRAME || m->slot_esc[a.slot]) continue;
+            bool read = false;
+            for (int j = 0; j < nl && !read; j++) read = acc_alias(m, &loads[j], &a);
+            if (!read) {
+                kill(i);
+                dirty = true;
+            }
+        }
+        if (dirty) {
+            compact_block(b);
+            changed = true;
+        }
+    }
+    free(loads);
+    return changed;
+}
+
+static bool memopt(IRFunc *f) {
+    bool any = false;
+    for (int bi = 0; bi < f->nblocks && !any; bi++)
+        for (int k = 0; k < f->blocks[bi]->nins && !any; k++) {
+            IROp op = (IROp)f->blocks[bi]->ins[k]->op;
+            any = op == IR_LOAD || op == IR_STORE;
+        }
+    if (!any) return false;
+    fwd_reset(f);
+    Mem m;
+    mem_init(&m, f);
+    IRBlock **rpo = xcalloc((size_t)f->nblocks, sizeof(*rpo));
+    int n = ir_rpo(f, rpo);
+    bool changed = forward_loads(&m, rpo, n);
+    if (changed) fwd_apply(f);
+    for (int bi = 0; bi < f->nblocks; bi++) changed |= dse_block(&m, f->blocks[bi]);
+    changed |= dead_local_stores(&m);
+    free(rpo);
+    mem_free(&m);
+    return changed;
+}
+
 // ---------------------------------------------------------------------- driver
 
 void ir_opt(IRFunc *f) {
@@ -1795,6 +2271,7 @@ void ir_opt(IRFunc *f) {
         ch |= cfg_cleanup(f);
         ch |= dce(f);
         ch |= gvn(f);
+        ch |= memopt(f);
         if (!ch) break;
     }
     dce(f);

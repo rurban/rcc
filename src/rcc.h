@@ -472,6 +472,7 @@ extern bool opt_E;
 extern bool opt_g;
 extern bool opt_pie;
 extern bool opt_pic;
+extern bool opt_shared;
 extern bool opt_time;
 // -fsanitize=<list> (GCC/Clang spelling). address/asan -> opt_asan,
 // undefined/ubsan -> opt_ubsan. opt_sanitize_list is the recognized subset
@@ -558,6 +559,7 @@ struct LVar {
     bool is_inline;
     bool is_weak;
     bool is_used; // __attribute__((used)) — see Function.is_used
+    bool is_noinline; // __attribute__((noinline)) on a declaration; copied to Function.is_noinline
     bool has_init;
     bool has_visibility; // __attribute__((visibility("..."))) seen
     uint8_t visibility; // STV_* (obj.h) when has_visibility
@@ -915,6 +917,7 @@ struct Function {
     bool is_inline;
     bool is_gnu_inline; // GNU89 semantics: extern inline is never emitted
     bool is_always_inline; // __attribute__((always_inline)): force inline at -O0 too
+    bool is_noinline; // __attribute__((noinline)): neither the AST inliner nor the IR inliner may inline it
     bool is_static;
     bool is_extern;
     bool is_weak;

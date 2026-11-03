@@ -632,6 +632,8 @@ static Node *try_inline(Node *call) {
     // fortify wrappers are still refused below (recursion guard).
     if (!opt_finline && !fn->is_always_inline)
         return NULL;
+    if (fn->is_noinline && !fn->is_always_inline)
+        return NULL; // explicit __attribute__((noinline)) (return-address/frame tests depend on it)
     if (has_cleanup_local(fn)) return NULL;
 
     Node *ret_expr = inlinable_return_expr(fn);

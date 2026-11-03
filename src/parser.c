@@ -31,6 +31,7 @@ struct VarAttr {
     bool is_inline;
     bool is_gnu_inline;
     bool is_always_inline;
+    bool is_noinline; // __attribute__((noinline)): never inline this function (any inliner)
     bool is_weak;
     bool is_used; // __attribute__((used)) / __attribute__((__used__))
     bool is_tls;
@@ -2855,6 +2856,15 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     continue;
                 }
 
+                if (equalc(tok, "noinline") || equalc(tok, "__noinline__")) {
+                    if (attr)
+                        attr->is_noinline = true;
+                    tok = tok->next;
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
                 if (equalc(tok, "gnu_inline") || equalc(tok, "__gnu_inline__")) {
                     if (attr)
                         attr->is_gnu_inline = true;
@@ -4788,6 +4798,7 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name, VarAttr
         if (attr) {
             if (ptr_attr.is_gnu_inline) attr->is_gnu_inline = true;
             if (ptr_attr.is_always_inline) attr->is_always_inline = true;
+            if (ptr_attr.is_noinline) attr->is_noinline = true;
             if (ptr_attr.is_inline) attr->is_inline = true;
         }
         if (tok != attr_start &&
@@ -15999,6 +16010,7 @@ Program *parse(Token *tok) {
                         fn_lvar->is_function = true;
                         fn_lvar->is_inline = attr.is_inline;
                         fn_lvar->is_weak = attr.is_weak;
+                        fn_lvar->is_noinline = attr.is_noinline;
                         fn_lvar->has_visibility = attr.has_visibility;
                         fn_lvar->visibility = attr.visibility;
                         fn_lvar->is_reproducible = attr.is_reproducible;
@@ -16030,6 +16042,8 @@ Program *parse(Token *tok) {
                             existing->is_inline = true;
                         if (attr.is_weak)
                             existing->is_weak = true;
+                        if (attr.is_noinline)
+                            existing->is_noinline = true;
                         if (attr.is_static)
                             existing->is_static = true;
                         if (attr.is_extern)
@@ -16177,6 +16191,7 @@ Program *parse(Token *tok) {
                     fn->is_inline = attr.is_inline;
                     fn->is_gnu_inline = attr.is_gnu_inline;
                     fn->is_always_inline = attr.is_always_inline;
+                    fn->is_noinline = attr.is_noinline || (fn_sym2 && fn_sym2->is_noinline);
                     // is_static is sticky: if any decl was static the fn is static
                     fn->is_static = attr.is_static || (fn_sym2 && fn_sym2->is_static);
                     // is_extern: explicit extern on this def, OR any non-inline extern

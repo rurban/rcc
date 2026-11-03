@@ -19875,6 +19875,58 @@ int cg_ir_global_access(LVar *v) {
     return (v->is_weak || var_needs_got(v) || (v->is_function && v->is_extern)) ? 1 : 0;
 }
 
+// ---- per-TU IR cache: every eligible function is built once, up front, so
+// callers can inline callees defined later in the file. ----
+#if !defined(ARCH_ARM64) && !defined(_WIN32)
+static IRFunc **ir_cache;
+static int ir_cache_n;
+static bool ir_cache_ready;
+
+static void cg_ir_cache_build(Program *prog) {
+    ir_cache_ready = true;
+    int n = 0;
+    for (TLItem *it = prog->items; it; it = it->next)
+        if (it->kind == TL_FUNC) n++;
+    ir_cache = calloc((size_t)(n ? n : 1), sizeof(IRFunc *));
+    ir_cache_n = n;
+    int i = 0;
+    for (TLItem *it = prog->items; it; it = it->next)
+        if (it->kind == TL_FUNC) ir_cache[i++] = ir_build(prog, it->fn);
+}
+
+static void cg_ir_cache_free(void) {
+    for (int i = 0; i < ir_cache_n; i++) ir_func_free(ir_cache[i]);
+    free(ir_cache);
+    ir_cache = NULL;
+    ir_cache_n = 0;
+    ir_cache_ready = false;
+}
+
+// Callee IR for ir_inline(): same-TU, built, and not interposable.
+static IRFunc *cg_ir_lookup(const char *sym, void *ud) {
+    (void)ud;
+    for (int i = 0; i < ir_cache_n; i++) {
+        IRFunc *c = ir_cache[i];
+        if (!c || c->fn->name != sym) continue;
+        Function *fn = c->fn;
+        if (fn->is_weak || fn->asm_name || fn->alias_target || fn->is_noinline) return NULL;
+        // A non-static function may be interposed in a shared object or by -fPIC code.
+        if (!fn->is_static && (opt_pic || opt_shared)) return NULL;
+        return c;
+    }
+    return NULL;
+}
+
+// IR for `fn` from the cache (ownership moves to the caller).
+static IRFunc *cg_ir_take(Function *fn) {
+    for (int i = 0; i < ir_cache_n; i++) {
+        IRFunc *c = ir_cache[i];
+        if (c && c->fn == fn) return c; // stays in the cache: callers inline from it
+    }
+    return NULL;
+}
+#endif
+
 // Try to compile `fn` through the SSA IR (-O2+, x86-64 SysV only).
 bool cg_ir_try_function(Program *prog, Function *fn, bool emitting_local_copy) {
 #if defined(ARCH_ARM64) || defined(_WIN32)
@@ -19886,15 +19938,20 @@ bool cg_ir_try_function(Program *prog, Function *fn, bool emitting_local_copy) {
     // Nested functions reach their parent's locals through its frame (static
     // chain): a parent's scalars must stay in memory, which the IR cannot see.
     if (opt_fno_ir || opt_O < 2 || cg_has_nested_fns) return false;
+    if (!ir_cache_ready) cg_ir_cache_build(prog);
+    IRFunc *tmpl = cg_ir_take(fn);
+    if (!tmpl) return false;
+    // Work on a fresh build: the cached IR is the read-only inlining template.
     IRFunc *f = ir_build(prog, fn);
     if (!f) return false;
     if (opt_fdump_ir) {
         fprintf(stderr, "=== IR as built ===\n");
         ir_dump(f, stderr);
     }
+    if (!opt_fno_ir_inline) ir_inline(f, cg_ir_lookup, NULL);
     ir_opt(f);
     if (opt_fdump_ir) {
-        fprintf(stderr, "=== IR after ir_opt ===\n");
+        fprintf(stderr, "=== IR after inline + ir_opt ===\n");
         ir_dump(f, stderr);
     }
     ir_emit_x86(prog, f, emitting_local_copy);
@@ -22601,6 +22658,9 @@ struct ObjFile *codegen(Program *prog) {
     if (opt_time)
         fprintf(stderr, "  pass1       %-20s: %6llu us\n", "(dry-run, cumulative)",
                 (unsigned long long)dbg_pass1_us);
+#endif
+#if !defined(ARCH_ARM64) && !defined(_WIN32)
+    cg_ir_cache_free();
 #endif
     return cg_obj;
 }

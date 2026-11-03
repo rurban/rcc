@@ -382,6 +382,14 @@ reason. For optimizer/backend debugging.
 Disable the B<-O2> SSA IR backend: compile every function with the regular
 AST code generator. Useful to bisect a miscompile.
 
+=item B<-fno-ir-inline>
+
+Keep the B<-O2> SSA IR backend but disable its inliner (small same-file
+callees without frame slots are otherwise spliced into their callers;
+C<__attribute__((noinline))> functions, weak/aliased functions, and non-static
+functions under B<-fPIC>/B<-shared> are never inlined). Useful to bisect a
+miscompile.
+
 =item B<-print-search-dirs>
 
 Print the compiler's install, include and library search paths, then

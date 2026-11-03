@@ -284,13 +284,25 @@ void ir_dump(IRFunc *f, FILE *out); // textual form, used by -fdump-ir
 // terminator per block, operand types). Aborts with a message on violation.
 void ir_verify(IRFunc *f);
 
+// ---------------------------------------------------------------- ir_inline.c
+// Inline direct calls to small callees into `caller`, before ir_opt().
+// `lookup(sym, ud)` returns the callee's as-built IRFunc (read-only template,
+// shared; never modified or freed here) or NULL when `sym` must stay a call
+// (not in this TU, weak, interposable, or otherwise disqualified by the host).
+// The pass decides profitability and legality of the IR itself: see ir_inline.c.
+// Leaves `caller` verifiable and `caller->has_calls` correct.
+void ir_inline(IRFunc *caller, IRFunc *(*lookup)(const char *sym, void *ud), void *ud);
+
 // ---------------------------------------------------------------- ir_opt.c
 // Constant folding, algebraic simplification, copy/phi simplification, DCE,
 // unreachable-block removal, branch folding, empty-block threading, block
 // merging, dominator-tree GVN of pure instrs and LICM of pure non-trapping
 // instrs (which may add loop preheader blocks). Output block ids are dense and
-// loop_depth is refreshed. Unused LOADs are deleted; STORE/CALL/trapping divides
-// are never removed, merged or reordered.
+// loop_depth is refreshed. Memory (all LOAD/STORE are plain accesses): redundant
+// loads and store->load pairs are forwarded along single-predecessor chains,
+// same-address overwritten stores and stores to never-read non-escaping frame
+// slots are removed; unused LOADs are deleted. CALLs and trapping divides are
+// never removed, merged or reordered, nor is a store moved past an aliasing access.
 // Must preserve exact C-visible semantics (incl. wrap, trap-capable divides).
 void ir_opt(IRFunc *f);
 
@@ -308,5 +320,6 @@ bool cg_ir_try_function(Program *prog, Function *fn, bool emitting_local_copy);
 
 extern bool opt_fdump_ir; // -fdump-ir: ir_dump() every function to stderr after ir_opt
 extern bool opt_fno_ir; // -fno-ir: never use the IR backend
+extern bool opt_fno_ir_inline; // -fno-ir-inline: skip ir_inline()
 
 #endif
