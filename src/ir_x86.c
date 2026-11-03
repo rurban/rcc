@@ -45,7 +45,8 @@ enum { RC_G = 0,
 enum { LK_NONE,
        LK_REG,
        LK_SPILL,
-       LK_REMAT };
+       LK_REMAT,
+       LK_RAX }; // lives in rax only: its single use is the RET right after its def (ret_into_rax)
 
 typedef struct {
     uint8_t kind;
@@ -1555,6 +1556,8 @@ static void load_g(X86Reg rd, int v) {
         if (l->reg != rd) x86_mov_rr(S, tsz(V(v)->type), rd, (X86Reg)l->reg);
     } else if (l->kind == LK_SPILL) {
         x86_mov_rm(S, tsz(V(v)->type), rd, slot_mem(v));
+    } else if (l->kind == LK_RAX) {
+        if (rd != R_S0) x86_mov_rr(S, tsz(V(v)->type), rd, R_S0);
     } else {
         mat_g(v, rd);
     }
@@ -1566,6 +1569,8 @@ static void fin_g(int v, X86Reg r) {
         if (l->reg != r) x86_mov_rr(S, tsz(V(v)->type), (X86Reg)l->reg, r);
     } else if (l->kind == LK_SPILL) {
         x86_mov_mr(S, tsz(V(v)->type), slot_mem(v), r);
+    } else if (l->kind == LK_RAX) {
+        if (r != R_S0) x86_mov_rr(S, tsz(V(v)->type), R_S0, r);
     }
 }
 
@@ -2634,6 +2639,63 @@ static void emit_ins(IRBlock *b, IRInstr *i, IRBlock *nxt) {
     }
 }
 
+// A value whose only use is the RET right after its definition (no other code
+// is emitted in between) is produced directly in rax instead of in an
+// allocatable register that the RET then copies. rax is the emitter's scratch
+// register, so this is only safe when nothing can run between the def and the
+// ret: the def is the last instruction that emits code, and every emitter
+// already supports a destination of R_S0 (that is how spilled values are
+// produced). It also frees the register, which can drop a callee-saved save.
+static void ret_into_rax(void) {
+    if (be.f->ret_agg != 0 || be.f->ret_sret) return;
+    for (int bi = 0; bi < be.nord; bi++) {
+        IRBlock *b = be.ord[bi];
+        if (b->nins < 2) continue;
+        IRInstr *r = b->ins[b->nins - 1];
+        if (r->op != IR_RET || r->a == IR_NONE) continue;
+        int v = r->a;
+        IRInstr *d = V(v);
+        if (be.vi[v].dead || be.vi[v].uses != 1 || d->blk != b || tflt(d->type)) continue;
+        if (LOC(v)->kind != LK_REG && LOC(v)->kind != LK_SPILL) continue;
+        switch (d->op) {
+        case IR_ADD:
+        case IR_SUB:
+        case IR_MUL:
+        case IR_AND:
+        case IR_OR:
+        case IR_XOR:
+        case IR_SHL:
+        case IR_SHR:
+        case IR_SAR:
+        case IR_NEG:
+        case IR_NOT:
+        case IR_SEXT8:
+        case IR_SEXT16:
+        case IR_SEXT32:
+        case IR_ZEXT8:
+        case IR_ZEXT16:
+        case IR_ZEXT32:
+        case IR_TRUNC:
+        case IR_LOAD:
+        case IR_CMP:
+        case IR_SDIV:
+        case IR_UDIV:
+        case IR_SREM:
+        case IR_UREM:
+            break;
+        case IR_CALL:
+            if (d->ret_agg != 0) continue;
+            break;
+        default:
+            continue;
+        }
+        int k = b->nins - 2;
+        while (k >= 0 && b->ins[k] != d && !emitted(b->ins[k])) k--;
+        if (k < 0 || b->ins[k] != d) continue;
+        LOC(v)->kind = LK_RAX;
+    }
+}
+
 static void frame_layout(void) {
     IRFunc *f = be.f;
     // Aggregate params (VALUE8 / VALUE16 / MEMORY) are materialized into frame
@@ -2832,6 +2894,7 @@ void ir_emit_x86(Program *prog, IRFunc *f, bool emitting_local_copy) {
     prep_ir();
     build_intervals();
     regalloc();
+    ret_into_rax();
     frame_layout();
 
     // Blocks that only forward (no emitted instruction, no phi moves) are

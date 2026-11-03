@@ -98,18 +98,37 @@
      e. Exit-edge splitting for iv_widen: a live-out IV value costs a
         per-iteration trunc today and blocks otherwise-legal widenings;
         splitting the exit edge would move that cost out of the loop.
-     f. Backend: allocate single-use ret values directly into rax (kills
-        BasicBlock_hash's `mov eax,esi`); x87/aggregate-return shrink-wrap
-        cases.
-  3.2 NEXT (eligibility/coverage; goal >85% of unit-test functions, was
-     ~77%):
-     a. volatile in the IR: model volatile loads/stores as un-mergeable,
-        un-droppable barriers instead of rejecting the function (~26
-        rejects; biggest single unlock after asm).
-     b. Bitfields: lower to shift/mask chains in the builder (~22).
-     c. Re-measure the top rejection reasons (-fdump-ir stats over
-        test/test_*.c) and pick off 'assign type'/'load type' (~46/34).
-     d. Inline asm stays out (whole-function fallback by design).
+     f. DONE (ret_into_rax, LK_RAX): a single-use value whose def is the
+        last emitted instruction before its RET is produced directly in rax
+        (BasicBlock_hash lost its `mov eax,esi`; call results and rem
+        results go straight through). Still open: x87/aggregate-return
+        shrink-wrap cases.
+  3.2 NEXT (eligibility/coverage). MEASURED 2026-11-03 (loop over
+     test/test_*.c, rcc -O2 -fdump-ir): 1289 of 1614 functions go through
+     the IR = 79.9% (was 77%). Rejection histogram: load type 54, assign
+     type 46, inline asm 43, volatile 27, return type 22, bitfield/variable
+     member 22, function attribute 13, call without callee 13, special
+     callee 11, labeled loop 10, cleanup/VLA 9, unsupported lvalue LT 6,
+     argument type 5, ATOMIC_STORE 4. The type reasons are long double /
+     _Complex / __int128 / decimal / _Float16 (rare in hot code).
+     Neither bench/bench.c nor the AWFY suite has a single rejected
+     function or any volatile, so none of these move the benchmark tables;
+     they only widen what -O2 accelerates in user code. Priority therefore
+     follows real-code payoff, not the coverage number:
+     a. 'function attribute' (13) and 'call without callee' (13): cheap
+        builder checks, look at which attributes/call shapes (likely
+        constructor/aligned/naked and unprototyped calls) are rejectable
+        in the IR vs genuinely unsupported.
+     b. volatile in the IR: IRInstr volatile bit; ir_has_side_effects and
+        is_removable must treat it like a call-ordered effect; GVN/memopt/
+        DSE/SROA/hoist_loads/LICM must never merge, forward, drop, hoist or
+        sink it (backend sinkable_load too, or it reorders volatile
+        accesses). ~26 sites in ir_opt.c plus the backend; real payoff is
+        MMIO/flag-polling code and benchmarks with volatile sinks. Torture
+        has many volatile tests, which would exercise it well.
+     c. Bitfields: shift/mask chains in the builder (~22).
+     d. long double/_Complex via the x87/AST fallback stays (by design);
+        inline asm stays a whole-function fallback.
   3.3 REJECTED (recorded so it isn't re-litigated): UB-based IV widening
      of <=-bounded loops (would help Sieve; violates the no-UB-assumptions
      rule the tests depend on). A -fstrict-overflow-style opt-in flag
