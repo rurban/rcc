@@ -29,73 +29,14 @@ uint8_t rcc_default_visibility = STV_DEFAULT; // -fvisibility=... default
 #define RCC_LIBDIR "lib"
 #endif
 
-// Low-jitter phase timer for -time: clock_gettime() goes through a vDSO
-// with no serialization against surrounding code, so out-of-order
-// execution can leak retirement of the *previous* phase's work across the
-// timestamp read -- a sizeable fraction of phases as short as a few
-// microseconds (typecheck, opt). rdtsc/cntvct bracketed by a serializing
-// read removes that jitter (Intel's "Improved Benchmarking Method"
-// whitepaper) -- same method and names as ../smhasher/Platform.h's
-// timer_start()/timer_end()/timer_sub(), 64-bit x86-64/arm64 variants
-// only: rcc runs natively only on those two hosts (see AGENTS.md).
-#if defined(__x86_64__)
-static inline uint64_t timer_start(void) {
-    uint32_t cycles_high, cycles_low;
-    __asm__ volatile("cpuid\n\t"
-                     "rdtsc\n\t"
-                     "mov %%edx, %0\n\t"
-                     "mov %%eax, %1\n\t"
-                     : "=r"(cycles_high), "=r"(cycles_low)::"%rax", "%rbx", "%rcx", "%rdx");
-    return ((uint64_t)cycles_high << 32) | cycles_low;
-}
-static inline uint64_t timer_end(void) {
-    uint32_t cycles_high, cycles_low;
-    __asm__ volatile("rdtscp\n\t"
-                     "mov %%edx, %0\n\t"
-                     "mov %%eax, %1\n\t"
-                     "cpuid\n\t"
-                     : "=r"(cycles_high), "=r"(cycles_low)::"%rax", "%rbx", "%rcx", "%rdx");
-    return ((uint64_t)cycles_high << 32) | cycles_low;
-}
-#define RCC_HAVE_TICK_TIMER 1
-#elif defined(__aarch64__)
-static inline uint64_t timer_start(void) {
-    uint64_t ticks;
-    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(ticks));
-    return ticks;
-}
-#define timer_end timer_start
-#define RCC_HAVE_TICK_TIMER 1
-#endif
-
-#ifdef RCC_HAVE_TICK_TIMER
-// True 64-bit hardware counter: overflow is not a concern within one
-// compiler run.
-static inline uint64_t timer_sub(uint64_t end, uint64_t begin) { return end - begin; }
-
-// Ticks-per-microsecond, calibrated once against clock_gettime() before
-// the first -time measurement (see rcc_calibrate_ticks below).
-static double rcc_ticks_per_us = 0.0;
-
-static void rcc_calibrate_ticks(void) {
-    struct timespec ts0, ts1;
-    clock_gettime(CLOCK_MONOTONIC, &ts0);
-    uint64_t t0 = timer_start();
-    long elapsed_ns;
-    do {
-        clock_gettime(CLOCK_MONOTONIC, &ts1);
-        elapsed_ns = (ts1.tv_sec - ts0.tv_sec) * 1000000000L + (ts1.tv_nsec - ts0.tv_nsec);
-    } while (elapsed_ns < 2000000L); // 2ms busy-wait: enough ticks for a stable ratio
-    uint64_t t1 = timer_end();
-    rcc_ticks_per_us = (double)timer_sub(t1, t0) / ((double)elapsed_ns / 1000.0);
-}
-
-static inline uint64_t ticks_us(uint64_t ticks) {
-    return rcc_ticks_per_us > 0.0 ? (uint64_t)((double)ticks / rcc_ticks_per_us) : 0;
-}
-#else
-// No tick timer above: rcc does not build native compiler binaries for any
-// other host, but keep -time working there too.
+// -time substep phase timer. Uses CLOCK_MONOTONIC (monotonic wall clock, ns).
+// The former rdtsc/cntvct path (Intel "Improved Benchmarking Method", as in
+// smhasher/Platform.h) wrapped to ~2^64 when the thread migrated cores
+// mid-measurement: constant_tsc guarantees a constant *rate*, not cross-core
+// read agreement, so timer_end() on the new core could read a few cycles below
+// timer_start() on the old core, and the unsigned `end - begin` wrapped to a
+// bogus ~1e15 us substep time. CLOCK_MONOTONIC cannot wrap, and its ns
+// resolution is far more than enough for substep timings (each is 100s of ms).
 static inline uint64_t timer_start(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -103,9 +44,7 @@ static inline uint64_t timer_start(void) {
 }
 #define timer_end timer_start
 static inline uint64_t timer_sub(uint64_t end, uint64_t begin) { return end - begin; }
-static void rcc_calibrate_ticks(void) {}
 static inline uint64_t ticks_us(uint64_t ticks) { return ticks / 1000; }
-#endif
 #if defined(_WIN32) || defined(__MINGW32__)
 /* Under Wine, CreateProcess needs the .exe extension to find gcc.exe
  * in the Wine prefix's PATH (e.g. C:\mingw64\bin\gcc.exe).  Plain
@@ -1275,9 +1214,6 @@ int main(int argc, char **argv) {
     // affects literal typing, integer promotions and codegen throughout).
     if (opt_char_signedness != 0)
         ty_char->is_unsigned = opt_char_signedness > 0;
-
-    if (opt_time)
-        rcc_calibrate_ticks();
 
     // Process each input file
     for (int fi = 0; fi < n_inputs; fi++) {

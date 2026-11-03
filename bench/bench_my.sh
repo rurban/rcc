@@ -35,10 +35,17 @@ TAGS=("rcc" "o1" "o2" "o3")
 
 [ -x "$RCC" ] || { echo "rcc not found: $RCC" >&2; exit 1; }
 
-# Pin to one core for stability
+# Pin to one core for stability. Prefer core 7 (the historical choice, needs
+# >=8 cores); on smaller boxes fall back to the top available core so the
+# timed runs are still pinned. An unpinned run can migrate cores, which widens
+# the timing spread and previously wrapped rcc's TSC substep timer in -time.
 PIN=()
-if command -v taskset >/dev/null 2>&1 && taskset -c 7 true 2>/dev/null; then
-    PIN=(taskset -c 7)
+if command -v taskset >/dev/null 2>&1; then
+    _nc=$(nproc 2>/dev/null || echo 1)
+    _pin=$([ "$_nc" -gt 7 ] && printf 7 || printf '%s' $((_nc - 1)))
+    if taskset -c "$_pin" true 2>/dev/null; then
+        PIN=(taskset -c "$_pin")
+    fi
 fi
 
 OUT="$(mktemp -d)"
