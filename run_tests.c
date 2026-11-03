@@ -1969,6 +1969,16 @@ static bool lldb_probed(void) {
 }
 #endif
 
+/* Pass percentage. 100 iff nothing failed (todo/skipped tests are not
+ * passes, so passed < total must not push a clean run to 99%); with any
+ * failure floor and cap at 99 so rounding can never show 100%. */
+static int pass_pct(int passed, int total, int failed) {
+    if (total <= 0) return 0;
+    if (failed <= 0) return 100;
+    int pct = passed * 100 / total;
+    return pct > 99 ? 99 : pct;
+}
+
 /* extra: NULL-terminated extra compile flags (e.g. {"-I",".","-lm",NULL}); may be NULL.
  * ob/ol/oc: output buffer for TCC suite (append mode); pass all NULL to print directly. */
 static void emit_backtrace(const char *exe_path, const char *args,
@@ -4196,7 +4206,7 @@ static int run_unit_tests(void) {
     }
 
     if (only_test_count == 0) {
-        int pct = total > 0 ? (passed * 100 + total / 2) / total : 0;
+        int pct = pass_pct(passed, total, failed);
         const char *red = failed > 0 ? COL_RED : "";
         const char *rst = failed > 0 ? COL_RESET : "";
         if (todo > 0)
@@ -4254,7 +4264,7 @@ static void generate_tcc_report(void) {
 #endif
     char date_buf[64];
     strftime(date_buf, sizeof(date_buf), "%B %Y", &tm_buf);
-    int pct = total > 0 ? (passed * 100 + total / 2) / total : 0;
+    int pct = pass_pct(passed, total, failed);
 
     fprintf(rf, "# TCC Test Suite Report for RCC\n\nGenerated: %s\n\n", date_buf);
     if (compiler_name)
@@ -4544,7 +4554,7 @@ static int run_tcc_suite(void) {
     }
 
     if (only_test_count == 0) {
-        int pct = total > 0 ? (passed * 100 + total / 2) / total : 0;
+        int pct = pass_pct(passed, total, failed);
         const char *red = failed > 0 ? COL_RED : "";
         const char *rst = failed > 0 ? COL_RESET : "";
         printf("\nTCC: %d/%d passed (%d%%), %s%d failed%s.\n",
@@ -5572,7 +5582,7 @@ static int run_torture_suite(bool summary_only) {
     int fail = g_tort_fail_compile + g_tort_error_fail + g_tort_fail_runtime;
     if (only_test_count == 0) {
         int eff = g_tort_total - g_tort_skip;
-        int pct = eff > 0 ? (g_tort_pass * 100 + eff / 2) / eff : 0;
+        int pct = pass_pct(g_tort_pass, eff, g_tort_fail_compile + g_tort_error_fail + g_tort_fail_runtime);
         const char *red = fail > max_fail ? COL_RED : "";
         const char *rst = fail > max_fail ? COL_RESET : "";
         printf("\nTorture: %d/%d passed (%d%%), ", g_tort_pass, eff, pct);
@@ -5718,7 +5728,7 @@ static int run_gcc_bugs_suite(bool summary_only) {
     int fail = g_tort_fail_compile + g_tort_error_fail + g_tort_fail_runtime;
     if (only_test_count == 0) {
         int eff = g_tort_total - g_tort_skip;
-        int pct = eff > 0 ? (g_tort_pass * 100 + eff / 2) / eff : 0;
+        int pct = pass_pct(g_tort_pass, eff, g_tort_fail_compile + g_tort_error_fail + g_tort_fail_runtime);
         printf("\nGCC Bugs: %d/%d passed (%d%%), ", g_tort_pass, eff, pct);
         if (fail)
             printf("%d fail (%d compile/%d error/%d runtime), %d skipped.\n",
@@ -6734,7 +6744,8 @@ static void generate_report(void) {
     if (ov_skip > 0)
         fprintf(rf, "- **Skipped**: %d\n", ov_skip);
     if (ov_eff > 0)
-        fprintf(rf, "- **Overall Pass Rate**: %d%%\n", (ov_pass * 100 + ov_eff / 2) / ov_eff);
+        // floor (not round): any failure must keep the rate visibly below 100%
+        fprintf(rf, "- **Overall Pass Rate**: %d%%\n", (ov_pass * 100) / ov_eff);
 
     for (size_t i = 0; i < NSUITE; i++) {
         if (!s[i].found || s[i].total == 0) continue;
@@ -6753,9 +6764,9 @@ static void generate_report(void) {
                     s[i].error_pass, s[i].error_pass + s[i].error_fail, s[i].error_fail);
         int eff = s[i].total - s[i].skip;
         if (s[i].skip > 0 && eff > 0)
-            fprintf(rf, "- **Pass Rate (excl. skip)**: %d%%\n", (s[i].pass * 100 + eff / 2) / eff);
+            fprintf(rf, "- **Pass Rate (excl. skip)**: %d%%\n", (s[i].pass * 100) / eff);
         else if (s[i].total > 0)
-            fprintf(rf, "- **Pass Rate**: %d%%\n", (s[i].pass * 100 + s[i].total / 2) / s[i].total);
+            fprintf(rf, "- **Pass Rate**: %d%%\n", (s[i].pass * 100) / s[i].total);
     }
 
     fclose(rf);

@@ -259,6 +259,7 @@ jobs:
 
       - name: Run tests with -O2
         run: |
+          set -o pipefail
           make test-o2 2>&1 | tee test_report_o2.md
 
       - name: Upload -O2 report
