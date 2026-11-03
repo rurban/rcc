@@ -103,6 +103,27 @@
         (BasicBlock_hash lost its `mov eax,esi`; call results and rem
         results go straight through). Still open: x87/aggregate-return
         shrink-wrap cases.
+     g. DONE (GADDR hoisting): licm hoists global-address leaves out of loops
+        and the backend keeps a GADDR in a register when its uses are in a
+        deeper loop than its def (VInfo.keep); a kept GADDR that the
+        allocator spills reverts to rematerialization (lea beats a reload).
+        bench.c sieve loops lost one `lea` per iteration (AWFY Sieve -14%).
+     h. NEXT: fold `GADDR + const` (no index, non-GOT) into a RIP-relative
+        memory operand (`add r,[rip+sym]`, `mov [rip+sym],r`): saves the
+        remaining lea per scalar-global access. The encoder has one RIP site
+        (x86_enc.c emit_mem); record the disp32 position there and apply
+        the PC32 reloc after the instruction with addend
+        disp - (end - pos), asserting the trailing-immediate size so a
+        mistake aborts the compile instead of miscompiling. Needs the
+        sym carried through fold_addr and the three `e->aux = l->aux`
+        fusion sites.
+     i. FINDING (do not re-chase): AWFY Queens swings 29 <-> 37 ms between
+        builds whose placeQueen is byte-identical. Neither 16-byte function
+        alignment nor 16/8-byte loop-header alignment (both tried, built,
+        measured min-of-3) moved the suite, so it is a microarchitectural
+        effect (4K aliasing / front-end window), not layout we can fix.
+        Compare AWFY runs by min-of-3 per benchmark and ignore <10% on
+        benchmarks under 60 ms.
   3.2 NEXT (eligibility/coverage). MEASURED 2026-11-03 (loop over
      test/test_*.c, rcc -O2 -fdump-ir): 1289 of 1614 functions go through
      the IR = 79.9% (was 77%). Rejection histogram: load type 54, assign

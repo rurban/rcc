@@ -1796,6 +1796,15 @@ static bool licm(IRFunc *f) {
             if (!L->in[b->id]) continue;
             for (int k = 0; k < b->nins; k++) {
                 IRInstr *i = b->ins[k];
+                if (i->op == IR_GADDR) {
+                    // Leaf address: the backend rematerializes it (a lea) at every use unless
+                    // its def sits outside the loop of the uses, where it earns a register.
+                    if (!hoist[i->id]) {
+                        hoist[i->id] = 1;
+                        sel[nsel++] = i->id;
+                    }
+                    continue;
+                }
                 if (!hoistable(f, i) || free_at_use(f, i, fl[i->id])) continue;
                 int32_t ops[3] = {i->a, i->b, i->c};
                 bool inv = true;

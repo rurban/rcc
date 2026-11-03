@@ -70,6 +70,7 @@ typedef struct {
     int16_t stk; // PARAM passed on the stack: [rbp + stk], 0 = in a register
     int8_t abi; // PARAM passed in a register: its register number, -1 = none
     uint8_t dead; // removed by isel prep (not emitted)
+    uint8_t keep; // GADDR held in a register (used in a deeper loop than its def), not rematerialized
 } VInfo;
 
 static const int8_t gpr_alloc_order[] = {X86_RSI, X86_RDI, X86_R8, X86_R9, X86_R10, X86_RDX,
@@ -133,6 +134,11 @@ static inline int tsz(int t) { return (t == IRT_I32 || t == IRT_F32) ? 4 : 8; }
 static inline int rc_of(int v) { return tflt(V(v)->type) ? RC_X : RC_G; }
 static inline bool is_remat_op(int op) {
     return op == IR_ICONST || op == IR_FCONST || op == IR_GADDR || op == IR_FRAMEADDR;
+}
+// Values rematerialized at each use instead of living in a register. A GADDR
+// flagged `keep` (see count_uses) is an ordinary allocated value.
+static inline bool remat_instr(const IRInstr *i) {
+    return is_remat_op(i->op) && !(i->op == IR_GADDR && be.vi[i->id].keep);
 }
 static inline X86Mem off_mem(int off) { return x86_mem(X86_RBP, -(int64_t)off); }
 static inline X86Mem slot_mem(int v) { return off_mem(be.loc[v].slot); }
@@ -358,7 +364,10 @@ static void layout(IRFunc *f) {
 // ------------------------------------------------------------- 2. isel prep
 
 static void count_uses(void) {
-    for (int v = 0; v < be.nv; v++) be.vi[v].uses = 0;
+    for (int v = 0; v < be.nv; v++) {
+        be.vi[v].uses = 0;
+        be.vi[v].keep = 0;
+    }
     for (int bi = 0; bi < be.nord; bi++) {
         IRBlock *b = be.ord[bi];
         for (int k = 0; k < b->nphis + b->nins; k++) {
@@ -366,7 +375,11 @@ static void count_uses(void) {
             if (i->op == IR_NOP || be.vi[i->id].dead) continue;
             for (int u = 0, nu = nuse_slots(i); u < nu; u++) {
                 int v = use_at(i, u);
-                if (v != IR_NONE) be.vi[v].uses++;
+                if (v == IR_NONE) continue;
+                be.vi[v].uses++;
+                // A global's address used in a deeper loop than its (hoisted) def is
+                // worth a register: re-materializing it costs a lea per iteration.
+                if (V(v)->op == IR_GADDR && b->loop_depth > V(v)->blk->loop_depth) be.vi[v].keep = 1;
             }
         }
     }
@@ -783,14 +796,14 @@ static void prep_ir(void) {
 
 static bool needs_loc(int v) {
     const IRInstr *i = V(v);
-    return !be.vi[v].dead && be.vi[v].uses > 0 && i->type != IRT_VOID && !is_remat_op(i->op) &&
+    return !be.vi[v].dead && be.vi[v].uses > 0 && i->type != IRT_VOID && !remat_instr(i) &&
         i->op != IR_NOP;
 }
 
 // Instructions that produce machine code (params arrive in registers, consts
 // and addresses are rematerialized at their uses).
 static bool emitted(const IRInstr *i) {
-    return i->op != IR_NOP && i->op != IR_PARAM && i->op != IR_PHI && !is_remat_op(i->op) &&
+    return i->op != IR_NOP && i->op != IR_PARAM && i->op != IR_PHI && !remat_instr(i) &&
         !be.vi[i->id].dead;
 }
 
@@ -1293,7 +1306,7 @@ static void regalloc(void) {
     for (int v = 0; v < be.nv; v++) {
         Loc *l = LOC(v);
         l->kind = LK_NONE;
-        if (!be.vi[v].dead && be.vi[v].uses > 0 && is_remat_op(V(v)->op)) l->kind = LK_REMAT;
+        if (!be.vi[v].dead && be.vi[v].uses > 0 && remat_instr(V(v))) l->kind = LK_REMAT;
         else if (needs_loc(v) && be.vi[v].nrg)
             ids[n++] = v;
     }
@@ -2601,6 +2614,12 @@ static void emit_ins(IRBlock *b, IRInstr *i, IRBlock *nxt) {
     case IR_STORE:
         emit_store(i);
         break;
+    case IR_GADDR: { // only reached for a `keep` GADDR (others are rematerialized)
+        X86Reg rd = def_g(i->id);
+        mat_g(i->id, rd);
+        fin_g(i->id, rd);
+        break;
+    }
     case IR_CALL:
         emit_call(i);
         break;
@@ -2894,6 +2913,13 @@ void ir_emit_x86(Program *prog, IRFunc *f, bool emitting_local_copy) {
     prep_ir();
     build_intervals();
     regalloc();
+    // A kept global address that lost its register is rematerialized after all:
+    // a lea at the use is cheaper than a reload from a spill slot.
+    for (int v = 0; v < be.nv; v++)
+        if (be.vi[v].keep && LOC(v)->kind == LK_SPILL) {
+            be.vi[v].keep = 0;
+            LOC(v)->kind = LK_REMAT;
+        }
     ret_into_rax();
     frame_layout();
 
