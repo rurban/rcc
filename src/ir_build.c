@@ -1195,11 +1195,30 @@ static Type *func_type_of(Type *t) {
     return NULL;
 }
 
+// abs/labs/llabs: the AST codegen expands them as builtins (never a real call),
+// using the branch-free (x ^ (x >> w)) - (x >> w); do the same, in the width of
+// the C prototype (int for abs, long for labs/llabs). INT_MIN wraps like the
+// hardware sequence does.
+static int gen_abs(B *b, Node *n, bool wide) {
+    Sc as, to = wide ? (Sc){IRT_I64, 8, false, false, false, false} : (Sc){IRT_I32, 4, false, false, false, false};
+    if (!n->args || n->args->next || !sc_of(n->args->ty, &as) || as.flt || as.ptr)
+        return fail(b, "abs argument");
+    int x = gen_as(b, n->args, to);
+    if (b->fail) return IR_NONE;
+    int m = op2(b, IR_SAR, to.t, x, iconst(b, IRT_I32, wide ? 63 : 31));
+    return op2(b, IR_SUB, to.t, op2(b, IR_XOR, to.t, x, m), m);
+}
+
 static int gen_call(B *b, Node *n) {
     Node *callee = n->lhs;
     const char *sym = NULL;
     int target = IR_NONE;
     Type *fty = NULL;
+    if (callee && callee->kind == ND_LVAR && callee->var && callee->var->is_function && !callee->var->asm_name) {
+        const char *nm = callee->var->name;
+        if (nm && !strcmp(nm, "abs")) return gen_abs(b, n, false);
+        if (nm && (!strcmp(nm, "labs") || !strcmp(nm, "llabs"))) return gen_abs(b, n, true);
+    }
     if (!callee) {
         if (!n->funcname || callee_is_special(n->funcname)) return fail(b, "call without callee");
         sym = n->funcname; // call by bare name: unprototyped (fty stays NULL)

@@ -19890,8 +19890,15 @@ static void cg_ir_cache_build(Program *prog) {
     ir_cache = calloc((size_t)(n ? n : 1), sizeof(IRFunc *));
     ir_cache_n = n;
     int i = 0;
-    for (TLItem *it = prog->items; it; it = it->next)
-        if (it->kind == TL_FUNC) ir_cache[i++] = ir_build(prog, it->fn);
+    for (TLItem *it = prog->items; it; it = it->next) {
+        if (it->kind != TL_FUNC) continue;
+        IRFunc *t = ir_build(prog, it->fn);
+        // Optimize the template so the inliner's size heuristic sees the real
+        // cost (dead blocks, constants, redundant loads gone) and clones tidy
+        // code. Big raw functions can never shrink under the callee caps.
+        if (t && t->nblocks <= 48) ir_opt(t);
+        ir_cache[i++] = t;
+    }
 }
 
 static void cg_ir_cache_free(void) {

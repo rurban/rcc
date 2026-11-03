@@ -2452,7 +2452,16 @@ static void frame_layout(void) {
     // aggregate params first, then one temp per aggregate-returning call.
     // An offset o addresses bytes [rbp-o, rbp-o+sz): o is the distance from
     // rbp at which the storage ENDS, matching the FRAMEADDR/LVar convention.
-    int aggbase = (f->frame_size + 7) & ~7;
+    // Locals are sized from the FRAMEADDRs that survived inlining and the
+    // optimizer (AST stack_size also counts slots SSA construction promoted
+    // to registers, which would reserve dead stack on every call).
+    int lbytes = 0;
+    for (int bi = 0; bi < f->nblocks; bi++) {
+        IRBlock *b = f->blocks[bi];
+        for (int k = 0; b && k < b->nins; k++)
+            if (b->ins[k]->op == IR_FRAMEADDR && b->ins[k]->imm > lbytes) lbytes = (int)b->ins[k]->imm;
+    }
+    int aggbase = (lbytes + 7) & ~7;
     int aggtotal = 0;
     for (int k = 0; k < f->nparams; k++) {
         if (be.pcls[k] != IRAGG_VALUE8 && be.pcls[k] != IRAGG_VALUE16 && be.pcls[k] != IRAGG_MEMORY)
