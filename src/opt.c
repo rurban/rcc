@@ -3491,7 +3491,7 @@ static Node *peephole(Node *n) {
         // x - -y → x + y
         if (n->kind == ND_SUB && n->rhs && n->rhs->kind == ND_NEG) {
             n->kind = ND_ADD;
-            n->rhs = n->rhs->rhs;
+            n->rhs = n->rhs->lhs;
             return n;
         }
         // x - (x + c) = -c, x - (x - c) = c  (x is the same LVar; signed overflow
@@ -3627,7 +3627,7 @@ static Node *peephole(Node *n) {
                 Node *neg = malloc(sizeof(Node));
                 memset(neg, 0, sizeof(Node));
                 neg->kind = ND_NEG;
-                neg->rhs = n->lhs;
+                neg->lhs = n->lhs;
                 neg->ty = n->ty;
                 return neg;
             }
@@ -3636,7 +3636,7 @@ static Node *peephole(Node *n) {
                 Node *neg = malloc(sizeof(Node));
                 memset(neg, 0, sizeof(Node));
                 neg->kind = ND_NEG;
-                neg->rhs = n->lhs;
+                neg->lhs = n->lhs;
                 neg->ty = n->ty;
                 return neg;
             }
@@ -3665,7 +3665,7 @@ static Node *peephole(Node *n) {
                 Node *nn = malloc(sizeof(Node));
                 memset(nn, 0, sizeof(Node));
                 nn->kind = ND_NEG;
-                nn->rhs = n->lhs;
+                nn->lhs = n->lhs;
                 nn->ty = n->ty;
                 return nn;
             }
@@ -3673,7 +3673,7 @@ static Node *peephole(Node *n) {
                 Node *nn = malloc(sizeof(Node));
                 memset(nn, 0, sizeof(Node));
                 nn->kind = ND_NEG;
-                nn->rhs = n->lhs;
+                nn->lhs = n->lhs;
                 nn->ty = n->ty;
                 return nn;
             }
@@ -4054,8 +4054,8 @@ static Node *peephole(Node *n) {
             return n->lhs; // x & x = x
         // x & ~x = 0
         if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR &&
-            n->rhs->kind == ND_BITNOT && n->rhs->rhs && n->rhs->rhs->kind == ND_LVAR &&
-            n->lhs->var == n->rhs->rhs->var) {
+            n->rhs->kind == ND_BITNOT && n->rhs->lhs && n->rhs->lhs->kind == ND_LVAR &&
+            n->lhs->var == n->rhs->lhs->var) {
             Node *z = malloc(sizeof(Node));
             memset(z, 0, sizeof(Node));
             z->kind = ND_NUM;
@@ -4093,8 +4093,8 @@ static Node *peephole(Node *n) {
             return n->lhs; // x | x = x
         // x | ~x = ~0
         if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR &&
-            n->rhs->kind == ND_BITNOT && n->rhs->rhs && n->rhs->rhs->kind == ND_LVAR &&
-            n->lhs->var == n->rhs->rhs->var) {
+            n->rhs->kind == ND_BITNOT && n->rhs->lhs && n->rhs->lhs->kind == ND_LVAR &&
+            n->lhs->var == n->rhs->lhs->var) {
             Node *z = malloc(sizeof(Node));
             memset(z, 0, sizeof(Node));
             z->kind = ND_NUM;
@@ -4124,7 +4124,7 @@ static Node *peephole(Node *n) {
             Node *nn = malloc(sizeof(Node));
             memset(nn, 0, sizeof(Node));
             nn->kind = ND_BITNOT;
-            nn->rhs = n->lhs;
+            nn->lhs = n->lhs;
             nn->ty = n->ty;
             return nn;
         }
@@ -4139,8 +4139,8 @@ static Node *peephole(Node *n) {
         } // x ^ x = 0
         // x ^ ~x = ~0
         if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR &&
-            n->rhs->kind == ND_BITNOT && n->rhs->rhs && n->rhs->rhs->kind == ND_LVAR &&
-            n->lhs->var == n->rhs->rhs->var) {
+            n->rhs->kind == ND_BITNOT && n->rhs->lhs && n->rhs->lhs->kind == ND_LVAR &&
+            n->lhs->var == n->rhs->lhs->var) {
             Node *z = malloc(sizeof(Node));
             memset(z, 0, sizeof(Node));
             z->kind = ND_NUM;
@@ -4165,12 +4165,12 @@ static Node *peephole(Node *n) {
         break;
     // -(-x) → x, ~(~x) → x, !(!x) → x
     case ND_NEG:
-        if (n->rhs && n->rhs->kind == ND_NEG)
-            return n->rhs->rhs;
+        if (n->lhs && n->lhs->kind == ND_NEG)
+            return n->lhs->lhs;
         break;
     case ND_BITNOT:
-        if (n->rhs && n->rhs->kind == ND_BITNOT)
-            return n->rhs->rhs;
+        if (n->lhs && n->lhs->kind == ND_BITNOT)
+            return n->lhs->lhs;
         break;
     case ND_NOT:
         if (n->rhs && n->rhs->kind == ND_NOT)
@@ -4838,8 +4838,8 @@ static bool cp_is_const(Node *n, int64_t *val, double *fval) {
         return true;
     }
     // Unary minus of a constant
-    if (n->kind == ND_NEG && n->rhs) {
-        if (cp_is_const(n->rhs, val, fval)) {
+    if (n->kind == ND_NEG && n->lhs) {
+        if (cp_is_const(n->lhs, val, fval)) {
             if (*fval != 0 || (n->ty && n->ty->kind >= TY_FLOAT))
                 *fval = -*fval;
             else
@@ -4848,8 +4848,8 @@ static bool cp_is_const(Node *n, int64_t *val, double *fval) {
         }
     }
     // Bitwise not of a constant
-    if (n->kind == ND_BITNOT && n->rhs) {
-        if (cp_is_const(n->rhs, val, fval)) {
+    if (n->kind == ND_BITNOT && n->lhs) {
+        if (cp_is_const(n->lhs, val, fval)) {
             if (*fval == 0)
                 *val = ~*val;
             else
