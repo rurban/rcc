@@ -512,6 +512,90 @@ static LvInfo *lv_info(B *b, LVar *v) {
     return e;
 }
 
+// -------------------------------------------------------------- bitfields
+//
+// A bitfield lives in a storage unit at member->offset: usz bytes (the AST
+// codegen's access width: Member.bf_load_size for dense-packed fields that
+// cross their declared type, else the declared type's size), bit_offset bits
+// up from the unit's least-significant bit. Reads load the unit zero-extended
+// and extract; writes are load/clear/or/store of the same unit, so struct
+// layout is whatever the parser decided.
+//
+// Unlike the AST codegen (which treats _Bool fields as plain unsigned bits
+// and every enum as unsigned) this follows C: a store to a _Bool field
+// normalizes to 0/1, and an enum field is signed iff its underlying type is.
+typedef struct {
+    int usz; // unit access width in bytes: 1, 2, 4, 8
+    int disp; // byte displacement of the unit from member->offset (<= 0)
+    int bo, bw; // field position / width in bits within the unit
+    IRType wt; // register type holding the unit: I32 (usz <= 4) / I64
+    bool uns; // extract zero-extended (else sign-extended from bit bw-1)
+    bool boolean; // _Bool field
+    Sc ns; // C type of the member expression (the promoted field type)
+} Bf;
+
+// Plan the access for ND_MEMBER `n` naming a bitfield. NULL on success, else
+// the reason this access cannot be lowered exactly.
+static const char *bf_plan(Node *n, Bf *p) {
+    Member *m = n->member;
+    Type *mt = m->ty, *st = n->lhs ? n->lhs->ty : NULL;
+    if (!mt || !n->ty || !st) return "bitfield: untyped";
+    // ir_opt may drop or merge plain accesses; volatile qualifiers can sit on
+    // the member, the member expression or the containing object.
+    if (ty_volatile(mt) || ty_volatile(n->ty) || ty_volatile(st)) return "volatile bitfield";
+    switch (mt->kind) { // enums are TY_INT; _BitInt and __int128 are not modelled
+    case TY_BOOL:
+    case TY_CHAR:
+    case TY_SHORT:
+    case TY_INT:
+    case TY_LONG:
+    case TY_LLONG:
+        break;
+    default:
+        return "bitfield: member type";
+    }
+    int usz = m->bf_load_size ? m->bf_load_size : (int)mt->size;
+    int bw = m->bit_width, bo = m->bit_offset;
+    // bf_load_size > 8 is a >64-bit span: the AST codegen needs a second access.
+    if (usz != 1 && usz != 2 && usz != 4 && usz != 8) return "bitfield: unit size";
+    if (bw < 1 || bo < 0 || bo + bw > usz * 8) return "bitfield: straddles unit";
+    if ((st->kind != TY_STRUCT && st->kind != TY_UNION) || st->size <= 0 || m->offset < 0)
+        return "bitfield: container";
+    // Packed layouts can put the declared-type-wide unit past the end of the
+    // struct (`#pragma pack(1) struct { char a:3; int b:5; }` is 1 byte). Never
+    // touch bytes outside the object: use the smallest power-of-two unit that
+    // covers the field, and when even that sticks out (a 3-byte field region
+    // at the very end needs a 4-byte unit) slide it back to end at the struct's
+    // end, moving the field's bit offset up by the displacement.
+    int disp = 0;
+    if (m->offset + usz > st->size) {
+        int need = (bo + bw + 7) / 8, q = 1;
+        while (q < need) q *= 2;
+        if (m->offset + need > st->size || q > st->size) return "bitfield: unit beyond struct";
+        usz = q;
+        if (m->offset + q > st->size) {
+            disp = (int)(st->size - q - m->offset); // < 0
+            bo -= 8 * disp;
+        }
+    }
+    Sc ns;
+    if (!sc_of(n->ty, &ns) || ns.flt || ns.ptr || ns.boolean) return "bitfield: expression type";
+    p->usz = usz;
+    p->disp = disp;
+    p->bo = bo;
+    p->bw = bw;
+    p->wt = usz == 8 ? IRT_I64 : IRT_I32;
+    // The member expression's type (ns.t) may be narrower than the unit
+    // register (an int field in a dense-packed 8-byte unit); bf_retype()
+    // reconciles them. A 64-bit field type is promoted to int below 33 bits,
+    // so an I64 expression always sits in an 8-byte unit.
+    if (ns.t == IRT_I64 && p->wt == IRT_I32) return "bitfield: expression type";
+    p->boolean = mt->kind == TY_BOOL;
+    p->uns = p->boolean || mt->is_unsigned;
+    p->ns = ns;
+    return NULL;
+}
+
 // ---------------------------------------------------------------- prescan
 
 static void scan(B *b, Node *n);
@@ -579,9 +663,17 @@ static void scan(B *b, Node *n) {
         scan(b, n->lhs);
         return;
     case ND_MEMBER:
-        if (n->member && (n->member->bit_width || n->member->offset_expr)) {
-            fail(b, "bitfield/variable member");
+        if (n->member && n->member->offset_expr) {
+            fail(b, "variable member");
             return;
+        }
+        if (n->member && n->member->bit_width) {
+            Bf p;
+            const char *why = bf_plan(n, &p);
+            if (why) {
+                fail(b, why);
+                return;
+            }
         }
         scan(b, n->lhs);
         return;
@@ -816,9 +908,134 @@ static int address_of(B *b, Node *n) {
     }
 }
 
+// Address of the unit holding the bitfield named by ND_MEMBER `n`.
+static int bf_addr(B *b, Node *n, const Bf *p) {
+    int a = address_of(b, n);
+    if (b->fail || !p->disp) return a;
+    return op2(b, IR_ADD, IRT_I64, a, iconst(b, IRT_I64, p->disp));
+}
+
+static IRMem bf_mem(int usz) {
+    switch (usz) {
+    case 1: return IRM_I8;
+    case 2: return IRM_I16;
+    case 4: return IRM_I32;
+    default: return IRM_I64;
+    }
+}
+
+// Move an integer between the unit register type and the expression type.
+// Widening sign-extends: callers only look at the low field bits then.
+static int bf_retype(B *b, int v, IRType from, IRType to) {
+    if (from == to) return v;
+    if (from == IRT_I64) return op1(b, IR_TRUNC, IRT_I32, v);
+    return op1(b, IR_SEXT32, IRT_I64, v);
+}
+
+// The field's value, in the unit register type, from the unit `u` (loaded
+// zero-extended to that width).
+static int bf_field(B *b, const Bf *p, int u) {
+    int W = p->wt == IRT_I64 ? 64 : 32, v = u;
+    if (p->uns) {
+        if (p->bo) v = op2(b, IR_SHR, p->wt, v, iconst(b, IRT_I32, p->bo));
+        // the unit is zero-extended, so a field ending at the unit's top needs no mask
+        if (p->bo + p->bw < p->usz * 8) v = op2(b, IR_AND, p->wt, v, iconst(b, p->wt, (int64_t)((1ULL << p->bw) - 1)));
+        return v;
+    }
+    int l = W - p->bo - p->bw, r = W - p->bw; // shl+sar sign-extends from bit bw-1
+    if (l) v = op2(b, IR_SHL, p->wt, v, iconst(b, IRT_I32, l));
+    if (r) v = op2(b, IR_SAR, p->wt, v, iconst(b, IRT_I32, r));
+    return v;
+}
+
+// Read a bitfield from the unit at `addr`; *raw (optional) receives the unit.
+static int bf_load(B *b, int addr, const Bf *p, int *raw) {
+    int u = emit_load(b, bf_mem(p->usz), false, p->wt, addr);
+    if (raw) *raw = u;
+    return bf_retype(b, bf_field(b, p, u), p->wt, p->ns.t);
+}
+
+// Write `v` (already of the field's C type, 0/1 for _Bool) into the bitfield
+// whose unit is at `addr`: load, clear the field bits, or in (v & mask) << bo,
+// store. `raw` is the unit if the caller just loaded it (IR_NONE: load here).
+// Returns the field's value after truncation to the field width.
+static int bf_store(B *b, int addr, const Bf *p, int v, int raw) {
+    int W = p->wt == IRT_I64 ? 64 : 32;
+    int vw = bf_retype(b, v, p->ns.t, p->wt); // only the low bw bits matter
+    uint64_t fm = p->bw >= 64 ? ~0ULL : (1ULL << p->bw) - 1;
+    int ins = vw;
+    if (p->bw < W) ins = op2(b, IR_AND, p->wt, vw, iconst(b, p->wt, (int64_t)fm));
+    int nu = p->bo ? op2(b, IR_SHL, p->wt, ins, iconst(b, IRT_I32, p->bo)) : ins;
+    if (p->bw < p->usz * 8) { // the unit holds other bits: merge
+        int old = raw != IR_NONE ? raw : emit_load(b, bf_mem(p->usz), false, p->wt, addr);
+        int keep = op2(b, IR_AND, p->wt, old, iconst(b, p->wt, (int64_t)~(fm << p->bo)));
+        nu = op2(b, IR_OR, p->wt, keep, nu);
+    }
+    emit_store(b, bf_mem(p->usz), addr, nu);
+    int res = ins;
+    if (!p->uns && p->bw < W) {
+        res = op2(b, IR_SHL, p->wt, vw, iconst(b, IRT_I32, W - p->bw));
+        res = op2(b, IR_SAR, p->wt, res, iconst(b, IRT_I32, W - p->bw));
+    } else if (!p->uns) {
+        res = vw;
+    }
+    return bf_retype(b, res, p->wt, p->ns.t);
+}
+
+// The C type an assigned value must have before storing into the field: _Bool
+// fields normalize to 0/1, everything else converts to the promoted type.
+static Sc bf_target(const Bf *p) {
+    if (p->boolean) return (Sc){IRT_I32, 1, true, false, false, true};
+    return p->ns;
+}
+
+// `lhs = rhs` / compound assignment (the parser lowers `a.f op= x` to
+// ASSIGN(a.f, a.f op x)) with a bitfield lhs. Value: the field after truncation.
+static int gen_bf_assign(B *b, Node *n) {
+    Bf p;
+    const char *why = bf_plan(n->lhs, &p);
+    if (why) return fail(b, why);
+    Sc rs;
+    if (!sc_of(n->rhs->ty, &rs)) return fail(b, "assign type");
+    int v = gen_expr(b, n->rhs);
+    if (b->fail) return IR_NONE;
+    v = convert(b, v, rs, bf_target(&p));
+    int addr = bf_addr(b, n->lhs, &p);
+    if (b->fail) return IR_NONE;
+    return bf_store(b, addr, &p, v, IR_NONE);
+}
+
+static int gen_bf_incdec(B *b, Node *n) {
+    Bf p;
+    const char *why = bf_plan(n->lhs, &p);
+    if (why) return fail(b, why);
+    bool inc = n->kind == ND_POST_INC || n->kind == ND_PRE_INC;
+    bool post = n->kind == ND_POST_INC || n->kind == ND_POST_DEC;
+    int addr = bf_addr(b, n->lhs, &p);
+    if (b->fail) return IR_NONE;
+    int raw, old = bf_load(b, addr, &p, &raw);
+    int nv;
+    if (p.boolean) { // C: b++ stores 1; b-- stores !b (0-1 is nonzero)
+        Sc i4 = {IRT_I32, 4, false, false, false, false};
+        nv = convert(b, op2(b, inc ? IR_ADD : IR_SUB, IRT_I32, old, iconst(b, IRT_I32, 1)), i4, bf_target(&p));
+    } else {
+        nv = op2(b, inc ? IR_ADD : IR_SUB, p.ns.t, old, iconst(b, p.ns.t, 1));
+    }
+    int res = bf_store(b, addr, &p, nv, raw);
+    return post ? old : res;
+}
+
 // Value of an lvalue-typed node (array/function designators decay to addresses).
 static int value_from_lvalue(B *b, Node *n) {
     if (n->ty && is_aggregate_value(n->ty)) return address_of(b, n);
+    if (n->kind == ND_MEMBER && n->member && n->member->bit_width) {
+        Bf p;
+        const char *why = bf_plan(n, &p);
+        if (why) return fail(b, why);
+        int addr = bf_addr(b, n, &p);
+        if (b->fail) return IR_NONE;
+        return bf_load(b, addr, &p, NULL);
+    }
     int addr = address_of(b, n);
     if (b->fail) return IR_NONE;
     return load_scalar(b, addr, n->ty);
@@ -891,6 +1108,21 @@ static int gen_compare(B *b, Node *n) {
     return cmp_i(b, cc_for(n->kind, uns), x, y);
 }
 
+// GCC computes on a 33..63-bit `unsigned long long x : N` in N-bit precision,
+// so +, -, * and << involving a direct read of one wrap at N bits. The AST
+// codegen implements this for exactly these operand shapes (direct member
+// reads of an unsigned 8-byte-typed field); mirror it. 0 = no reduction.
+static int bf_wide_width(Node *op) {
+    if (op && op->kind == ND_MEMBER && op->member && op->member->bit_width > 32 && op->member->bit_width < 64 &&
+        op->member->ty && op->member->ty->size >= 8 && op->member->ty->is_unsigned)
+        return op->member->bit_width;
+    return 0;
+}
+static int bf_reduce(B *b, int v, int bw) {
+    if (!bw) return v;
+    return op2(b, IR_AND, IRT_I64, v, iconst(b, IRT_I64, (int64_t)((1ULL << bw) - 1)));
+}
+
 static int gen_arith(B *b, Node *n) {
     Sc s;
     if (!sc_of(n->ty, &s) || s.boolean) return fail(b, "arith type");
@@ -923,7 +1155,12 @@ static int gen_arith(B *b, Node *n) {
     int x = gen_as(b, n->lhs, s);
     int y = gen_as(b, n->rhs, s);
     if (b->fail) return IR_NONE;
-    return op2(b, op, s.t, x, y);
+    int r = op2(b, op, s.t, x, y);
+    if (s.t == IRT_I64 && (n->kind == ND_ADD || n->kind == ND_SUB || n->kind == ND_MUL)) {
+        int wl = bf_wide_width(n->lhs), wr = bf_wide_width(n->rhs);
+        r = bf_reduce(b, r, wl > wr ? wl : wr);
+    }
+    return r;
 }
 
 static int gen_addsub(B *b, Node *n) {
@@ -966,7 +1203,9 @@ static int gen_shift(B *b, Node *n) {
     if (b->fail) return IR_NONE;
     if (cs.t == IRT_I64) c = op1(b, IR_TRUNC, IRT_I32, c);
     IROp op = n->kind == ND_SHL ? IR_SHL : (s.uns ? IR_SHR : IR_SAR);
-    return norm(b, op2(b, op, s.t, x, c), s);
+    int r = norm(b, op2(b, op, s.t, x, c), s);
+    if (n->kind == ND_SHL && s.t == IRT_I64) r = bf_reduce(b, r, bf_wide_width(n->lhs));
+    return r;
 }
 
 // Store `val` (already of the lvalue's C type) through the lvalue `lhs`; for SSA
@@ -1027,6 +1266,7 @@ static void gen_copy_bytes(B *b, int dst, int src, int64_t size) {
 
 static int gen_assign(B *b, Node *n) {
     Type *lty = n->lhs->ty;
+    if (n->lhs->kind == ND_MEMBER && n->lhs->member && n->lhs->member->bit_width) return gen_bf_assign(b, n);
     // struct/union copy, or whole-array assignment (GNU extension rcc allows);
     // the value is the address of lhs.
     if (lty && (lty->kind == TY_STRUCT || lty->kind == TY_UNION || lty->kind == TY_ARRAY)) {
@@ -1048,6 +1288,7 @@ static int gen_assign(B *b, Node *n) {
 
 static int gen_incdec(B *b, Node *n) {
     Node *lhs = n->lhs;
+    if (lhs->kind == ND_MEMBER && lhs->member && lhs->member->bit_width) return gen_bf_incdec(b, n);
     Sc s;
     if (!sc_of(lhs->ty, &s)) return fail(b, "incdec type");
     bool inc = n->kind == ND_POST_INC || n->kind == ND_PRE_INC;
