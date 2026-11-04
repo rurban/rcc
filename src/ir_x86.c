@@ -568,7 +568,8 @@ static const uint8_t cc_swap[] = {
 // can trap, so the load observes the same memory and faults in the same order.
 static bool sinkable_load(IRBlock *b, int k, int v, int ty) {
     IRInstr *l = V(v);
-    if (l->op != IR_LOAD || l->blk != b || be.vi[l->id].dead || be.vi[l->id].uses != 1 || l->type != ty) return false;
+    if (l->op != IR_LOAD || l->vol || l->blk != b || be.vi[l->id].dead || be.vi[l->id].uses != 1 || l->type != ty)
+        return false; // a volatile load keeps its own instruction: exact width, exactly one access
     static const uint8_t full[] = {[IRT_I32] = IRM_I32, [IRT_I64] = IRM_I64, [IRT_F32] = IRM_F32, [IRT_F64] = IRM_F64};
     if (l->mw != full[ty]) return false;
     int lk = k - 1;
@@ -710,7 +711,7 @@ static void prep_ir(void) {
             IRInstr *e = b->ins[k];
             if (e->a == IR_NONE || be.vi[e->id].dead) continue;
             IRInstr *l = V(e->a);
-            if (l->op != IR_LOAD || l->blk != b || be.vi[l->id].uses != 1 || tflt(l->type)) continue;
+            if (l->op != IR_LOAD || l->vol || l->blk != b || be.vi[l->id].uses != 1 || tflt(l->type)) continue; // vol: the fold can narrow the access
             uint8_t mw, sgn = 0;
             switch (e->op) {
             case IR_SEXT32:
@@ -772,7 +773,7 @@ static void prep_ir(void) {
             for (int s = 0; s < 2; s++) {
                 if (lv[s] == IR_NONE || e->a == e->b) continue;
                 IRInstr *l = V(lv[s]);
-                if (l->op != IR_LOAD || l->blk != b || be.vi[l->id].uses != 1 || l->type != e->type) continue;
+                if (l->op != IR_LOAD || l->vol || l->blk != b || be.vi[l->id].uses != 1 || l->type != e->type) continue;
                 if (fp ? l->mw != (e->type == IRT_F32 ? IRM_F32 : IRM_F64)
                        : l->mw != (e->type == IRT_I32 ? IRM_I32 : IRM_I64))
                     continue;
@@ -2132,6 +2133,8 @@ static FCond fcond(int cc) {
     }
 }
 
+// <, <=, >, >= are signaling in C (Annex F: they raise "invalid" for a quiet NaN operand): comis;
+// == and != are quiet: ucomis. The flags come out the same, only the exception differs.
 static FCond emit_fcmp(int a, int b, int cc) {
     if (cc == IRCC_FLT || cc == IRCC_FLE) {
         int t = a;
@@ -2140,26 +2143,34 @@ static FCond emit_fcmp(int a, int b, int cc) {
         cc = cc == IRCC_FLT ? IRCC_FGT : IRCC_FGE;
     }
     X86XmmReg xa = use_x(a, X_S0), xb = use_x(b, X_S1);
-    if (V(a)->type == IRT_F32) x86_ucomiss(S, xa, xb);
-    else
+    bool sig = cc == IRCC_FGT || cc == IRCC_FGE;
+    if (V(a)->type == IRT_F32) {
+        if (sig) x86_comiss(S, xa, xb);
+        else
+            x86_ucomiss(S, xa, xb);
+    } else if (sig) {
+        x86_comisd(S, xa, xb);
+    } else {
         x86_ucomisd(S, xa, xb);
+    }
     return fcond(cc);
 }
 
-// ucomiss/ucomisd with a memory source, encoded as movaps (0F 28) / movsd
-// (F2 0F 10) with the prefix and opcode bytes rewritten: the encoder has no rm
+// ucomiss/ucomisd (comiss/comisd for FGT/FGE) with a memory source, encoded as movaps (0F 28) /
+// movsd (F2 0F 10) with the prefix and opcode bytes rewritten: the encoder has no rm
 // form. cc is one of FEQ/FNE/FGT/FGE (see fold_cmp_loads): no operand swap.
 static FCond emit_fcmp_m(const IRInstr *e) {
     X86XmmReg xa = use_x(e->a, X_S0);
     X86Mem m = mem_of(e->b, e->c, e->scale, e->imm, e->aux, e->sym, R_S0, R_S1);
     size_t off = S->len;
+    uint8_t opc = e->cc == IRCC_FGT || e->cc == IRCC_FGE ? 0x2f : 0x2e;
     if (V(e->a)->type == IRT_F32) {
         x86_movaps_rm(S, xa, m);
-        S->data[off + 1 + ((S->data[off] & 0xf0) == 0x40)] = 0x2e;
+        S->data[off + 1 + ((S->data[off] & 0xf0) == 0x40)] = opc;
     } else {
         x86_movsd_rm(S, xa, m);
         S->data[off] = 0x66;
-        S->data[off + 2 + ((S->data[off + 1] & 0xf0) == 0x40)] = 0x2e;
+        S->data[off + 2 + ((S->data[off + 1] & 0xf0) == 0x40)] = opc;
     }
     return fcond(e->cc);
 }

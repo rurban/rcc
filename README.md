@@ -124,8 +124,8 @@ analysis of frame slots, invariant-load hoisting, dead store
 elimination, noreturn shrink-wrapping (cold assert/abort paths cost
 nothing on the hot path), branch-free `abs`, and memory operands in
 ALU/FP ops — then compiled with linear-scan register allocation.
-Anything the IR cannot represent (bitfields, inline asm, atomics,
-`volatile`, complex/`__int128`/`long double`, ...) falls back
+Anything the IR cannot represent (inline asm, atomics, volatile
+aggregate copies, complex/`__int128`/`long double`, ...) falls back
 per-function to the regular code generator, so nothing ever compiles
 worse than `-O1`. See
 [docs/rcc.md](docs/rcc.md#-o2-and-up-the-ssa-ir-backend-srcir_c) for

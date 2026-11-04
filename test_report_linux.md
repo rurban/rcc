@@ -2,13 +2,13 @@
 
 **Platform**: Linux x86_64
 
-Generated: November 03 2026 22:07
+Generated: November 04 2026 08:01
 
 ## Overall Summary
 
-- **Total**: 5353
-- **Passed**: 4865
-- **Failed**: 79
+- **Total**: 5357
+- **Passed**: 4868
+- **Failed**: 80
 - **Skipped**: 405
 - **Overall Pass Rate**: 98%
 
@@ -21,8 +21,8 @@ Generated: November 03 2026 22:07
 
 ## RCC Unit Tests
 
-- **Total**: 432
-- **Passed**: 432
+- **Total**: 436
+- **Passed**: 436
 - **Failed**: 0
 - **Pass Rate**: 100%
 
@@ -52,10 +52,10 @@ Generated: November 03 2026 22:07
 ## GCC Bugs
 
 - **Total**: 605
-- **Passed**: 475
-- **Failed**: 79
+- **Passed**: 474
+- **Failed**: 80
 - **Skipped**: 51
-- **Fail Compile**: 20
+- **Fail Compile**: 21
 - **Fail Runtime**: 1
 - **Dg-error Tests**: 28/86 passed, 58 failed
 - **Pass Rate (excl. skip)**: 85%

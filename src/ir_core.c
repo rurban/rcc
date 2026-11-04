@@ -151,6 +151,8 @@ bool ir_has_side_effects(const IRInstr *i) {
     case IR_SREM:
     case IR_UREM:
         return true;
+    case IR_LOAD:
+        return i->vol != 0; // a volatile read is observable: never removable, never a sink/fold bystander
     default:
         return ir_is_terminator((IROp)i->op);
     }
@@ -365,7 +367,8 @@ static void dump_instr(IRInstr *i, FILE *o) {
         break;
     case IR_LOAD:
     case IR_STORE:
-        fprintf(o, " %s%s", mem_names[i->mw], (i->op == IR_LOAD && i->mw < IRM_I32) ? (i->msign ? "s" : "u") : "");
+        fprintf(o, " %s%s%s", i->vol ? "volatile " : "", mem_names[i->mw],
+                (i->op == IR_LOAD && i->mw < IRM_I32) ? (i->msign ? "s" : "u") : "");
         break;
     default:
         break;
@@ -520,6 +523,7 @@ void ir_verify(IRFunc *f) {
         for (int k = 0; k < b->nphis + b->nins; k++) {
             IRInstr *i = k < b->nphis ? b->phis[k] : b->ins[k - b->nphis];
             int32_t ops[3] = {i->a, i->b, i->c};
+            if (i->vol && i->op != IR_LOAD && i->op != IR_STORE) VFAIL("v%d volatile flag on a non-memory op", i->id);
             if (i->op == IR_PHI) {
                 for (int j = 0; j < i->nargs; j++) {
                     IRInstr *d = vdef(f, i, i->args[j]);

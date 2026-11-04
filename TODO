@@ -147,13 +147,15 @@
         builder checks, look at which attributes/call shapes (likely
         constructor/aligned/naked and unprototyped calls) are rejectable
         in the IR vs genuinely unsupported.
-     b. volatile in the IR: IRInstr volatile bit; ir_has_side_effects and
-        is_removable must treat it like a call-ordered effect; GVN/memopt/
-        DSE/SROA/hoist_loads/LICM must never merge, forward, drop, hoist or
-        sink it (backend sinkable_load too, or it reorders volatile
-        accesses). ~26 sites in ir_opt.c plus the backend; real payoff is
-        MMIO/flag-polling code and benchmarks with volatile sinks. Torture
-        has many volatile tests, which would exercise it well.
+     b. DONE (volatile in the IR): IRInstr.vol on LOAD/STORE (also the unit
+        load/store of volatile bitfields); never removed/merged/forwarded/
+        hoisted/rotated/narrowed; a barrier that kills every memopt fact and
+        pending store; frame slots with a volatile access count as escaped;
+        backend never folds a volatile load. Still rejected: volatile (or
+        volatile-member) aggregate copies, by-value args and returns.
+        Rejection histogram over test/test_*.c: volatile access 109 -> 0,
+        volatile bitfield 16 -> 0; IR-built 1329 -> 1450 functions (76.5% ->
+        83.2%). Also fixed: IR </<=/>/>= used non-signaling ucomis (now comis).
      c. DONE (bitfields in ir_build.c): shift/mask chains over the AST
         codegen's storage unit; rejects volatile, _BitInt/__int128, >64-bit
         spans and units beyond a packed struct. Intentional deviations (match

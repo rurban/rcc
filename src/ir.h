@@ -198,6 +198,13 @@ typedef struct IRInstr {
     // x86 backend reads it: it cuts the block after the call (no successors, nothing live
     // across it) and may build the stack frame inside that cold block alone. Every other pass
     // keeps treating the call as an ordinary one followed by the block's terminator.
+    uint8_t vol; // LOAD/STORE: a C `volatile` access (C11 5.1.2.3: an observable side effect). It is
+    // executed exactly once per evaluation, at its declared width mw, in program order relative to
+    // every other volatile access, call and store: never removed (even with an unused result),
+    // duplicated, split, widened, merged, forwarded, hoisted, sunk or reordered. Passes treat it
+    // as a barrier for memory-op motion that also kills every memory fact, like a call (see
+    // ir_has_side_effects(); ir_opt.c memopt/dse/sroa/hoist_loads/rotation and ir_x86.c's load
+    // folding each carry the rule). Zero for every other instr.
     int32_t id; // index in IRFunc.vals
     int32_t a, b, c; // operand value ids, IR_NONE if unused
     int64_t imm;
@@ -275,7 +282,7 @@ void ir_add_pred(IRBlock *b, IRBlock *pred);
 // phi args). Does not delete `from`.
 void ir_replace_uses(IRFunc *f, int from, int to);
 bool ir_is_terminator(IROp op);
-bool ir_has_side_effects(const IRInstr *i); // STORE/CALL/terminators/div (may trap)
+bool ir_has_side_effects(const IRInstr *i); // STORE/CALL/terminators/div (may trap)/volatile LOAD
 int ir_succs(IRBlock *b, IRBlock *out[2]); // number of successors
 // Recomputes preds from terminators (keeps phi args aligned: callers that
 // reorder preds must permute phi args too, so use ir_remove_pred_edge below).
@@ -322,17 +329,21 @@ void ir_tailrec(IRFunc *f);
 // iv_strength replaces an I32 `iv * m` (m loop-invariant, `+ j` folded in) by an I32
 // add recurrence, exact modulo 2^32 without any range fact;
 // hoist_loads moves a loop-invariant load into the preheader when no store in the
-// loop may alias it, the loop has no call or trapping divide, and the load's
-// block dominates every exit; licm hoists invariant pure instrs into (created)
-// loop preheaders. Memory (all LOAD/STORE are plain accesses): redundant loads
+// loop may alias it, the loop has no call, volatile access or trapping divide, and
+// the load's block dominates every exit; licm hoists invariant pure instrs into
+// (created) loop preheaders. Memory (volatile LOAD/STOREs, IRInstr.vol, are never
+// touched and kill every fact and pending store like a call; the rest are plain
+// accesses): redundant loads
 // and store->load pairs are forwarded over a bounded availability dataflow (facts
 // merge at joins when every predecessor holds one, with a phi of the per-predecessor
 // values when they differ; loops are analysed optimistically to a stable fixpoint, so
 // a loop-carried accumulator cell becomes a header phi of its entry and back-edge
 // values),
 // same-address overwritten stores and stores to never-read non-escaping frame
-// slots are removed; unused LOADs are deleted. CALLs and trapping divides are
-// never removed, merged or reordered, nor is a store moved past an aliasing access.
+// slots are removed; unused plain LOADs are deleted. CALLs, volatile accesses and
+// trapping divides are never removed, merged or reordered, nor is a store moved past
+// an aliasing access. A frame slot with a volatile access counts as escaped (it is
+// neither promoted by sroa nor stripped of stores).
 // sroa (same fixpoint, after memopt): a frame slot whose address never escapes and
 // whose every access decomposes to that root plus a constant displacement is promoted
 // to per-displacement SSA cells, provided the cells are pairwise disjoint byte

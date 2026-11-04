@@ -138,7 +138,8 @@ static bool div_safe(IRFunc *f, const IRInstr *i) {
 }
 
 // True for instrs whose only effect is their result: removable when unused.
-// Loads count as removable (an unused load is not an observable effect here);
+// Plain loads count as removable (an unused load is not an observable effect here); a
+// volatile access is observable (C11 5.1.2.3), unused result or not.
 // PARAM is kept so the backend always sees the full ABI argument list.
 static bool is_removable(IRFunc *f, const IRInstr *i) {
     switch (i->op) {
@@ -155,6 +156,8 @@ static bool is_removable(IRFunc *f, const IRInstr *i) {
     case IR_SREM:
     case IR_UREM:
         return div_safe(f, i);
+    case IR_LOAD:
+        return !i->vol;
     default:
         return true;
     }
@@ -1861,8 +1864,10 @@ static bool licm(IRFunc *f) {
 
 // ------------------------------------------------------------ memory optimization
 //
-// Every LOAD/STORE in the IR is a plain access (the builder rejects volatile, atomics
-// and asm), so loads can be forwarded/merged and stores dropped subject to aliasing.
+// Plain LOAD/STOREs can be forwarded/merged and dropped subject to aliasing (the builder
+// rejects atomics and asm). A volatile access (IRInstr.vol) is never touched: it neither
+// forwards nor is forwarded to, is never deleted or merged, and acts on the tables like
+// a call that may touch anything: every fact and pending store is dropped.
 // An access is an address root (frame slot / global symbol / unknown pointer) plus
 // either a constant offset from the root (cst) or (base, idx, scale, disp).
 // Alias facts used (all valid C):
@@ -1924,7 +1929,12 @@ static int slot_index(Mem *m, int64_t imm) {
 static void esc_use(Mem *m, const IRInstr *user, int pos, int v) {
     int r = m->root[v];
     if (r <= 0) return;
-    if ((user->op == IR_LOAD || user->op == IR_STORE) && pos == 0) return;
+    if ((user->op == IR_LOAD || user->op == IR_STORE) && pos == 0) {
+        // A volatile access to the slot makes it observable memory: promoting its cells
+        // (sroa) or deleting its stores (dead_local_stores) would drop the access.
+        if (user->vol) m->slot_esc[r - 1] = true;
+        return;
+    }
     if (user->op == IR_ADD && m->root[user->id] == r) return;
     m->slot_esc[r - 1] = true;
 }
@@ -2218,7 +2228,9 @@ static void walk_block(Fl *s, IRBlock *b, Ent *tab, int *np) {
     int n = *np;
     for (int k = 0; k < b->nins; k++) {
         IRInstr *i = b->ins[k];
-        if (i->op == IR_LOAD) {
+        if ((i->op == IR_LOAD || i->op == IR_STORE) && i->vol) {
+            n = 0;
+        } else if (i->op == IR_LOAD) {
             Acc a;
             acc_make(m, i, &a);
             int how = 0, hv = IR_NONE;
@@ -2579,6 +2591,12 @@ static bool dse_block(Mem *m, IRBlock *b) {
     bool changed = false;
     for (int k = 0; k < b->nins; k++) {
         IRInstr *i = b->ins[k];
+        if ((i->op == IR_LOAD || i->op == IR_STORE) && i->vol) {
+            // Observable access: it may read what a pending plain store wrote, and a plain
+            // store after it must not kill a store from before it. Neither is a victim nor a killer.
+            np = 0;
+            continue;
+        }
         switch (i->op) {
         case IR_STORE: {
             Acc a;
@@ -3864,7 +3882,7 @@ static bool rotate_loop(IRFunc *f, Loop *L) {
     }
     if (H->nins - 1 > ROT_MAX_INSTRS || H->nphis > 24) return false;
     for (int k = 0; k < H->nins - 1; k++)
-        if (!rot_cloneable(H->ins[k]->op)) return false;
+        if (!rot_cloneable(H->ins[k]->op) || H->ins[k]->vol) return false; // a volatile access must not be copied
     bool created;
     IRBlock *P = loop_pre(f, L, &created);
     if (X == P) return created;
@@ -3900,6 +3918,7 @@ static bool rotate_loop(IRFunc *f, Loop *L) {
         n->cc = o->cc;
         n->mw = o->mw;
         n->msign = o->msign;
+        n->vol = o->vol; // never set today (volatile headers are not rotated), but a copy must not lose the flag
         n->scale = o->scale;
         n->imm = o->imm;
         n->fimm = o->fimm;
@@ -3966,7 +3985,9 @@ static bool loop_rotate(IRFunc *f) {
 // A load whose address is loop-invariant is hoisted into the preheader when the value
 // it reads cannot change while the loop runs and the hoisted load cannot fault where
 // the original would not have:
-//  - the loop has no call (a callee may write anything, or never return) and no
+//  - the loop has no call (a callee may write anything, or never return), no volatile
+//    access (the load itself must stay in the loop when volatile; for a plain load a
+//    volatile read is an observable side effect it must not move across) and no
 //    divide that can trap (a fault the load would then precede);
 //  - no store in the loop may alias it (acc_alias, the facts memopt uses);
 //  - the load's block dominates every exit of the loop, so some iteration executes it
@@ -4029,7 +4050,7 @@ static bool hoist_loads(IRFunc *f) {
             if (!L->in[b->id]) continue;
             for (int k = 0; k < b->nins && !bad; k++) {
                 IRInstr *i = b->ins[k];
-                if (i->op == IR_CALL || ((i->op == IR_SDIV || i->op == IR_UDIV || i->op == IR_SREM || i->op == IR_UREM) && !div_safe(f, i)))
+                if (i->vol || i->op == IR_CALL || ((i->op == IR_SDIV || i->op == IR_UDIV || i->op == IR_SREM || i->op == IR_UREM) && !div_safe(f, i)))
                     bad = true;
                 else if (i->op == IR_STORE) {
                     if (nst == HOIST_MAX_STORES) bad = true;

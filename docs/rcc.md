@@ -523,8 +523,9 @@ one unsupported construct never downgrades the whole file.
   statement expressions, struct/union/array access including aggregates
   by value (the IR mirrors the AST codegen's simplified SysV ABI exactly:
   class entries `(bytes<<3)|class`, two-register `RAX:RDX` returns,
-  sret). Not eligible: bitfields, inline asm, atomics, `volatile`,
-  complex/decimal/`__int128`/`long double`, C2y labeled loops, VLAs,
+  sret). Not eligible: inline asm, atomics, volatile aggregate copies /
+  by-value volatile structs, complex/decimal/`__int128`/`long double`,
+  C2y labeled loops, VLAs,
   cleanups (defer etc.), nested functions, and any
   sanitizer/`-g`/`-fstack-protector` TU. About 77% of the unit-test
   functions compile through the IR; rejected functions are reported
@@ -537,8 +538,16 @@ one unsupported construct never downgrades the whole file.
   through `LOAD`/`STORE` with explicit widths; globals are `GADDR`
   (plain `lea` or GOT, flagged via `msign`) whose distinct symbols never
   alias each other. Narrow loads carry their extension in `msign`.
-  Volatile accesses are rejected outright: the optimizer merges and
-  removes plain loads and stores, which would be wrong for volatile.
+  A `volatile` access is a `LOAD`/`STORE` with `IRInstr.vol` set (bitfields:
+  the storage-unit load and store of the read-modify-write). It is an
+  observable side effect: never removed (an unused read is still emitted),
+  duplicated, merged, forwarded, hoisted, sunk, narrowed or reordered
+  relative to other volatile accesses, calls and stores. Passes treat it as
+  a barrier that drops every available-memory fact and pending store, a
+  frame slot it touches counts as escaped (no SROA, no dead-store removal),
+  loops containing one are neither rotated (header) nor have loads hoisted,
+  and the backend never folds a volatile load into an ALU/compare/extension
+  operand. Volatile locals stay in memory (never SSA values).
 
 - **Inliner (`ir_inline.c`).** Direct calls to small same-file callees
   are spliced into the caller before optimization: at most 25

@@ -249,18 +249,20 @@ static int zero_of(B *b, IRType t) {
     return iconst(b, t, 0);
 }
 
-static int emit_load(B *b, IRMem mw, bool sign, IRType t, int addr) {
+static int emit_load(B *b, IRMem mw, bool sign, IRType t, int addr, bool vol) {
     IRInstr *i = emit(b, IR_LOAD, t);
     i->a = addr;
     i->mw = (uint8_t)mw;
     i->msign = sign;
+    i->vol = vol;
     return i->id;
 }
-static void emit_store(B *b, IRMem mw, int addr, int val) {
+static void emit_store(B *b, IRMem mw, int addr, int val, bool vol) {
     IRInstr *i = emit(b, IR_STORE, IRT_VOID);
     i->a = addr;
     i->c = val;
     i->mw = (uint8_t)mw;
+    i->vol = vol;
 }
 
 // ------------------------------------------------------------- control flow
@@ -531,6 +533,7 @@ typedef struct {
     IRType wt; // register type holding the unit: I32 (usz <= 4) / I64
     bool uns; // extract zero-extended (else sign-extended from bit bw-1)
     bool boolean; // _Bool field
+    bool vol; // volatile-qualified access: the unit load/store below are volatile
     Sc ns; // C type of the member expression (the promoted field type)
 } Bf;
 
@@ -540,9 +543,10 @@ static const char *bf_plan(Node *n, Bf *p) {
     Member *m = n->member;
     Type *mt = m->ty, *st = n->lhs ? n->lhs->ty : NULL;
     if (!mt || !n->ty || !st) return "bitfield: untyped";
-    // ir_opt may drop or merge plain accesses; volatile qualifiers can sit on
-    // the member, the member expression or the containing object.
-    if (ty_volatile(mt) || ty_volatile(n->ty) || ty_volatile(st)) return "volatile bitfield";
+    // Volatile qualifiers can sit on the member, the member expression or the containing
+    // object. The access is then the unit load (+ merge) and unit store with IRInstr.vol
+    // set: one read of the whole unit and one write of it, at the unit's width.
+    p->vol = ty_volatile(mt) || ty_volatile(n->ty) || ty_volatile(st);
     switch (mt->kind) { // enums are TY_INT; _BitInt and __int128 are not modelled
     case TY_BOOL:
     case TY_CHAR:
@@ -849,12 +853,25 @@ static IRMem mem_of(Sc s) {
 static int load_scalar(B *b, int addr, Type *ty) {
     Sc s;
     if (!sc_of(ty, &s)) return fail(b, "load type");
-    if (ty_volatile(ty)) return fail(b, "volatile access"); // ir_opt may drop or merge plain loads
-    return emit_load(b, mem_of(s), !s.uns && !s.flt, s.t, addr);
+    return emit_load(b, mem_of(s), !s.uns && !s.flt, s.t, addr, ty_volatile(ty));
 }
 
 static bool is_aggregate_value(Type *ty) {
     return ty->kind == TY_ARRAY || ty->kind == TY_FUNC;
+}
+
+// A struct/union/array whose bytes would be read or written wholesale (copy, by-value argument,
+// return) and that is volatile itself or holds a volatile member/element: those accesses must be
+// volatile too, per member and at the declared widths, which the exact-width copy loop does not
+// model. Rejected (old codegen).
+static bool is_volatile_aggregate(Type *ty) {
+    if (!ty) return false;
+    if (ty_volatile(ty)) return true;
+    if (ty->kind == TY_ARRAY) return is_volatile_aggregate(ty->base);
+    if (ty->kind == TY_STRUCT || ty->kind == TY_UNION)
+        for (Member *m = ty->members; m; m = m->next)
+            if (is_volatile_aggregate(m->ty)) return true;
+    return false;
 }
 
 static int gaddr(B *b, const char *sym, int64_t add) {
@@ -950,7 +967,7 @@ static int bf_field(B *b, const Bf *p, int u) {
 
 // Read a bitfield from the unit at `addr`; *raw (optional) receives the unit.
 static int bf_load(B *b, int addr, const Bf *p, int *raw) {
-    int u = emit_load(b, bf_mem(p->usz), false, p->wt, addr);
+    int u = emit_load(b, bf_mem(p->usz), false, p->wt, addr, p->vol);
     if (raw) *raw = u;
     return bf_retype(b, bf_field(b, p, u), p->wt, p->ns.t);
 }
@@ -967,11 +984,11 @@ static int bf_store(B *b, int addr, const Bf *p, int v, int raw) {
     if (p->bw < W) ins = op2(b, IR_AND, p->wt, vw, iconst(b, p->wt, (int64_t)fm));
     int nu = p->bo ? op2(b, IR_SHL, p->wt, ins, iconst(b, IRT_I32, p->bo)) : ins;
     if (p->bw < p->usz * 8) { // the unit holds other bits: merge
-        int old = raw != IR_NONE ? raw : emit_load(b, bf_mem(p->usz), false, p->wt, addr);
+        int old = raw != IR_NONE ? raw : emit_load(b, bf_mem(p->usz), false, p->wt, addr, p->vol);
         int keep = op2(b, IR_AND, p->wt, old, iconst(b, p->wt, (int64_t)~(fm << p->bo)));
         nu = op2(b, IR_OR, p->wt, keep, nu);
     }
-    emit_store(b, bf_mem(p->usz), addr, nu);
+    emit_store(b, bf_mem(p->usz), addr, nu, p->vol);
     int res = ins;
     if (!p->uns && p->bw < W) {
         res = op2(b, IR_SHL, p->wt, vw, iconst(b, IRT_I32, W - p->bw));
@@ -1213,7 +1230,6 @@ static int gen_shift(B *b, Node *n) {
 static int assign_to(B *b, Node *lhs, int val) {
     Sc s;
     if (!sc_of(lhs->ty, &s)) return fail(b, "assign type");
-    if (ty_volatile(lhs->ty)) return fail(b, "volatile access");
     if (lhs->kind == ND_LVAR && lhs->var && !lv_is_global(lhs->var)) {
         LvInfo *e = lv_info(b, lhs->var);
         if (e->ssa >= 0) {
@@ -1223,7 +1239,7 @@ static int assign_to(B *b, Node *lhs, int val) {
     }
     int addr = address_of(b, lhs);
     if (b->fail) return IR_NONE;
-    emit_store(b, mem_of(s), addr, val);
+    emit_store(b, mem_of(s), addr, val, ty_volatile(lhs->ty));
     return val;
 }
 
@@ -1270,6 +1286,7 @@ static int gen_assign(B *b, Node *n) {
     // struct/union copy, or whole-array assignment (GNU extension rcc allows);
     // the value is the address of lhs.
     if (lty && (lty->kind == TY_STRUCT || lty->kind == TY_UNION || lty->kind == TY_ARRAY)) {
+        if (is_volatile_aggregate(lty) || is_volatile_aggregate(n->rhs->ty)) return fail(b, "volatile aggregate copy");
         int dst = address_of(b, n->lhs);
         int src = address_of(b, n->rhs);
         if (b->fail) return IR_NONE;
@@ -1319,7 +1336,7 @@ static int gen_incdec(B *b, Node *n) {
     }
     if (ssa) write_var(b, e->ssa, b->cur_blk, nv);
     else
-        emit_store(b, mem_of(s), addr, nv);
+        emit_store(b, mem_of(s), addr, nv, ty_volatile(lhs->ty));
     return post ? old : nv;
 }
 
@@ -1494,6 +1511,10 @@ static int gen_call(B *b, Node *n) {
         if (cls != IRAGG_NONE) { // aggregate: the argument is the address of the bytes
             if (unproto) {
                 fail(b, "aggregate argument to unprototyped/variadic call");
+                goto fail_call;
+            }
+            if (is_volatile_aggregate(a->ty)) {
+                fail(b, "volatile aggregate argument");
                 goto fail_call;
             }
             int v = address_of(b, a);
@@ -1802,17 +1823,21 @@ static void gen_stmt(B *b, Node *n) {
         int v = IR_NONE;
         if (b->f->ret_agg > 0) { // aggregate return: the result is the address of the bytes
             if (n->lhs) {
+                if (is_volatile_aggregate(n->lhs->ty)) {
+                    fail(b, "volatile aggregate return");
+                    return;
+                }
                 int addr = address_of(b, n->lhs); // struct rvalue = address
                 if (b->fail) return;
                 if (b->f->ret_sret) {
-                    int rb = emit_load(b, IRM_I64, false, IRT_I64, op0(b, IR_FRAMEADDR, IRT_I64, b->retbuf_off));
+                    int rb = emit_load(b, IRM_I64, false, IRT_I64, op0(b, IR_FRAMEADDR, IRT_I64, b->retbuf_off), false);
                     gen_copy_bytes(b, rb, addr, b->f->ret_agg);
                     v = rb;
                 } else {
                     v = addr; // the backend loads RAX[:RDX] from it
                 }
             } else if (b->f->ret_sret) {
-                v = emit_load(b, IRM_I64, false, IRT_I64, op0(b, IR_FRAMEADDR, IRT_I64, b->retbuf_off));
+                v = emit_load(b, IRM_I64, false, IRT_I64, op0(b, IR_FRAMEADDR, IRT_I64, b->retbuf_off), false);
             } else {
                 IRInstr *u = emit(b, IR_UNDEF, IRT_I64); // falling off: unspecified value
                 v = u->id;
@@ -2161,7 +2186,7 @@ IRFunc *ir_build(Program *prog, Function *fn) {
     if (f->ret_sret) { // hidden return buffer pointer, stored into __retbuf like the AST prologue
         f->param_types[0] = IRT_I64;
         int pv = op0(b, IR_PARAM, IRT_I64, 0);
-        emit_store(b, IRM_I64, op0(b, IR_FRAMEADDR, IRT_I64, b->retbuf_off), pv);
+        emit_store(b, IRM_I64, op0(b, IR_FRAMEADDR, IRT_I64, b->retbuf_off), pv, false);
         idx = 1;
     }
     for (LVar *p = fn->params; p; p = p->param_next, idx++) {
@@ -2183,7 +2208,7 @@ IRFunc *ir_build(Program *prog, Function *fn) {
         LvInfo *e = lv_info(b, p);
         if (e->ssa >= 0) write_var(b, e->ssa, entry, pv);
         else
-            emit_store(b, mem_of(ps), op0(b, IR_FRAMEADDR, IRT_I64, p->offset), pv);
+            emit_store(b, mem_of(ps), op0(b, IR_FRAMEADDR, IRT_I64, p->offset), pv, false);
     }
 
     gen_stmts(b, fn->body);
@@ -2196,7 +2221,7 @@ IRFunc *ir_build(Program *prog, Function *fn) {
         int v;
         if (f->ret_agg > 0) {
             if (f->ret_sret)
-                v = emit_load(b, IRM_I64, false, IRT_I64, op0(b, IR_FRAMEADDR, IRT_I64, b->retbuf_off));
+                v = emit_load(b, IRM_I64, false, IRT_I64, op0(b, IR_FRAMEADDR, IRT_I64, b->retbuf_off), false);
             else {
                 IRInstr *u = emit(b, IR_UNDEF, IRT_I64);
                 v = u->id;

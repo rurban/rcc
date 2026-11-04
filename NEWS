@@ -9,8 +9,8 @@ complete list of changes see the git log.
     loops, branches, calls, switch, goto, statement expressions,
     struct/union/array access incl. aggregates by value) is lowered to
     an SSA IR, optimized, and compiled with linear-scan register
-    allocation; unsupported constructs (bitfields, inline asm, atomics,
-    volatile, complex/decimal/__int128/long double, C2y labeled loops,
+    allocation; unsupported constructs (inline asm, atomics, volatile
+    aggregate copies, complex/decimal/__int128/long double, C2y labeled loops,
     VLAs, cleanups, nested functions, sanitizer/-g/-fstack-protector
     TUs) fall back per-function to the regular code generator. New
     flags -fno-ir, -fno-ir-inline, -fdump-ir.
@@ -25,6 +25,11 @@ complete list of changes see the git log.
     assert/abort paths no longer force a frame or callee-saved saves on
     the hot path), branch-free abs/labs/llabs, and memory operands in
     ALU/FP ops (add/sub/and/or/xor/imul/cmp/SSE arith/ucomis).
+  - volatile accesses (scalars, pointers, members, arrays, bitfield
+    units, compound assignment and ++/--) are modelled in the IR as
+    observable loads/stores that no pass removes, merges, hoists,
+    narrows or reorders; the IR compare for <, <=, >, >= now signals
+    invalid on a NaN operand (comiss/comisd) like gcc.
   - Linux benchmarks: six-workload suite at -O2 executes in 454 ms
     (was 693; TCC 548, GCC -O2 196); the 14-benchmark AWFY suite in
     5000 ms (was 6060; TCC 5837, GCC -O2 3310), all outputs verified.
