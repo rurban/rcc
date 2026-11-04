@@ -4,7 +4,7 @@ complete list of changes see the git log.
 
 * Changes in v1.2.3 (????-??-??) (Reini Urban)
 
-  -O2 SSA IR backend (x86-64 ELF):
+  -O2 SSA IR backend (x86-64 ELF, AArch64 ELF and Darwin):
   - Every eligible function (scalar integer/pointer/float/double code —
     loops, branches, calls, switch, goto, statement expressions,
     struct/union/array access incl. aggregates by value) is lowered to
@@ -14,6 +14,13 @@ complete list of changes see the git log.
     VLAs, cleanups, nested functions, sanitizer/-g/-fstack-protector
     TUs) fall back per-function to the regular code generator. New
     flags -fno-ir, -fno-ir-inline, -fdump-ir.
+  - New AArch64 SSA emitter with scalar and floating-point instruction
+    selection, linear-scan allocation with spills and callee-saved
+    `x19`-`x28`/`v8`-`v15` preservation, VALUE8/HFA/pointer aggregate
+    ABI support, `x8` sret, Darwin stack varargs, ELF and Mach-O
+    ADRP/GOT relocations, paired saves, scaled/extended addressing,
+    `madd`/`msub`, and `cbz`/`tbz` branch fusion. Unsupported calls
+    still fall back before emission on a per-function basis.
   - Optimizations: same-file inlining of small callees (honours
     __attribute__((noinline)), which the AST inliner now also honors),
     tail recursion to loops, loop rotation, induction-variable widening

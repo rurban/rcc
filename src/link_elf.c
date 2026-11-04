@@ -1197,10 +1197,8 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
                 S = symbol_address(s, r->sym);
                 {
                     uint32_t ins = r32le(p);
-                    uint64_t off = (S + (uint64_t)A) & 0xfff;
-                    // ADD imm12 is unscaled, unlike LDR/STR's imm12.
-                    ins = (ins & 0xffc003ff) | ((uint32_t)off << 10);
-                    w32le_m(p, ins);
+                    // ADD imm12 is unscaled, unlike LDR/STR's imm12 (scaled by the access size).
+                    w32le_m(p, link_arm64_lo12(ins, S + (uint64_t)A));
                 }
                 break;
             case RL_ARM64_GOT_PG:

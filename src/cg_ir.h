@@ -29,6 +29,21 @@ const char *cg_ir_node_kind_name(int kind);
 // variable, TLS, alias), 0 plain rip-relative lea, 1 GOT load (set
 // IRInstr.msign = 1). Declares weak symbols as a side effect.
 int cg_ir_global_access(LVar *v);
+#ifdef ARCH_ARM64
+// ARM64: x<rd> = address of symbol `label` (ADRP + ADD, or the GOT slot when `got` is set /
+// on Darwin), with the same relocations the AST backend emits.
+void cg_ir_sym_addr(int rd, const char *label, int got);
+// ARM64: cbz/cbnz (sf = 1: x register) to a label, backpatched like cg_ir_jcc().
+void cg_ir_cbz(int sf, int reg, bool nonzero, const char *label);
+// ARM64: tbz/tbnz to a label; bit is 0..63.
+void cg_ir_tbz(int reg, int bit, bool nonzero, const char *label);
+// ARM64: symbol index of an assembler-level label (created on first use), and whether the label
+// is defined in this object and non-weak (reachable without the GOT).
+int cg_ir_sym_index(const char *label);
+bool cg_ir_sym_direct(const char *label);
+// True when a direct page-offset ld/st relocation at label+addend is naturally aligned.
+bool cg_ir_sym_ldst_direct(const char *label, int64_t addend, int size);
+#endif
 // Emit `lea rip-relative` of a symbol/label into x86 register `r` (X86Reg).
 // (asm_lea_rip_reg from codegen_asm.h is already exported.)
 

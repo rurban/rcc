@@ -19861,7 +19861,7 @@ size_t cg_ir_jcc(int cond, const char *label) { return emit_jcc_fixup(cg_sec, co
 void cg_ir_jmp(const char *label) { emit_jmp_fixup(cg_sec, label); }
 void cg_ir_label(const char *name) { cg_def_label(name); }
 void cg_ir_call(const char *name) { emit_direct_call(name, false); }
-const char *cg_ir_var_sym(LVar *v) { return var_sym_label(v); }
+const char *cg_ir_var_sym(LVar *v) { return asm_sym_name(var_sym_label(v)); }
 // Name of an AST node kind (NodeKind as int), for IR eligibility diagnostics.
 const char *cg_ir_node_kind_name(int kind) { return node_kind_name((NodeKind)kind); }
 // How IR_GADDR must reach `v`: -1 = unsupported by the IR backend (global
@@ -19875,9 +19875,80 @@ int cg_ir_global_access(LVar *v) {
     return (v->is_weak || var_needs_got(v) || (v->is_function && v->is_extern)) ? 1 : 0;
 }
 
+#ifdef ARCH_ARM64
+// ObjFile symbol index for an assembler-level label, created undefined/global (or local rodata for
+// compiler labels) on first use, like the AST backend's address emitters do.
+int cg_ir_sym_index(const char *label) {
+    int sidx = objfile_find_sym(cg_obj, label);
+    if (sidx < 0) {
+        int sec = (label[0] == '.') ? SEC_RODATA : SEC_UNDEF;
+        int bind = (label[0] == '.') ? SB_LOCAL : SB_GLOBAL;
+        sidx = objfile_add_sym(cg_obj, label, sec, 0, 0, bind, ST_NOTYPE);
+    }
+    return sidx;
+}
+// True when `label` is already defined in this object and is not weak: its address can be formed
+// with plain page / page-offset relocations instead of going through the GOT.
+bool cg_ir_sym_direct(const char *label) {
+    int sidx = objfile_find_sym(cg_obj, label);
+    return sidx >= 0 && cg_obj->syms[sidx].section != SEC_UNDEF && cg_obj->syms[sidx].bind != SB_WEAK;
+}
+bool cg_ir_sym_ldst_direct(const char *label, int64_t addend, int size) {
+    int sidx = objfile_find_sym(cg_obj, label);
+    if (!cg_ir_sym_direct(label)) return false;
+    ObjSym *s = &cg_obj->syms[sidx];
+    // The native Mach-O linker may concatenate read-only input sections at a byte offset that
+    // weakens their source alignment. DATA/BSS preserve object alignment; byte accesses need none.
+    if (size > 1 && s->section != SEC_DATA && s->section != SEC_BSS) return false;
+    return ((s->offset + (uint64_t)addend) & (uint64_t)(size - 1)) == 0;
+}
+// Load the address of `label` into x<rd> the way the AST backend's emit_adrp_add() /
+// emit_got_load() do: ADRP + ADD (page / page-offset relocations), or the symbol's GOT slot when
+// `got` is set. Darwin goes through the GOT for every symbol that is not already defined in this
+// object (the AST backend uses it for all of them except the compiler's own `.L.` labels).
+void cg_ir_sym_addr(int rd, const char *label, int got) {
+    int sidx = cg_ir_sym_index(label);
+#ifdef __APPLE__
+    if (!got && !cg_ir_sym_direct(label) && (label[0] != '.' || label[1] != 'L' || label[2] != '.')) got = 1;
+#endif
+    size_t adrp_off = cg_sec->len;
+    arm64_adrp(cg_sec, (Arm64Reg)rd, 0);
+    if (got) {
+        objfile_add_reloc(cg_obj, SEC_TEXT, adrp_off, sidx, R_AARCH64_ADR_GOT_PAGE, 0);
+        size_t ldr_off = cg_sec->len;
+        arm64_ldr_uoff(cg_sec, 3, (Arm64Reg)rd, (Arm64Reg)rd, 0);
+        objfile_add_reloc(cg_obj, SEC_TEXT, ldr_off, sidx, R_AARCH64_LD64_GOT_LO12_NC, 0);
+    } else {
+        objfile_add_reloc(cg_obj, SEC_TEXT, adrp_off, sidx, R_AARCH64_ADR_PREL_PG_HI21, 0);
+        size_t add_off = cg_sec->len;
+        arm64_add_imm(cg_sec, 1, (Arm64Reg)rd, (Arm64Reg)rd, 0, 0);
+        objfile_add_reloc(cg_obj, SEC_TEXT, add_off, sidx, R_AARCH64_ADD_ABS_LO12_NC, 0);
+    }
+}
+// cbz / cbnz to a label defined (possibly later) with cg_ir_label(); same fixup as b.cond.
+void cg_ir_cbz(int sf, int reg, bool nonzero, const char *label) {
+    size_t off = cg_sec->len;
+    if (nonzero) arm64_cbnz(cg_sec, sf, (Arm64Reg)reg, 0);
+    else
+        arm64_cbz(cg_sec, sf, (Arm64Reg)reg, 0);
+    asm_fixup_add(cg_sec, off, label, 1);
+}
+// tbz / tbnz has a shorter 14-bit branch field, patched by fixup type 3.
+void cg_ir_tbz(int reg, int bit, bool nonzero, const char *label) {
+    size_t off = cg_sec->len;
+    if (nonzero) arm64_tbnz(cg_sec, (Arm64Reg)reg, bit, 0);
+    else
+        arm64_tbz(cg_sec, (Arm64Reg)reg, bit, 0);
+    asm_fixup_add(cg_sec, off, label, 3);
+}
+// AArch64 homogeneous float aggregate (the AST backend's arm64_hfa_count): element count 1-4
+// (0 = not an HFA) and the element size.
+int cg_ir_arm64_hfa(Type *ty, int *elem_size) { return arm64_hfa_count(ty, elem_size); }
+#endif
+
 // ---- per-TU IR cache: every eligible function is built once, up front, so
 // callers can inline callees defined later in the file. ----
-#if !defined(ARCH_ARM64) && !defined(_WIN32)
+#if !defined(_WIN32)
 static IRFunc **ir_cache;
 static int ir_cache_n;
 static bool ir_cache_ready;
@@ -19936,7 +20007,7 @@ static IRFunc *cg_ir_take(Function *fn) {
 
 // Try to compile `fn` through the SSA IR (-O2+, x86-64 SysV only).
 bool cg_ir_try_function(Program *prog, Function *fn, bool emitting_local_copy) {
-#if defined(ARCH_ARM64) || defined(_WIN32)
+#if defined(_WIN32)
     (void)prog;
     (void)fn;
     (void)emitting_local_copy;
@@ -19965,9 +20036,15 @@ bool cg_ir_try_function(Program *prog, Function *fn, bool emitting_local_copy) {
         fprintf(stderr, "=== IR after inline + ir_opt ===\n");
         ir_dump(f, stderr);
     }
+#ifdef ARCH_ARM64
+    bool emitted = ir_emit_arm64(prog, f, emitting_local_copy);
+    ir_func_free(f);
+    return emitted; // false: the emitter declined before emitting anything, the AST backend takes over
+#else
     ir_emit_x86(prog, f, emitting_local_copy);
     ir_func_free(f);
     return true;
+#endif
 #endif
 }
 
@@ -22670,7 +22747,7 @@ struct ObjFile *codegen(Program *prog) {
         fprintf(stderr, "  pass1       %-20s: %6llu us\n", "(dry-run, cumulative)",
                 (unsigned long long)dbg_pass1_us);
 #endif
-#if !defined(ARCH_ARM64) && !defined(_WIN32)
+#if !defined(_WIN32)
     cg_ir_cache_free();
 #endif
     return cg_obj;

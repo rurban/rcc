@@ -230,6 +230,11 @@ void link_apply_relocs(LinkState *s, uint64_t image_base);
 void link_reloc_apply(LinkArch arch, LinkSec *sec, LinkReloc *r,
                       uint64_t sym_addr, uint64_t pc, uint64_t image_base);
 
+// AArch64 page-offset relocation (ADD_ABS_LO12_NC / LDST*_ABS_LO12_NC / Mach-O PAGEOFF12):
+// patch `ins` with the low 12 bits of `addr`. An ADD (immediate) takes them unscaled; the
+// unsigned-offset ld/st forms divide them by the access size encoded in the instruction.
+uint32_t link_arm64_lo12(uint32_t ins, uint64_t addr);
+
 // TODO Search a library name in the configured paths and load it.
 // See arch-specific implementations
 // int link_load_archive(LinkState *s, const char *name, const char *lib_paths);

@@ -13,6 +13,26 @@
 #include "ir.h"
 #include "cg_ir.h"
 
+// Vector values passed or returned by value are not modelled by the AArch64 emitter (the
+// IRAggClass classification covers structs and unions only); such functions stay on the AST
+// backend there.
+#ifdef ARCH_ARM64
+#define IR_NO_AGG_ABI(ty) ((ty)->is_vector)
+#else
+#define IR_NO_AGG_ABI(ty) 0
+#endif
+
+// A call to a function without a prototype (implicit declaration) is typed `int`, but the AST
+// backend leaves the full register alone when such a result is converted to a pointer (legacy
+// code calls pointer-returning libc functions that way, and on AArch64 heap addresses do not fit
+// 32 bits). The IR mirrors that: the call is an I64 whose TRUNC is the int value, and an
+// int -> pointer conversion of that value uses the untruncated register (convert()).
+#ifdef ARCH_ARM64
+#define IR_WIDE_IMPLICIT_INT 1
+#else
+#define IR_WIDE_IMPLICIT_INT 0
+#endif
+
 typedef struct {
     IRType t; // IRT_I32 / I64 / F32 / F64
     int size; // C size in bytes (1, 2, 4, 8)
@@ -796,6 +816,11 @@ static int to_bool01(B *b, int v, Sc s) {
 
 static int convert(B *b, int v, Sc from, Sc to) {
     if (v == IR_NONE) return v;
+    if (IR_WIDE_IMPLICIT_INT && to.ptr && !to.boolean && !from.flt && from.t == IRT_I32) {
+        IRInstr *d = b->f->vals[v];
+        if (d->op == IR_TRUNC && d->a != IR_NONE && b->f->vals[d->a]->op == IR_CALL && b->f->vals[d->a]->msign)
+            return d->a;
+    }
     if (to.boolean) return from.boolean ? v : to_bool01(b, v, from);
     if (from.flt && to.flt) {
         if (from.t == to.t) return v;
@@ -1214,9 +1239,14 @@ static int gen_shift(B *b, Node *n) {
     Sc s;
     if (!sc_of(n->ty, &s) || s.flt || s.boolean) return fail(b, "shift type");
     Sc cs;
-    if (!sc_of(n->rhs->ty, &cs) || cs.flt) return fail(b, "shift count type");
+    // The AST optimizer's strength reduction (x * 2^k -> x << k) builds the count as an untyped
+    // ND_NUM; it is an int constant.
+    bool untyped_count = !n->rhs->ty && n->rhs->kind == ND_NUM;
+    if (untyped_count) cs = (Sc){IRT_I32, 4, false, false, false, false};
+    else if (!sc_of(n->rhs->ty, &cs) || cs.flt)
+        return fail(b, "shift count type");
     int x = gen_as(b, n->lhs, s);
-    int c = gen_expr(b, n->rhs);
+    int c = untyped_count ? iconst(b, IRT_I32, n->rhs->val) : gen_expr(b, n->rhs);
     if (b->fail) return IR_NONE;
     if (cs.t == IRT_I64) c = op1(b, IR_TRUNC, IRT_I32, c);
     IROp op = n->kind == ND_SHL ? IR_SHL : (s.uns ? IR_SHR : IR_SAR);
@@ -1506,8 +1536,15 @@ static int gen_call(B *b, Node *n) {
     bool any_agg = false;
     bool unproto = !proto;
     int k = 0;
+    int nnamed = 0;
+    if (fty && fty->is_variadic && !fty->is_oldstyle)
+        for (Type *t = fty->param_types; t; t = t->param_next) nnamed++;
     for (Node *a = n->args; a; a = a->next, k++) {
         int cls = ir_agg_class(a->ty);
+        if (cls != IRAGG_NONE && IR_NO_AGG_ABI(a->ty)) { // by-value vector: ABI not modelled by this backend
+            fail(b, "aggregate argument (target ABI)");
+            goto fail_call;
+        }
         if (cls != IRAGG_NONE) { // aggregate: the argument is the address of the bytes
             if (unproto) {
                 fail(b, "aggregate argument to unprototyped/variadic call");
@@ -1548,13 +1585,21 @@ static int gen_call(B *b, Node *n) {
     }
 
     bool agg_ret = n->ty && (n->ty->kind == TY_STRUCT || n->ty->kind == TY_UNION || n->ty->is_vector) && n->ty->size > 0;
+    if (agg_ret && IR_NO_AGG_ABI(n->ty)) {
+        fail(b, "aggregate return (target ABI)");
+        goto fail_call;
+    }
     bool is_void = !n->ty || n->ty->kind == TY_VOID;
     Sc rs = {0};
     if (!is_void && !agg_ret && !sc_of(n->ty, &rs)) {
         fail(b, "return type");
         goto fail_call;
     }
-    IRInstr *c = emit(b, IR_CALL, agg_ret ? IRT_I64 : (is_void ? IRT_VOID : rs.t));
+    // msign marks the I64-typed result of an unprototyped call returning int (see IR_WIDE_IMPLICIT_INT)
+    bool wide_int = IR_WIDE_IMPLICIT_INT && !proto && !is_void && !agg_ret && rs.t == IRT_I32 && rs.size == 4 && !rs.boolean;
+    IRInstr *c = emit(b, IR_CALL, agg_ret ? IRT_I64 : (is_void ? IRT_VOID : wide_int ? IRT_I64
+                                                                                     : rs.t));
+    c->msign = wide_int;
     c->sym = sym;
     c->a = target;
     c->args = args;
@@ -1564,10 +1609,21 @@ static int gen_call(B *b, Node *n) {
     if (agg_ret) // > 0: two-reg RAX[:RDX] return; < 0: hidden return pointer
         c->ret_agg = ir_ret_two_reg(n->ty) ? (int32_t)n->ty->size : -(int32_t)n->ty->size;
     c->variadic = !fty || fty->is_variadic || fty->is_oldstyle;
+    if (nnamed || (fty && fty->is_variadic && !fty->is_oldstyle)) c->var_from = nnamed + 1;
+    if (!c->var_from && sym) {
+        // The AST backend treats the printf family as variadic even when no (variadic)
+        // prototype is visible (gen_funcall: bi_s_printf & co); Darwin passes the unnamed
+        // arguments of such calls on the stack.
+        int nn = !strcmp(sym, "printf") ? 1 : (!strcmp(sym, "sprintf") || !strcmp(sym, "fprintf")) ? 2
+            : !strcmp(sym, "snprintf")                                                             ? 3
+                                                                                                   : 0;
+        if (nn) c->var_from = nn + 1;
+    }
     c->noret = callee && callee->kind == ND_LVAR && callee->var && callee->var->is_function && callee->var->is_noreturn;
     b->f->has_calls = true;
     if (is_void) return IR_NONE;
     if (agg_ret) return c->id; // address of the returned bytes
+    if (wide_int) return op1(b, IR_TRUNC, IRT_I32, c->id);
     return norm(b, c->id, rs); // callers may not rely on the callee normalizing narrow results
 fail_call:
     free(args);
@@ -2114,7 +2170,10 @@ IRFunc *ir_build(Program *prog, Function *fn) {
         if (!rt || rt->kind == TY_VOID) f->ret_type = IRT_VOID;
         else if (sc_of(rt, &rsc))
             f->ret_type = rsc.t;
-        else if ((rt->kind == TY_STRUCT || rt->kind == TY_UNION || rt->is_vector) && rt->size > 0) {
+        else if ((rt->kind == TY_STRUCT || rt->kind == TY_UNION || rt->is_vector) && rt->size > 0 && IR_NO_AGG_ABI(rt)) {
+            fail(b, "aggregate return (target ABI)");
+            ok = false;
+        } else if ((rt->kind == TY_STRUCT || rt->kind == TY_UNION || rt->is_vector) && rt->size > 0) {
             f->ret_agg = (int32_t)rt->size;
             f->ret_sret = !ir_ret_two_reg(rt); // two-reg RAX[:RDX] vs hidden return pointer
             if (f->ret_sret) { // the parser created a __retbuf local holding the hidden pointer
@@ -2137,6 +2196,11 @@ IRFunc *ir_build(Program *prog, Function *fn) {
     int nparams = 0;
     if (ok)
         for (LVar *p = fn->params; p; p = p->param_next) {
+            if (ir_agg_class(p->ty) != IRAGG_NONE && IR_NO_AGG_ABI(p->ty)) {
+                fail(b, "aggregate parameter (target ABI)");
+                ok = false;
+                break;
+            }
             if (ir_agg_class(p->ty) != IRAGG_NONE) {
                 nparams++;
                 continue;

@@ -511,6 +511,7 @@ every `__attribute__`/`__builtin_*`/`#pragma` extension — in
 | `src/cg_vectors.c`    | x86-64/ARM64 code generator for vector support                              |
 | `src/cg_opt.c`        | Cheap codegen strength reductions (constant-divisor idiv/div removal)       |
 | `src/opt.c`           | AST-level optimizer and CTFE interpreter                                    |
+| `src/ir_*.c`          | `-O2` SSA builder, optimizer, inliner, and x86-64/AArch64 emitters          |
 | `src/alloc.c`         | Arena memory allocator                                                      |
 | `src/unicode.{c,h}`   | libu8ident unicode identifier checks                                        |
 | `src/rcc.h`           | Shared data structures and declarations                                     |

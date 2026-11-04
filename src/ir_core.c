@@ -642,6 +642,24 @@ static bool ir_type_all_integer(Type *ty) {
     }
 }
 
+#ifdef ARCH_ARM64
+// AArch64 (mirrors the AST backend's simplified AAPCS64, gen_funcall / the prologue): a
+// homogeneous float aggregate (struct of 1-4 floats or doubles, nested structs allowed) goes in
+// V registers; any other struct/union <= 8 bytes is a raw value in one GP register; everything
+// larger is passed by pointer (the callee copies the pointee). Vectors are not modelled.
+int ir_agg_class(Type *ty) {
+    if (!ty) return IRAGG_NONE;
+    int kind = ty->kind;
+    bool aggregate = kind == TY_STRUCT || kind == TY_UNION || ty->is_vector;
+    if (!aggregate) return IRAGG_NONE;
+    int64_t size = ty->size;
+    if (size <= 0) return IRAGG_PTR; // incomplete: cannot happen for real args
+    int elem = 0;
+    if (!ty->is_vector && cg_ir_arm64_hfa(ty, &elem) > 0) return elem == 4 ? IRAGG_HFA4 : IRAGG_HFA8;
+    if (size <= 8) return IRAGG_VALUE8;
+    return IRAGG_PTR;
+}
+#else
 int ir_agg_class(Type *ty) {
     if (!ty) return IRAGG_NONE;
     int kind = ty->kind;
@@ -657,6 +675,7 @@ int ir_agg_class(Type *ty) {
     if (!ty->is_vector) return IRAGG_MEMORY;
     return IRAGG_PTR;
 }
+#endif
 
 // True when `ty` (struct/union) is returned in RAX[:RDX] per the AST codegen's
 // simplification (all-integer leaves, <= 16 bytes, not a vector) -- mirrors

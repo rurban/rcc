@@ -168,16 +168,22 @@ typedef enum { IRM_I8,
                IRM_F64 } IRMem;
 
 // How an aggregate argument or parameter is passed, mirroring the AST
-// codegen's SysV simplification EXACTLY (caller and callee must agree or the
-// ABI breaks). Computed once by ir_agg_class() from the C type.
+// codegen's simplification of the target ABI EXACTLY (caller and callee must agree or the
+// ABI breaks). Computed once by ir_agg_class() from the C type. The set of classes a target
+// produces differs: x86-64 SysV uses VALUE8 / VALUE16 / PTR / MEMORY; AArch64 uses
+// VALUE8 / HFA4 / HFA8 / PTR (see ir_agg_class in ir_core.c).
 typedef enum {
     IRAGG_NONE = 0, // not an aggregate: ordinary scalar value argument
     IRAGG_VALUE8, // struct/union/vector <= 8 bytes: raw value, 1 GP reg or 1 stack slot
     IRAGG_VALUE16, // struct/union 9..16B, all-integer leaves: raw value, 2 consecutive
     // GP regs (only if 2 are available) or 2+ stack slots
     IRAGG_PTR, // passed by pointer: 1 GP reg or 1 stack slot holding the address
-    // (9..16B with a float/complex member; vectors > 8 bytes)
-    IRAGG_MEMORY // struct/union > 16B: raw bytes in outgoing stack slots, 0 GP regs
+    // (x86-64: 9..16B with a float/complex member; vectors > 8 bytes. AArch64: every
+    // non-HFA struct/union > 8 bytes)
+    IRAGG_MEMORY, // struct/union > 16B: raw bytes in outgoing stack slots, 0 GP regs
+    IRAGG_HFA4, // AArch64 homogeneous float aggregate (1-4 floats): one V register per element
+    // (all or none, else the raw bytes in 8-byte stack slots)
+    IRAGG_HFA8 // AArch64 homogeneous double aggregate (1-4 doubles), same placement
 } IRAggClass;
 // arg_class / param_class entries encode the size: entry = (bytes << 3) | class,
 // 0 = scalar. The only >8-aligned case in the AST codegen (long double/vector
@@ -214,6 +220,8 @@ typedef struct IRInstr {
     int nargs;
     int32_t *arg_class; // CALL: per-arg (bytes<<3)|IRAggClass, 0 = scalar value
     int32_t ret_agg; // CALL: <0 sret of -ret_agg bytes, >0 two-reg return of ret_agg bytes
+    int32_t var_from; // CALL: > 0 = the callee is a prototyped variadic function and args[var_from-1 ..]
+    // are its unnamed (variadic) arguments (Darwin/ARM64 passes those on the stack); 0 = none
     IRBlock *t, *f; // JMP/BR targets
     IRBlock *blk; // owning block (NULL when dead)
     int line; // source line for -g / diagnostics, 0 if none
@@ -363,6 +371,17 @@ void ir_opt(IRFunc *f);
 // the symbol size (cg_ir_end_fn). Infallible once called.
 void ir_emit_x86(Program *prog, IRFunc *f, bool emitting_local_copy);
 
+// ---------------------------------------------------------------- ir_arm64.c
+// AArch64 counterpart of ir_emit_x86() (AAPCS64 / Darwin arm64). Returns false, BEFORE
+// emitting any code, when the function uses something the emitter does not model
+// (the caller then falls back to the AST backend); true once the function is emitted.
+bool ir_emit_arm64(Program *prog, IRFunc *f, bool emitting_local_copy);
+
+#ifdef ARCH_ARM64
+// AArch64: homogeneous float aggregate test (codegen.c arm64_hfa_count): number of elements
+// (1-4, 0 = not an HFA); *elem_size = 4 or 8.
+int cg_ir_arm64_hfa(Type *ty, int *elem_size);
+#endif
 // ----------------------------------------------------------- codegen.c hooks
 // Entry point called from codegen()'s per-function loop at -O2+; returns true
 // if the function was compiled through the IR (caller skips the old path).

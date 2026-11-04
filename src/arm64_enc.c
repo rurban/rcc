@@ -19,57 +19,48 @@
 // Based on ARM reference: an immediate is a replicated bitmask.
 // Returns 0 if not encodable, else packs N:immr:imms into bits 22:10.
 // ---------------------------------------------------------------------------
-static bool try_encode_logic_imm(int sf, uint64_t val, int *N_out, int *immr_out, int *imms_out) {
+static bool shifted_mask64(uint64_t x) { // one contiguous run of ones
+    if (!x) return false;
+    uint64_t y = x | (x - 1);
+    return ((y + 1) & y) == 0;
+}
+
+static bool try_encode_logic_imm(int sf, uint64_t imm, int *N_out, int *immr_out, int *imms_out) {
     // For 32-bit ops, only the lower 32 bits matter per ARM64 W-register semantics
-    if (!sf) val &= 0xFFFFFFFFull;
-    if (val == 0 || val == ~0ull) return false;
-    int len;
+    int reg_size = sf ? 64 : 32;
+    if (!sf) imm &= 0xFFFFFFFFull;
+    if (imm == 0 || imm == (~0ull >> (64 - reg_size))) return false;
+    // Smallest element size whose repetition makes up the immediate.
+    unsigned size = (unsigned)reg_size;
     uint64_t mask;
-    // Try each rotation length (2,4,8,16,32,64)
-    for (len = 1; len <= 6; len++) {
-        int e = 1 << len; // element size
-        if (e > 64) break;
-        mask = (e == 64) ? (uint64_t)-1 : ((uint64_t)1 << e) - 1;
-        uint64_t elem = val & mask;
-        // Check if val is a repetition of elem across the register width
-        bool ok = true;
-        int reg_bits = sf ? 64 : 32;
-        for (int s = e; s < reg_bits; s += e) {
-            if (((val >> s) & mask) != elem) {
-                ok = false;
-                break;
-            }
+    do {
+        size /= 2;
+        mask = (1ull << size) - 1;
+        if ((imm & mask) != ((imm >> size) & mask)) {
+            size *= 2;
+            break;
         }
-        if (!ok) continue;
-        // elem must be a contiguous run of 1s (possibly rotated)
-        if (elem == 0 || (elem & mask) == mask) continue;
-        // Find the rotation
-        // Count trailing zeros of ~elem to find where 0-run starts
-        int ctz_inv = 0;
-        uint64_t t = (~elem) & mask;
-        while (t & 1) {
-            ctz_inv++;
-            t >>= 1;
-        }
-        // Rotation amount = (e - ctz_inv) % e  -- rotate in correct direction
-        int immr = (e - ctz_inv) % e;
-        // Rotate elem right by ctz_inv so the 1-run starts at bit 0
-        uint64_t rotated = ((elem >> ctz_inv) | (elem << (e - ctz_inv))) & mask;
-        int cto = 0; // count trailing ones of rotated element
-        t = rotated;
-        while (t & 1) {
-            cto++;
-            t >>= 1;
-        }
-        int imms = cto - 1;
-        int N = (e == 64) ? 1 : 0;
-        if (!sf && e == 64) return false;
-        *N_out = N;
-        *immr_out = immr;
-        *imms_out = imms | ((e == 64) ? 0 : ((~(e - 1) << 1) & 0x3f));
-        return true;
+    } while (size > 2);
+    mask = ~0ull >> (64 - size);
+    imm &= mask;
+    unsigned cto, i;
+    if (shifted_mask64(imm)) {
+        i = (unsigned)__builtin_ctzll(imm);
+        cto = (unsigned)__builtin_ctzll(~(imm >> i));
+    } else { // the run of ones wraps around the element
+        imm |= ~mask;
+        if (!shifted_mask64(~imm)) return false;
+        unsigned clo = (unsigned)__builtin_clzll(~imm);
+        i = 64 - clo;
+        cto = clo + (unsigned)__builtin_ctzll(~imm) - (64 - size);
     }
-    return false;
+    unsigned rotation = (size - i) & (size - 1);
+    uint64_t nimms = (~(uint64_t)(size - 1)) << 1;
+    nimms |= cto - 1;
+    *N_out = (int)(((nimms >> 6) & 1) ^ 1);
+    *immr_out = (int)rotation;
+    *imms_out = (int)(nimms & 0x3f);
+    return true;
 }
 
 // Encode a logic immediate; returns 0 if not representable.
@@ -173,10 +164,9 @@ void arm64_bic_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm
 // option encoding: UXTB=0, UXTH=1, UXTW=2, UXTX=3
 static uint32_t extreg_enc(int sf, int is_sub, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm,
                            Arm64Ext option, int imm3) {
-    (void)imm3;
     uint32_t op_bit = is_sub ? (1u << 30) : 0;
     return SF(sf) | op_bit | (0x0Bu << 24) | (1u << 21) |
-        BITS(20, 16, rm) | BITS(15, 13, (uint32_t)option) |
+        BITS(20, 16, rm) | BITS(15, 13, (uint32_t)option) | BITS(12, 10, (uint32_t)imm3) |
         BITS(9, 5, rn) | BITS(4, 0, rd);
 }
 
@@ -195,6 +185,12 @@ static uint32_t dp3(int sf, uint32_t op, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, 
 
 void arm64_mul(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
     secbuf_emit32le(s, dp3(sf, 0x1b000000u, rd, rn, rm, ARM64_XZR));
+}
+void arm64_madd(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Reg ra) {
+    secbuf_emit32le(s, dp3(sf, 0x1b000000u, rd, rn, rm, ra));
+}
+void arm64_msub(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Reg ra) {
+    secbuf_emit32le(s, dp3(sf, 0x1b008000u, rd, rn, rm, ra));
 }
 void arm64_smull(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
     secbuf_emit32le(s, 0x9b200000u | (31u << 10) | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));

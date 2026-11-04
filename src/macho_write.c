@@ -162,6 +162,12 @@ static uint8_t elf_reloc_to_macho(uint32_t elf_type, bool is_arm64) {
         case R_AARCH64_JUMP26: return ARM64_RELOC_BRANCH26;
         case R_AARCH64_ADR_PREL_PG_HI21: return ARM64_RELOC_PAGE21;
         case R_AARCH64_ADD_ABS_LO12_NC: return ARM64_RELOC_PAGEOFF12;
+        // The ld/st forms use the same PAGEOFF12 relocation: ld64 scales the offset by the
+        // access size it decodes from the instruction.
+        case R_AARCH64_LDST8_ABS_LO12_NC:
+        case R_AARCH64_LDST16_ABS_LO12_NC:
+        case R_AARCH64_LDST32_ABS_LO12_NC:
+        case R_AARCH64_LDST64_ABS_LO12_NC: return ARM64_RELOC_PAGEOFF12;
         case R_AARCH64_ADR_GOT_PAGE: return ARM64_RELOC_GOT_LOAD_PAGE21;
         case R_AARCH64_LD64_GOT_LO12_NC: return ARM64_RELOC_GOT_LOAD_PAGEOFF12;
         case R_AARCH64_TLSLE_ADD_TPREL_HI12: return ARM64_RELOC_TLVP_LOAD_PAGE21;

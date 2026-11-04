@@ -304,8 +304,12 @@ static inline void asm_fixup_add(SecBuf *s, size_t instr_off, const char *label,
             int32_t immlo = (int32_t)(delta & 3);
             int32_t immhi = (int32_t)(delta >> 2);
             insn = (insn & ~0x60FFFFE0U) | (uint32_t)((immhi & 0x7FFFF) << 5) | (uint32_t)((immlo & 3) << 29);
+        } else if (type == 3) {
+            // TBZ/TBNZ: 14-bit signed word offset in bits [18:5]
+            int64_t imm = delta / 4;
+            insn = (insn & ~0x0007FFE0U) | (uint32_t)((imm & 0x3FFF) << 5);
         } else {
-            // B.cond: 19-bit signed word offset in bits [23:5]
+            // B.cond/CBZ/CBNZ: 19-bit signed word offset in bits [23:5]
             int64_t imm = delta / 4;
             insn = (insn & ~0x00FFFFE0U) | (uint32_t)((imm & 0x7FFFF) << 5);
         }
@@ -378,8 +382,12 @@ static inline void asm_fixup_resolve(SecBuf *s, const char *label, size_t target
                 int32_t immlo = (int32_t)(delta & 3);
                 int32_t immhi = (int32_t)(delta >> 2);
                 insn = (insn & ~0x60FFFFE0U) | (uint32_t)((immhi & 0x7FFFF) << 5) | (uint32_t)((immlo & 3) << 29);
+            } else if (n->type == 3) {
+                // TBZ/TBNZ: 14-bit signed word offset in bits [18:5]
+                int64_t imm = delta / 4;
+                insn = (insn & ~0x0007FFE0U) | (uint32_t)((imm & 0x3FFF) << 5);
             } else {
-                // B.cond: 19-bit signed word offset in bits [23:5]
+                // B.cond/CBZ/CBNZ: 19-bit signed word offset in bits [23:5]
                 int64_t imm = delta / 4;
                 insn = (insn & ~0x00FFFFE0U) | (uint32_t)((imm & 0x7FFFF) << 5);
             }

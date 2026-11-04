@@ -74,7 +74,7 @@ VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2
 MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
 
 ifneq ($(findstring apple,$(MACHINE)),)
-SRCS += src/macho_write.c src/link_macho.c src/arm64_enc.c
+SRCS += src/macho_write.c src/link_macho.c src/arm64_enc.c src/ir_core.c src/ir_build.c src/ir_inline.c src/ir_opt.c src/ir_arm64.c
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
 else ifneq ($(findstring mingw,$(MACHINE)),)
@@ -158,7 +158,7 @@ endif
 ifneq ($(findstring aarch64,$(MACHINE)),)
 TARGET = rcc-arm64
 RUN_TESTS = run_tests_arm64
-SRCS += src/arm64_enc.c
+SRCS += src/arm64_enc.c src/ir_arm64.c
 OBJ_EXT = .arm64.o
 INST_OBJ_EXT = inst.arm64.o
 ARM64_SYSROOT := $(shell $(CC) -print-sysroot 2>/dev/null)

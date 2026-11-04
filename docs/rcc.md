@@ -505,13 +505,14 @@ regardless of `-O` level (see the table below).
 
 #### `-O2` and up: the SSA IR backend (`src/ir_*.c`)
 
-On x86-64 ELF targets, `-O2`/`-O3` compile every eligible function
-through a self-contained SSA IR instead of the AST code generator:
+On x86-64 ELF and AArch64 ELF/Darwin targets, `-O2`/`-O3` compile
+every eligible function through a self-contained SSA IR instead of the
+AST code generator:
 
 ```
 ir_build (SSA construction)  ->  ir_inline (same-TU inlining)
   ->  ir_tailrec (tail recursion to loops)  ->  ir_opt (optimizer)
-  ->  ir_emit_x86 (linear-scan regalloc + x86-64 emitter)
+  ->  ir_emit_{x86,arm64} (linear-scan regalloc + machine emitter)
 ```
 
 Each function is considered independently: anything the IR cannot
@@ -521,23 +522,26 @@ one unsupported construct never downgrades the whole file.
 - **Eligibility.** Scalar integer/pointer/float/double code: loops,
   branches, direct and indirect calls, `switch`, `goto`/labels, GNU
   statement expressions, struct/union/array access including aggregates
-  by value (the IR mirrors the AST codegen's simplified SysV ABI exactly:
-  class entries `(bytes<<3)|class`, two-register `RAX:RDX` returns,
-  sret). Not eligible: inline asm, atomics, volatile aggregate copies /
+  by value. ABI classification mirrors the target AST backend: simplified
+  SysV classes, `RAX:RDX` returns and sret on x86-64; VALUE8, HFA,
+  pointer-class aggregates, `x0:x1` returns and sret in `x8` on AArch64.
+  AArch64 variadic aggregate calls conservatively use the AST backend.
+  Not eligible: inline asm, atomics, volatile aggregate copies /
   by-value volatile structs, complex/decimal/`__int128`/`long double`,
-  C2y labeled loops, VLAs,
-  cleanups (defer etc.), nested functions, and any
-  sanitizer/`-g`/`-fstack-protector` TU. About 77% of the unit-test
-  functions compile through the IR; rejected functions are reported
-  with a reason under `-fdump-ir`. `abs`/`labs`/`llabs` are not calls:
-  they lower to the branch-free `(x ^ (x>>w)) - (x>>w)` in the
-  prototype's width, matching the AST codegen's builtin expansion.
+  C2y labeled loops, VLAs, cleanups (defer etc.), nested functions, and
+  any sanitizer/`-g`/`-fstack-protector` TU. About 77% of the x86-64
+  unit-test functions and 87% of the native ARM64 unit-test functions
+  compile through the IR; rejected functions are reported with a reason
+  under `-fdump-ir`. `abs`/`labs`/`llabs` are not calls: they lower to
+  the branch-free `(x ^ (x>>w)) - (x>>w)` in the prototype's width,
+  matching the AST codegen's builtin expansion.
 
 - **Values and memory model.** Address-taken locals are `FRAMEADDR`
-  (address `rbp - off`, one per object, offset unique per local) reached
-  through `LOAD`/`STORE` with explicit widths; globals are `GADDR`
-  (plain `lea` or GOT, flagged via `msign`) whose distinct symbols never
-  alias each other. Narrow loads carry their extension in `msign`.
+  (address `rbp - off` on x86-64 or `x29 - off` on AArch64, one per
+  object, offset unique per local) reached through `LOAD`/`STORE` with
+  explicit widths; globals are `GADDR` (direct PC/page-relative or GOT,
+  flagged via `msign`) whose distinct symbols never alias each other.
+  Narrow loads carry their extension in `msign`.
   A `volatile` access is a `LOAD`/`STORE` with `IRInstr.vol` set (bitfields:
   the storage-unit load and store of the read-modify-write). It is an
   observable side effect: never removed (an unused read is still emitted),
@@ -601,15 +605,15 @@ one unsupported construct never downgrades the whole file.
   `_Noreturn` / `[[noreturn]]` (e.g. glibc's `abort`, `exit`,
   `__assert_fail`) reaches the IR; a noreturn call is truncated with
   `__builtin_unreachable()`, its block's successors and phi inputs
-  dropped, and cold blocks laid out last. When the hot path needs no
-  callee-saved registers, spill slots, locals, or stack params, the
-  function is emitted frameless and each cold block establishes its own
-  frame (16-byte aligned at the call) — an `assert`-guarded function
-  pays nothing on the hot path.
+  dropped, and cold blocks laid out last. The AArch64 emitter terminates
+  the call with `brk`. On x86-64, when the hot path needs no callee-saved
+  registers, spill slots, locals, or stack params, the function is emitted
+  frameless and each cold block establishes its own frame (16-byte aligned
+  at the call), so an `assert`-guarded function pays nothing on the hot path.
 
-- **Backend (`ir_x86.c`).** Linear-scan register allocation over the
-  block order, callee-saved registers only when live ranges demand them.
-  The locals area is sized from the `FRAMEADDR`s that survived
+- **x86-64 backend (`ir_x86.c`).** Linear-scan register allocation over
+  the block order, callee-saved registers only when live ranges demand
+  them. The locals area is sized from the `FRAMEADDR`s that survived
   inlining and optimization — not the AST stack layout, which keeps
   slots SSA construction promoted to registers. Single-use loads fold
   into `add`/`sub`/`and`/`or`/`xor`/`imul`/`cmp` (also the `cmp`
@@ -618,6 +622,17 @@ one unsupported construct never downgrades the whole file.
   usual scaled-index addressing (`base + index*1/2/4/8 + disp`) absorbs
   `sext32` indices and constant offsets. Leaf functions that touch
   neither the frame nor callee-saved registers get no prologue at all.
+
+- **AArch64 backend (`ir_arm64.c`).** Linear scan uses caller-saved
+  temporaries and `x19`–`x28`/`v8`–`v15` when values cross calls; `x16`
+  and `x17` remain scratch and Darwin's platform register `x18` is never
+  allocated. Frames preserve 16-byte call alignment and pair adjacent
+  callee-saved registers with `stp`/`ldp`. Selection covers scalar and FP
+  arithmetic/conversions, compare values via `cset`, `cbz`/`cbnz` and
+  `tbz`/`tbnz` branch fusion, `madd`/`msub`, base+immediate and
+  base+extended/scaled-index memory operands, large frames/offsets, and
+  direct/GOT `ADRP` relocations for Mach-O and ELF. Darwin unnamed
+  variadic arguments follow its stack convention.
 
 - **Debugging.** `-fdump-ir` prints each function's IR as built and
   after inlining + optimization (with `not eligible (reason)` lines);

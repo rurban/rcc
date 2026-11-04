@@ -498,6 +498,16 @@ static void w32le(uint8_t *p, uint32_t v) {
 static uint64_t r64le_m(uint8_t *p) { return r64le(p); }
 static uint32_t r32le_m(uint8_t *p) { return r32le(p); }
 
+uint32_t link_arm64_lo12(uint32_t ins, uint64_t addr) {
+    uint64_t off = addr & 0xfff;
+    if ((ins & 0x3b000000u) == 0x39000000u) { // load/store register, unsigned immediate
+        int shift = (int)(ins >> 30); // log2 of the access size
+        if (shift == 0 && ((ins >> 26) & 1) && ((ins >> 23) & 1)) shift = 4; // 128-bit SIMD&FP
+        off >>= shift;
+    }
+    return (ins & 0xffc003ffu) | ((uint32_t)off << 10);
+}
+
 void link_reloc_apply(LinkArch arch, LinkSec *sec, LinkReloc *r,
                       uint64_t sym_addr, uint64_t pc, uint64_t image_base) {
     uint8_t *p = sec->data + r->offset;
@@ -558,11 +568,7 @@ void link_reloc_apply(LinkArch arch, LinkSec *sec, LinkReloc *r,
     }
     case RL_ARM64_ADD_LO: {
         uint32_t ins = r32le_m(p);
-        uint64_t off = (S + (uint64_t)A) & 0xfff;
-        // ADD (immediate) imm12 is unscaled -- unlike LDR/STR it does not
-        // divide the low-12-bit page offset by the access size.
-        ins = (ins & 0xffc003ff) | ((uint32_t)off << 10);
-        w32le(p, ins);
+        w32le(p, link_arm64_lo12(ins, S + (uint64_t)A));
         break;
     }
     case RL_ARM64_GOT_PG:
