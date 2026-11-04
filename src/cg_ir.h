@@ -29,6 +29,15 @@ const char *cg_ir_node_kind_name(int kind);
 // variable, TLS, alias), 0 plain rip-relative lea, 1 GOT load (set
 // IRInstr.msign = 1). Declares weak symbols as a side effect.
 int cg_ir_global_access(LVar *v);
+#ifdef _WIN32
+// Win64 SEH unwind records (.seh_pushreg / .seh_setframe / .seh_stackalloc / .seh_endprologue).
+// cg_ir_begin_fn() opens the function's unwind entry and cg_ir_end_fn() closes it; a function
+// that never calls these (frameless leaf) gets an entry with no codes. `reg` is an X86Reg.
+void cg_ir_uw_pushreg(int reg);
+void cg_ir_uw_setframe(int reg);
+void cg_ir_uw_stackalloc(int size);
+void cg_ir_uw_endprologue(void);
+#endif
 #ifdef ARCH_ARM64
 // ARM64: x<rd> = address of symbol `label` (ADRP + ADD, or the GOT slot when `got` is set /
 // on Darwin), with the same relocations the AST backend emits.

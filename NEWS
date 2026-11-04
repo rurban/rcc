@@ -4,7 +4,16 @@ complete list of changes see the git log.
 
 * Changes in v1.2.3 (????-??-??) (Reini Urban)
 
-  -O2 SSA IR backend (x86-64 ELF, AArch64 ELF and Darwin):
+  -O2 SSA IR backend (x86-64 ELF, x86-64 Windows/COFF, AArch64 ELF and Darwin):
+  - New Win64 x86-64 emitter path (mingw/PE): rcx/rdx/r8/r9 or xmm0-3
+    by argument position, 32-byte shadow area, rsi/rdi callee-saved,
+    xmm4/xmm5 scratch, aggregates <= 8 bytes by value in the position's
+    register (larger ones by pointer / hidden return pointer), variadic
+    float duplication and home-area spill, ___chkstk_ms probing of
+    frames >= 4 KiB, SEH unwind records for IR functions. coff_write now
+    emits the in-place addend of rip-relative references with a symbol
+    offset or a trailing immediate; the TLS (emutls) call relocation is no
+    longer recorded during the dry-run pass.
   - Every eligible function (scalar integer/pointer/float/double code —
     loops, branches, calls, switch, goto, statement expressions,
     struct/union/array access incl. aggregates by value) is lowered to

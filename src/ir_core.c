@@ -619,6 +619,7 @@ void ir_verify(IRFunc *f) {
 // (recursive) layout. Mirrors codegen.c's type_is_all_integer() EXACTLY,
 // including the union merge rule: a union is all-integer when ANY member is
 // (INTEGER dominates SSE in the eightbyte merge).
+#ifndef _WIN32 // Win64 classes ignore the member kinds
 static bool ir_type_all_integer(Type *ty) {
     if (!ty) return true;
     switch (ty->kind) {
@@ -641,12 +642,15 @@ static bool ir_type_all_integer(Type *ty) {
         return true;
     }
 }
+#endif
 
-#ifdef ARCH_ARM64
+#if defined(ARCH_ARM64) || defined(_WIN32)
 // AArch64 (mirrors the AST backend's simplified AAPCS64, gen_funcall / the prologue): a
 // homogeneous float aggregate (struct of 1-4 floats or doubles, nested structs allowed) goes in
 // V registers; any other struct/union <= 8 bytes is a raw value in one GP register; everything
 // larger is passed by pointer (the callee copies the pointee). Vectors are not modelled.
+// Win64: no HFAs; struct/union <= 8 bytes is a raw value in one slot, larger ones are passed
+// by pointer, exactly as the AST backend's gen_funcall / prologue do.
 int ir_agg_class(Type *ty) {
     if (!ty) return IRAGG_NONE;
     int kind = ty->kind;
@@ -654,8 +658,10 @@ int ir_agg_class(Type *ty) {
     if (!aggregate) return IRAGG_NONE;
     int64_t size = ty->size;
     if (size <= 0) return IRAGG_PTR; // incomplete: cannot happen for real args
+#ifdef ARCH_ARM64
     int elem = 0;
     if (!ty->is_vector && cg_ir_arm64_hfa(ty, &elem) > 0) return elem == 4 ? IRAGG_HFA4 : IRAGG_HFA8;
+#endif
     if (size <= 8) return IRAGG_VALUE8;
     return IRAGG_PTR;
 }
@@ -681,6 +687,10 @@ int ir_agg_class(Type *ty) {
 // simplification (all-integer leaves, <= 16 bytes, not a vector) -- mirrors
 // codegen.c's struct_returns_in_gp_regs().
 bool ir_ret_two_reg(Type *ty) {
+#ifdef _WIN32 // Win64: a struct/union of up to 8 bytes comes back in RAX, anything larger via the hidden pointer
+    return ty && (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && !ty->is_vector && ty->size > 0 && ty->size <= 8;
+#else
     return ty && (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && !ty->is_vector &&
         ty->size > 0 && ty->size <= 16 && ir_type_all_integer(ty);
+#endif
 }

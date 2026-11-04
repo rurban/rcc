@@ -37,32 +37,11 @@
     int/ptr/float/double, loads/stores, calls, structured control flow. Not
     eligible: VLA, asm, complex, int128/bitint/decimal/vector, setjmp, cleanup,
     nested fns, computed goto.
-  - x86-64 first; ARM64 keeps the old path until an IR emitter exists.
+  - x86-64 first, then ARM64 (ir_arm64.c) and Windows/COFF (Win64 in ir_x86.c).
   - Retire the dead AST CFG/dom/DF/phi code and the no-op -O3 rename pass once
     the IR consumes SSA.
 
   Steps:
-  0. DONE: IR and old-codegen functions share one object (no CFI to keep
-     in sync; -g/ubsan/asan/stack-protector TUs disable the IR path).
-  1. DONE: ir_build (Braun SSA), ir_opt (fold/DCE/GVN/LICM), ir_x86
-     (address folding, linear-scan regalloc, emit). Calls (direct/indirect,
-     variadic, stack args), struct field access, globals (plain + GOT),
-     ZERO_INIT, GNU `?:`. ~70% of unit-test functions go through the IR.
-     Kernels (ms, was -> now; antcc): sum 1217->938 (929), axpy 2262->520
-     (606), norm 5219->662 (1209), mm 2062->288 (376), fib 431->349 (323).
-     Suites green at -O2 and default: 431/431 units, TCC 118/118, torture 0.
-  2. DONE (builder): struct/union copies and array assignment (unrolled
-     copies / memcpy), calls with aggregate args (VALUE8/VALUE16/PTR/MEMORY per
-     ir_agg_class, mirroring the AST codegen's SysV simplification), aggregate
-     params (incl. >16B MEMORY-class copies to local storage), struct returns
-     (two-reg RAX:RDX for all-integer <=16B, hidden __retbuf pointer otherwise),
-     switch (compare chains incl. case ranges, Duff's device, fallthrough),
-     goto/labels, GNU statement expressions, casts on address spines.
-     IR ABI encoding: arg_class/param_class entries (bytes<<3)|class;
-     CALL.ret_agg >0 = two-reg return, <0 = sret. Backend aggregate support in
-     ir_x86.c. Wider eligibility: ~77% of unit-test functions.
-     Remaining rejections: bitfields, inline asm, atomics, volatile, complex/
-     decimal/int128/long double, labeled loops (C2Y), special callees.
   3. MOSTLY DONE: IR inliner (small same-TU callees without frame slots,
      multi-block/multi-return bodies spliced before ir_opt; IR built for the
      whole TU up front so callees defined later inline too; templates are
@@ -87,43 +66,8 @@
      complex/decimal/int128/long double, labeled loops (C2Y).
   3.1 DONE a (SROA) and b (frame-slot inlining). NEXT (performance, priority
      order):
-     c. DONE (memopt flow): forward_loads is now a whole-function must-
-        availability analysis (optimistic over back edges, <=6 rounds,
-        exact-stability or fall back to empty tables) plus a rewrite walk;
-        at joins a fact survives when every pred has it, differing values
-        get a PHI of the per-pred values; loop-carried frame cells promote
-        fully (stores die, slot gone); pointer/global accumulators lose the
-        reload but keep the store (no TBAA: any unknown store/call kills).
-        Measured 3661 -> 3588 post-opt loads over test_*.c + AWFY (-2.0%).
-     d. DONE (iv_strength): an I32 IV times a loop-invariant multiplier
-        becomes an exact I32 add-recurrence t += m*K (exact mod 2^32, so no
-        range proof); `x + j` folds into the start value. mm inner loop
-        12 -> 10 instrs (function 49 -> 39). Constant multipliers are
-        skipped (frame growth in many_globals), cap 4 recurrences per loop
-        (ir_opt twice is then not idempotent for >4 candidates).
      e. NOT NEEDED so far: exit-edge splitting for iv_widen - no loop in
         test_*.c, bench.c or AWFY has an I32 IV used in an exit phi.
-     f. DONE (ret_into_rax, LK_RAX): a single-use value whose def is the
-        last emitted instruction before its RET is produced directly in rax
-        (BasicBlock_hash lost its `mov eax,esi`; call results and rem
-        results go straight through). Still open: x87/aggregate-return
-        shrink-wrap cases.
-     g. DONE (GADDR hoisting): licm hoists global-address leaves out of loops
-        and the backend keeps a GADDR in a register when its uses are in a
-        deeper loop than its def (VInfo.keep); a kept GADDR that the
-        allocator spills reverts to rematerialization (lea beats a reload).
-        bench.c sieve loops lost one `lea` per iteration (AWFY Sieve -14%).
-     h. DONE (RIP-relative operands): a LOAD/STORE address that is a non-GOT
-        GADDR + constant with no index folds into [rip+sym+disp] (addressing
-        kind aux==2, symbol in IRInstr.sym; fold_addr, also through
-        cross-block ADD(GADDR,const)), so `total += a[i]` is `add r,[rip+total];
-        mov [rip+total],r` with no lea. x86_enc.c records the disp32 position
-        (x86_rip_disp_pos) and the immediate bytes behind it (x86_rip_trail);
-        ir_x86.c attaches PC32 with addend off - (4 + trail) after each IR
-        instruction (rip_finish) and aborts the compile on any inconsistency
-        (operand count, trailing size, non-zero disp, missed site). GOT/weak/
-        TLS symbols never fold. The encoder no longer emits a spurious REX.B
-        for RIP bases (X86_EXT).
      i. FINDING (do not re-chase): AWFY Queens swings 29 <-> 37 ms between
         builds whose placeQueen is byte-identical. Neither 16-byte function
         alignment nor 16/8-byte loop-header alignment (both tried, built,
@@ -147,41 +91,16 @@
         builder checks, look at which attributes/call shapes (likely
         constructor/aligned/naked and unprototyped calls) are rejectable
         in the IR vs genuinely unsupported.
-     b. DONE (volatile in the IR): IRInstr.vol on LOAD/STORE (also the unit
-        load/store of volatile bitfields); never removed/merged/forwarded/
-        hoisted/rotated/narrowed; a barrier that kills every memopt fact and
-        pending store; frame slots with a volatile access count as escaped;
-        backend never folds a volatile load. Still rejected: volatile (or
-        volatile-member) aggregate copies, by-value args and returns.
-        Rejection histogram over test/test_*.c: volatile access 109 -> 0,
-        volatile bitfield 16 -> 0; IR-built 1329 -> 1450 functions (76.5% ->
-        83.2%). Also fixed: IR </<=/>/>= used non-signaling ucomis (now comis).
-     c. DONE (bitfields in ir_build.c): shift/mask chains over the AST
-        codegen's storage unit; rejects volatile, _BitInt/__int128, >64-bit
-        spans and units beyond a packed struct. Intentional deviations (match
-        gcc, not the AST codegen): _Bool fields normalize on store, enum
-        fields are signed when the enum is. 22 rejected functions -> 6 built
-        (9 volatile bitfield, 7 other). Pre-existing layout bugs left alone:
-        ms_struct with anonymous/zero-width members; 33..63-bit unsigned
-        64-bit fields compare unsigned where gcc compares signed.
      d. long double/_Complex via the x87/AST fallback stays (by design);
         inline asm stays a whole-function fallback.
   3.3 REJECTED (recorded so it isn't re-litigated): UB-based IV widening
      of <=-bounded loops (would help Sieve; violates the no-UB-assumptions
      rule the tests depend on). A -fstrict-overflow-style opt-in flag
      could revisit it deliberately.
-  4. ARM64 IR emitter (ir_arm64.c): ir_core/ir_build/ir_inline/ir_opt are
-     target-neutral and stay untouched; only the emitter + ABI layer are
-     new. SysV arm64 aggregate classification (homogeneous aggregates)
-     differs from the x86-64 simplified classes - either port
-     ir_agg_class's encoding with arm64 HA rules or accept the simplified
-     classes initially and start scalar-only. Mirror the AST backend's
-     arm64 instruction selection (codegen_asm.h). Gate on the same
-     eligibility; -fno-ir already skips IR on ARM64 today.
-  5. Windows (COFF) IR backend: ir_x86.c's relocation/PIC model is ELF
-     (GOTPCREL, .rodata rip-relative); a COFF variant would bring -O2
-     quality to the Windows table (README shows RCC == TCC there; the
-     Linux -O2 gap win doesn't reach Windows yet).
+  5. Win64 IR leftovers: use xmm6-xmm15 (callee-saved there, needs save/restore
+     in the prologue); by-pointer aggregates in stack argument positions stay
+     on the AST backend (its callee reads them as raw bytes); no cold-block
+     frames (the SEH unwind info covers one entry prologue only).
   6. Bench hygiene: re-run bench/bench_report on a quiet machine (current
      -O2/-O3 spreads of 26-70% were taken under agent load) and re-sync;
      track AWFY per-benchmark after 3.1.a.

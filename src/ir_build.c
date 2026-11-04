@@ -16,7 +16,7 @@
 // Vector values passed or returned by value are not modelled by the AArch64 emitter (the
 // IRAggClass classification covers structs and unions only); such functions stay on the AST
 // backend there.
-#ifdef ARCH_ARM64
+#if defined(ARCH_ARM64) || defined(_WIN32)
 #define IR_NO_AGG_ABI(ty) ((ty)->is_vector)
 #else
 #define IR_NO_AGG_ABI(ty) 0
@@ -24,10 +24,10 @@
 
 // A call to a function without a prototype (implicit declaration) is typed `int`, but the AST
 // backend leaves the full register alone when such a result is converted to a pointer (legacy
-// code calls pointer-returning libc functions that way, and on AArch64 heap addresses do not fit
+// code calls pointer-returning libc functions that way, and on AArch64 and Win64 heap addresses do not fit
 // 32 bits). The IR mirrors that: the call is an I64 whose TRUNC is the int value, and an
 // int -> pointer conversion of that value uses the untruncated register (convert()).
-#ifdef ARCH_ARM64
+#if defined(ARCH_ARM64) || defined(_WIN32)
 #define IR_WIDE_IMPLICIT_INT 1
 #else
 #define IR_WIDE_IMPLICIT_INT 0
@@ -1545,6 +1545,12 @@ static int gen_call(B *b, Node *n) {
             fail(b, "aggregate argument (target ABI)");
             goto fail_call;
         }
+#ifdef _WIN32 // Win64 slot = argument position (hidden return pointer first); see the callee guard in ir_build()
+        if (cls == IRAGG_PTR && k + ((n->ty && (n->ty->kind == TY_STRUCT || n->ty->kind == TY_UNION) && n->ty->size > 8) ? 1 : 0) >= 4) {
+            fail(b, "aggregate argument on the stack (target ABI)");
+            goto fail_call;
+        }
+#endif
         if (cls != IRAGG_NONE) { // aggregate: the argument is the address of the bytes
             if (unproto) {
                 fail(b, "aggregate argument to unprototyped/variadic call");
@@ -2202,6 +2208,13 @@ IRFunc *ir_build(Program *prog, Function *fn) {
                 break;
             }
             if (ir_agg_class(p->ty) != IRAGG_NONE) {
+#ifdef _WIN32 // Win64 slot = argument position; the AST callee reads a by-pointer aggregate that overflows into the stack as raw bytes
+                if (ir_agg_class(p->ty) == IRAGG_PTR && nparams + (f->ret_sret ? 1 : 0) >= 4) {
+                    fail(b, "aggregate parameter on the stack (target ABI)");
+                    ok = false;
+                    break;
+                }
+#endif
                 nparams++;
                 continue;
             }

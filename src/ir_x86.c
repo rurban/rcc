@@ -1,4 +1,4 @@
-// ir_x86.c -- register allocation, instruction selection and emission (x86-64 SysV).
+// ir_x86.c -- register allocation, instruction selection and emission (x86-64 SysV; Win64 under _WIN32).
 //
 // ir_emit_x86() runs these stages on an already built + optimized IRFunc:
 //   1. CFG prep: a call to a noreturn function ends its block (no successors,
@@ -37,8 +37,15 @@
 
 #define R_S0 X86_RAX
 #define R_S1 X86_R11
+#ifdef _WIN32
+#define X_S0 X86_XMM4
+#define X_S1 X86_XMM5
+#define SHADOW 32 // the 32-byte home area the caller reserves at [rsp, rsp+32) of every call
+#else
 #define X_S0 X86_XMM14
 #define X_S1 X86_XMM15
+#define SHADOW 0
+#endif
 
 enum { RC_G = 0,
        RC_X = 1 };
@@ -73,6 +80,24 @@ typedef struct {
     uint8_t keep; // GADDR held in a register (used in a deeper loop than its def), not rematerialized
 } VInfo;
 
+#ifdef _WIN32
+// Win64: argument position p (0-3) is rcx/rdx/r8/r9 for an integer and xmm0-3 for a float; rsi
+// is callee-saved here, so it joins rbx/r12-r15. rdi is callee-saved by the ABI (an IR function
+// that uses it saves it), but the AST backend's functions clobber it without saving, so a value
+// living across a call must not sit in rdi: it is allocatable only for call-free intervals.
+// xmm6-xmm15 are callee-saved too and the IR never touches them (xmm4/xmm5 are the scratch
+// pair, xmm0-xmm3 the allocatable set).
+static const int8_t gpr_alloc_order[] = {X86_R8, X86_R9, X86_R10, X86_RDX, X86_RCX,
+                                         X86_RSI, X86_RBX, X86_R12, X86_R13, X86_R14, X86_R15, X86_RDI};
+static const int8_t gpr_callee_order[] = {X86_RBX, X86_RSI, X86_RDI, X86_R12, X86_R13, X86_R14, X86_R15};
+static const int8_t xmm_alloc_order[] = {0, 1, 2, 3};
+static const X86Reg abi_gpr[4] = {X86_RCX, X86_RDX, X86_R8, X86_R9};
+#define MASK_CALLEE ((1u << X86_RBX) | (1u << X86_RSI) | (1u << X86_R12) | (1u << X86_R13) | \
+                     (1u << X86_R14) | (1u << X86_R15))
+#define MASK_G_ALL (MASK_CALLEE | (1u << X86_RDI) | (1u << X86_R8) | (1u << X86_R9) | (1u << X86_R10) | \
+                    (1u << X86_RCX) | (1u << X86_RDX))
+#define MASK_X_ALL 0xfu
+#else
 static const int8_t gpr_alloc_order[] = {X86_RSI, X86_RDI, X86_R8, X86_R9, X86_R10, X86_RDX,
                                          X86_RCX, X86_RBX, X86_R12, X86_R13, X86_R14, X86_R15};
 static const int8_t gpr_callee_order[] = {X86_RBX, X86_R12, X86_R13, X86_R14, X86_R15};
@@ -82,6 +107,7 @@ static const X86Reg abi_gpr[6] = {X86_RDI, X86_RSI, X86_RDX, X86_RCX, X86_R8, X8
 #define MASK_G_ALL (MASK_CALLEE | (1u << X86_RSI) | (1u << X86_RDI) | (1u << X86_R8) | (1u << X86_R9) | \
                     (1u << X86_R10) | (1u << X86_RCX) | (1u << X86_RDX))
 #define MASK_X_ALL 0x3fffu
+#endif
 
 static struct {
     IRFunc *f;
@@ -100,7 +126,7 @@ static struct {
     int ncall, *callpos; // use positions of every CALL, ascending
     int *blk[2], nblk[2]; // use positions of instructions clobbering rcx / rdx
     int nspill[2]; // spill slots per class pool
-    int ncs, cs_reg[5]; // callee-saved registers used
+    int ncs, cs_reg[7]; // callee-saved registers used
     int locals, cs_base, spill_base, outgoing, frame;
     bool frameless; // no frame pointer, locals, spills or saved registers on the hot path
     bool coldframe; // frameless, but each cold (noreturn) block builds its own frame
@@ -832,6 +858,7 @@ static bool emitted(const IRInstr *i) {
         !be.vi[i->id].dead;
 }
 
+#ifndef _WIN32
 // Callee side: walk the parameter list with the same GP / XMM / stack-slot
 // counting the caller uses (see call_arg_slot). Aggregate entries encode
 // (bytes << 3) | IRAggClass; IRAGG_PTR params are plain pointer values and
@@ -940,6 +967,54 @@ static int call_arg_slot(IRInstr *i, int k, int *ng, int *nx, int *nst, int *rg,
         return 0;
     }
 }
+#else // _WIN32
+// Win64: an argument's position (the hidden return pointer counts) picks its register and its
+// home/stack slot alike: position 0-3 is rcx/rdx/r8/r9 for an integer or pointer and xmm0-3 for
+// a float, position >= 4 is stack slot (position - 4) above the 32-byte home area. Aggregates
+// are VALUE8 (the raw bytes in the position's integer register) or PTR (the address); entries
+// encode (bytes << 3) | IRAggClass like the SysV classes.
+static void classify_params(void) {
+    IRFunc *f = be.f;
+    be.pabi = NEW(int, f->nparams + 1);
+    be.pstk = NEW(int, f->nparams + 1);
+    be.p2nd = NEW(int, f->nparams + 1);
+    be.pcls = NEW(int, f->nparams + 1);
+    be.paggoff = NEW(int, f->nparams + 1);
+    for (int k = 0; k < f->nparams; k++) {
+        int e = f->param_class ? f->param_class[k] : 0;
+        int cls = e & 7;
+        be.pcls[k] = cls;
+        be.pabi[k] = -1;
+        be.p2nd[k] = -1;
+        if (k < 4) be.pabi[k] = (!cls || cls == IRAGG_PTR) && tflt(f->param_types[k]) ? k : abi_gpr[k];
+        else
+            be.pstk[k] = 16 + 8 * k; // home area + stack arguments are contiguous above the return address
+    }
+}
+
+// Caller side: *ng is the argument position (an sret call starts at 1); *nst becomes the number
+// of stack argument slots. *rg = destination register (GP number, or xmm index for a scalar
+// float) or -1; *slot0 = stack slot index (position - 4) when placed on the stack. A
+// register-placed IRAGG_VALUE8 needs the backend to load the bytes through a staging slot
+// (the IR value is an ADDRESS), counted by the caller via the return value.
+static int call_arg_slot(IRInstr *i, int k, int *ng, int *nx, int *nst, int *rg, int *rg2,
+                         int *slot0, int *nslot) {
+    (void)nx;
+    int cls = i->arg_class ? i->arg_class[k] & 7 : 0;
+    int pos = (*ng)++;
+    *rg = -1;
+    *rg2 = -1;
+    *nslot = 0;
+    *slot0 = pos >= 4 ? pos - 4 : *nst;
+    if (pos < 4) {
+        *rg = !cls && tflt(V(i->args[k])->type) ? pos : abi_gpr[pos];
+        return cls == IRAGG_VALUE8 ? 1 : 0;
+    }
+    *nslot = 1;
+    *nst = pos - 3;
+    return 0;
+}
+#endif
 
 static inline void bs_set(uint64_t *b, int i) { b[i >> 6] |= 1ull << (i & 63); }
 static inline bool bs_get(const uint64_t *b, int i) { return (b[i >> 6] >> (i & 63)) & 1; }
@@ -1550,7 +1625,11 @@ static void got_rip(X86Reg r, const char *label) {
     RipSave sv = rip_save();
     size_t off = S->len;
     X86Mem m = {X86_RIP, X86_NOREG, 1, 0, 0};
+#ifdef _WIN32 // no GOT on COFF: a weak external resolves to the address itself (see asm_mov_got_rip_reg)
+    x86_lea(S, 8, r, m);
+#else
     x86_mov_rm(S, 8, r, m);
+#endif
     int sidx = objfile_find_sym(cg_obj, label);
     if (sidx < 0) sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
     objfile_add_reloc(cg_obj, SEC_TEXT, off + 3, sidx, R_X86_64_GOTPCREL, -4);
@@ -2499,7 +2578,7 @@ static void emit_call(IRInstr *c) {
             if (prg[k] >= 0) {
                 mv[nm++] = (Mv){pl_reg(tflt(t) ? RC_X : RC_G, prg[k]), pl_of(a), t};
             } else {
-                X86Mem m = x86_mem(X86_RSP, 8 * pslot[k]);
+                X86Mem m = x86_mem(X86_RSP, SHADOW + 8 * pslot[k]);
                 int64_t imm;
                 if (tflt(t)) {
                     st_x(t, m, use_x(a, X_S0));
@@ -2516,10 +2595,10 @@ static void emit_call(IRInstr *c) {
             int w = szb <= 4 ? 4 : 8;
             x86_mov_rm(S, w, R_S1, x86_mem(ar, 0));
             if (prg[k] >= 0) {
-                x86_mov_mr(S, 8, x86_mem(X86_RSP, 8 * (stbase + stage)), R_S1);
+                x86_mov_mr(S, 8, x86_mem(X86_RSP, SHADOW + 8 * (stbase + stage)), R_S1);
                 stage++;
             } else {
-                x86_mov_mr(S, w, x86_mem(X86_RSP, 8 * pslot[k]), R_S1);
+                x86_mov_mr(S, w, x86_mem(X86_RSP, SHADOW + 8 * pslot[k]), R_S1);
             }
         } else { // VALUE16 (2 slots) or MEMORY ((szb+7)/8 slots); the tail slot
             // loads only the remaining bytes (chunk <= 4 ? 4 : 8), like the AST
@@ -2531,7 +2610,7 @@ static void emit_call(IRInstr *c) {
                 int chunk = szb - 8 * j;
                 int ld = chunk <= 4 ? 4 : 8;
                 x86_mov_rm(S, ld, R_S1, x86_mem(ar, 8 * j));
-                x86_mov_mr(S, 8, x86_mem(X86_RSP, 8 * (base + j)), R_S1);
+                x86_mov_mr(S, 8, x86_mem(X86_RSP, SHADOW + 8 * (base + j)), R_S1);
             }
         }
     }
@@ -2539,10 +2618,10 @@ static void emit_call(IRInstr *c) {
     // a pm temporary.
     if (!c->sym) mv[nm++] = (Mv){pl_reg(RC_G, X86_R10), pl_of(c->a), IRT_I64};
     pm_run(mv, nm);
-    // sret: the result temp address is the hidden first argument. rdi is never
-    // a pm destination here (the walks above start GP counting at 1) and no
-    // interval is live in rdi across the call (caller-saved).
-    if (c->ret_agg < 0) x86_lea(S, 8, X86_RDI, off_mem(be.ctemp[c->id]));
+    // sret: the result temp address is the hidden first argument. Its register is never a pm
+    // destination here (the walks above start the argument position at 1) and no interval is
+    // live in it across the call (caller-saved).
+    if (c->ret_agg < 0) x86_lea(S, 8, abi_gpr[0], off_mem(be.ctemp[c->id]));
     // Register-placed aggregates were staged in the outgoing area; load them
     // into their ABI registers now that pm_run has freed them.
     stage = 0;
@@ -2551,15 +2630,30 @@ static void emit_call(IRInstr *c) {
         if (cls == IRAGG_VALUE8 && prg[k] >= 0) {
             int e = c->arg_class[k];
             int w = (e >> 3) <= 4 ? 4 : 8;
-            x86_mov_rm(S, w, (X86Reg)prg[k], x86_mem(X86_RSP, 8 * (stbase + stage)));
+            x86_mov_rm(S, w, (X86Reg)prg[k], x86_mem(X86_RSP, SHADOW + 8 * (stbase + stage)));
             stage++;
         } else if (cls == IRAGG_VALUE16 && prg[k] >= 0) {
-            x86_mov_rm(S, 8, (X86Reg)prg[k], x86_mem(X86_RSP, 8 * (stbase + stage)));
-            x86_mov_rm(S, 8, (X86Reg)prg2[k], x86_mem(X86_RSP, 8 * (stbase + stage + 1)));
+            x86_mov_rm(S, 8, (X86Reg)prg[k], x86_mem(X86_RSP, SHADOW + 8 * (stbase + stage)));
+            x86_mov_rm(S, 8, (X86Reg)prg2[k], x86_mem(X86_RSP, SHADOW + 8 * (stbase + stage + 1)));
             stage += 2;
         }
     }
+#ifdef _WIN32
+    // A variadic / unprototyped callee reads floats from the integer register of the same
+    // position: duplicate every register-placed float into it. The AST variadic prologue also
+    // expects the caller to have stored the register arguments in the home area (its va_list
+    // starts there), so spill positions 0-3 (the hidden return pointer included) as well.
+    if (c->variadic) {
+        for (int k = 0; k < c->nargs; k++) {
+            int cls = c->arg_class ? c->arg_class[k] & 7 : 0;
+            if (!cls && prg[k] >= 0 && tflt(V(c->args[k])->type)) x86_movq_xmm_r(S, abi_gpr[prg[k]], (X86XmmReg)prg[k]);
+        }
+        int npos = c->nargs + (c->ret_agg < 0 ? 1 : 0);
+        for (int p = 0; p < npos && p < 4; p++) x86_mov_mr(S, 8, x86_mem(X86_RSP, 8 * p), abi_gpr[p]);
+    }
+#else
     if (c->variadic) x86_mov_ri(S, 4, R_S0, nx);
+#endif
     if (c->sym) cg_ir_call(c->sym);
     else
         x86_call_r(S, X86_R10);
@@ -2888,7 +2982,7 @@ static void frame_layout(void) {
                 int rg, rg2, slot0, nsl;
                 stage += call_arg_slot(i, a, &ng, &nx, &nst, &rg, &rg2, &slot0, &nsl);
             }
-            if (8 * (nst + stage) > be.outgoing) be.outgoing = 8 * (nst + stage);
+            if (SHADOW + 8 * (nst + stage) > be.outgoing) be.outgoing = SHADOW + 8 * (nst + stage);
         }
     }
     int total = be.spill_base + 8 * nslots + be.outgoing;
@@ -2924,7 +3018,13 @@ static void frame_layout(void) {
             if ((i->op == IR_LOAD || i->op == IR_STORE) && i->aux == 1 && emitted(i)) be.frameless = false;
         }
     }
+#ifdef _WIN32
+    // The unwind info describes one prologue at the function entry: no cold-block frames.
+    if (be.frameless && cold_call) be.frameless = false;
+    be.coldframe = false;
+#else
     be.coldframe = be.frameless && cold_call;
+#endif
 }
 
 // Frame setup at the start of a cold block when the hot path is frameless: rsp
@@ -2935,14 +3035,41 @@ static void emit_cold_prologue(void) {
     if (be.frame) x86_sub_ri(S, 8, X86_RSP, be.frame);
 }
 
+// Allocate the frame: a Win64 frame of a page or more is probed page by page (___chkstk_ms,
+// like the AST prologue) so a single `sub rsp` cannot jump over the guard page.
+static void alloc_frame(void) {
+#ifdef _WIN32
+    if (be.frame >= 4096) {
+        x86_mov_ri(S, 4, X86_RAX, be.frame);
+        cg_ir_call("___chkstk_ms");
+        x86_sub_rr(S, 8, X86_RSP, X86_RAX);
+        return;
+    }
+#endif
+    if (be.frame) x86_sub_ri(S, 8, X86_RSP, be.frame);
+}
+
 static void emit_prologue(void) {
     IRFunc *f = be.f;
     if (!be.frameless) {
         x86_push(S, X86_RBP);
+#ifdef _WIN32
+        cg_ir_uw_pushreg(X86_RBP);
+#endif
         x86_mov_rr(S, 8, X86_RBP, X86_RSP);
-        if (be.frame) x86_sub_ri(S, 8, X86_RSP, be.frame);
-        for (int k = 0; k < be.ncs; k++) x86_mov_mr(S, 8, off_mem(be.cs_base + 8 * (k + 1)), be.cs_reg[k]);
+#ifdef _WIN32
+        cg_ir_uw_setframe(X86_RBP);
+#endif
+        alloc_frame();
+#ifdef _WIN32
+        if (be.frame) cg_ir_uw_stackalloc(be.frame);
+#endif
     }
+#ifdef _WIN32
+    cg_ir_uw_endprologue(); // a frameless leaf has no unwind codes: the entry covers a bare `ret` frame
+#endif
+    if (!be.frameless)
+        for (int k = 0; k < be.ncs; k++) x86_mov_mr(S, 8, off_mem(be.cs_base + 8 * (k + 1)), be.cs_reg[k]);
     IRBlock *entry = f->blocks[0];
     // Materialize aggregate params (VALUE8 / VALUE16 / MEMORY) into their
     // frame temps; the PARAM value rematerializes as the temp address.

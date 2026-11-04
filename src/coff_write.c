@@ -323,8 +323,19 @@ static void patch_addends(uint8_t *buf, size_t len,
                           ObjReloc *relocs, int reloc_count) {
     for (int i = 0; i < reloc_count; i++) {
         ObjReloc *r = &relocs[i];
-        // Skip PC-relative relocations: the in-place addend is 0 (placeholder)
-        // and the linker will compute the correct displacement.
+        // PC-relative relocations: IMAGE_REL_AMD64_REL32 is S + inplace - (P + 4), the ELF
+        // S + A - P with the usual A = -4 means an in-place addend of 0 (the linker computes the
+        // displacement). A different addend -- a symbol offset, or an instruction with an
+        // immediate after the rip-relative operand (A = off - 4 - trail) -- goes in place as
+        // A + 4.
+        if (r->type == R_X86_64_PC32 && r->addend != -4) {
+            uint64_t off = r->offset;
+            if (off + 4 <= len) {
+                uint32_t v = (uint32_t)(int32_t)(r->addend + 4);
+                memcpy(buf + off, &v, 4);
+            }
+            continue;
+        }
         if (r->type == R_X86_64_PC32 || r->type == R_X86_64_PLT32 ||
             r->type == R_X86_64_GOTPCREL || r->type == R_X86_64_PC64 ||
             r->type == R_AARCH64_CALL26 || r->type == R_AARCH64_JUMP26 ||

@@ -6191,10 +6191,12 @@ static void emit_emutls_addr(VReg dst, const char *label) {
 
     x86_sub_ri(cg_sec, 8, X86_RSP, 32);
     size_t call_off = asm_call_label(cg_sec);
-    int sidx = objfile_find_sym(cg_obj, "__emutls_get_address");
-    if (sidx < 0)
-        sidx = objfile_add_sym(cg_obj, "__emutls_get_address", SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
-    objfile_add_reloc(cg_obj, SEC_TEXT, call_off + 1, sidx, R_X86_64_PC32, -4);
+    if (!cg_dry_run) { // pass 1 emits into a scratch buffer: its offsets are not .text offsets
+        int sidx = objfile_find_sym(cg_obj, "__emutls_get_address");
+        if (sidx < 0)
+            sidx = objfile_add_sym(cg_obj, "__emutls_get_address", SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
+        objfile_add_reloc(cg_obj, SEC_TEXT, call_off + 1, sidx, R_X86_64_PC32, -4);
+    }
     x86_add_ri(cg_sec, 8, X86_RSP, 32);
 
     x86_mov_rr(cg_sec, 8, REG(dst), X86_RAX);
@@ -19851,11 +19853,18 @@ size_t cg_ir_begin_fn(Program *prog, Function *fn, bool emitting_local_copy, con
     cg_label_ht_reset();
     cg_branch_sites_reset();
     asm_fixup_ht_reset();
-    return cg_begin_fn_symbol(prog, fn, emitting_local_copy, sym_out);
+    size_t start = cg_begin_fn_symbol(prog, fn, emitting_local_copy, sym_out);
+#ifdef _WIN32
+    uw_begin(); // .seh_proc
+#endif
+    return start;
 }
 void cg_ir_end_fn(const char *sym, size_t start_off) {
     cg_patch_fn_size(sym, start_off);
     cg_thread_jumps(cg_sec);
+#ifdef _WIN32
+    uw_endproc(); // .seh_endproc
+#endif
 }
 size_t cg_ir_jcc(int cond, const char *label) { return emit_jcc_fixup(cg_sec, cond, label); }
 void cg_ir_jmp(const char *label) { emit_jmp_fixup(cg_sec, label); }
@@ -19874,6 +19883,14 @@ int cg_ir_global_access(LVar *v) {
     if (v->is_weak) cg_weak_declare(asm_sym_name(var_sym_label(v)));
     return (v->is_weak || var_needs_got(v) || (v->is_function && v->is_extern)) ? 1 : 0;
 }
+#ifdef _WIN32
+// Win64 SEH unwind recording for IR-emitted functions (cg_ir.h): the same entries the AST
+// prologue records, so coff_write emits .pdata/.xdata for them too.
+void cg_ir_uw_pushreg(int reg) { uw_pushreg(reg); }
+void cg_ir_uw_setframe(int reg) { uw_set_fpreg(reg); }
+void cg_ir_uw_stackalloc(int size) { uw_stackalloc(size); }
+void cg_ir_uw_endprologue(void) { uw_endprologue(); }
+#endif
 
 #ifdef ARCH_ARM64
 // ObjFile symbol index for an assembler-level label, created undefined/global (or local rodata for
@@ -19948,7 +19965,6 @@ int cg_ir_arm64_hfa(Type *ty, int *elem_size) { return arm64_hfa_count(ty, elem_
 
 // ---- per-TU IR cache: every eligible function is built once, up front, so
 // callers can inline callees defined later in the file. ----
-#if !defined(_WIN32)
 static IRFunc **ir_cache;
 static int ir_cache_n;
 static bool ir_cache_ready;
@@ -20003,16 +20019,9 @@ static IRFunc *cg_ir_take(Function *fn) {
     }
     return NULL;
 }
-#endif
 
-// Try to compile `fn` through the SSA IR (-O2+, x86-64 SysV only).
+// Try to compile `fn` through the SSA IR (-O2+, x86-64 SysV / Win64, AArch64).
 bool cg_ir_try_function(Program *prog, Function *fn, bool emitting_local_copy) {
-#if defined(_WIN32)
-    (void)prog;
-    (void)fn;
-    (void)emitting_local_copy;
-    return false;
-#else
     // Nested functions reach their parent's locals through its frame (static
     // chain): a parent's scalars must stay in memory, which the IR cannot see.
     if (opt_fno_ir || opt_O < 2 || cg_has_nested_fns) return false;
@@ -20044,7 +20053,6 @@ bool cg_ir_try_function(Program *prog, Function *fn, bool emitting_local_copy) {
     ir_emit_x86(prog, f, emitting_local_copy);
     ir_func_free(f);
     return true;
-#endif
 #endif
 }
 
@@ -22747,8 +22755,6 @@ struct ObjFile *codegen(Program *prog) {
         fprintf(stderr, "  pass1       %-20s: %6llu us\n", "(dry-run, cumulative)",
                 (unsigned long long)dbg_pass1_us);
 #endif
-#if !defined(_WIN32)
     cg_ir_cache_free();
-#endif
     return cg_obj;
 }

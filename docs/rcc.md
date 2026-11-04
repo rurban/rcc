@@ -505,7 +505,7 @@ regardless of `-O` level (see the table below).
 
 #### `-O2` and up: the SSA IR backend (`src/ir_*.c`)
 
-On x86-64 ELF and AArch64 ELF/Darwin targets, `-O2`/`-O3` compile
+On x86-64 ELF, x86-64 Windows (COFF) and AArch64 ELF/Darwin targets, `-O2`/`-O3` compile
 every eligible function through a self-contained SSA IR instead of the
 AST code generator:
 
