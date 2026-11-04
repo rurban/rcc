@@ -24,8 +24,8 @@
   - loops test at the top plus a back jmp; ?: and if materialize setcc+movzx+cmp.
   - oversized frames for leaf functions, scalar returns round-trip the stack,
     "mov $0,%eax" before non-variadic calls.
-  - the -O3 ssa_rename_pass renames then un-renames: no pass consumes SSA, so
-    -O3 == -O2. CSE is a tiny ring buffer; ssa_unroll is disabled.
+  - -O3 == -O2 (the AST SSA rename pass is gone). CSE is a tiny ring buffer;
+    ssa_unroll is disabled.
   - inliner only takes single-return-expression callees.
 
   Plan: Do not add more special cases to the
@@ -38,8 +38,6 @@
     eligible: VLA, asm, complex, int128/bitint/decimal/vector, setjmp, cleanup,
     nested fns, computed goto.
   - x86-64 first, then ARM64 (ir_arm64.c) and Windows/COFF (Win64 in ir_x86.c).
-  - Retire the dead AST CFG/dom/DF/phi code and the no-op -O3 rename pass once
-    the IR consumes SSA.
 
   Steps:
   3. MOSTLY DONE: IR inliner (small same-TU callees without frame slots,
