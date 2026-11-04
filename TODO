@@ -95,12 +95,14 @@
         fully (stores die, slot gone); pointer/global accumulators lose the
         reload but keep the store (no TBAA: any unknown store/call kills).
         Measured 3661 -> 3588 post-opt loads over test_*.c + AWFY (-2.0%).
-     d. Pointer-increment strength reduction for non-widenable products
-        (mm's k*n: I32 product indexed, cannot prove no-wrap) - needs
-        wrap-exactness reasoning the IV prover doesn't do yet.
-     e. Exit-edge splitting for iv_widen: a live-out IV value costs a
-        per-iteration trunc today and blocks otherwise-legal widenings;
-        splitting the exit edge would move that cost out of the loop.
+     d. DONE (iv_strength): an I32 IV times a loop-invariant multiplier
+        becomes an exact I32 add-recurrence t += m*K (exact mod 2^32, so no
+        range proof); `x + j` folds into the start value. mm inner loop
+        12 -> 10 instrs (function 49 -> 39). Constant multipliers are
+        skipped (frame growth in many_globals), cap 4 recurrences per loop
+        (ir_opt twice is then not idempotent for >4 candidates).
+     e. NOT NEEDED so far: exit-edge splitting for iv_widen - no loop in
+        test_*.c, bench.c or AWFY has an I32 IV used in an exit phi.
      f. DONE (ret_into_rax, LK_RAX): a single-use value whose def is the
         last emitted instruction before its RET is produced directly in rax
         (BasicBlock_hash lost its `mov eax,esi`; call results and rem
@@ -152,7 +154,14 @@
         accesses). ~26 sites in ir_opt.c plus the backend; real payoff is
         MMIO/flag-polling code and benchmarks with volatile sinks. Torture
         has many volatile tests, which would exercise it well.
-     c. Bitfields: shift/mask chains in the builder (~22).
+     c. DONE (bitfields in ir_build.c): shift/mask chains over the AST
+        codegen's storage unit; rejects volatile, _BitInt/__int128, >64-bit
+        spans and units beyond a packed struct. Intentional deviations (match
+        gcc, not the AST codegen): _Bool fields normalize on store, enum
+        fields are signed when the enum is. 22 rejected functions -> 6 built
+        (9 volatile bitfield, 7 other). Pre-existing layout bugs left alone:
+        ms_struct with anonymous/zero-width members; 33..63-bit unsigned
+        64-bit fields compare unsigned where gcc compares signed.
      d. long double/_Complex via the x87/AST fallback stays (by design);
         inline asm stays a whole-function fallback.
   3.3 REJECTED (recorded so it isn't re-litigated): UB-based IV widening

@@ -319,6 +319,8 @@ void ir_tailrec(IRFunc *f);
 // conditional edges proves the increment cannot wrap) into an I64 phi, removing
 // per-iteration sign extensions, and folds the scaled variant (sext(i) * C with
 // a stride C the addressing modes cannot absorb) into a pointer-style IV;
+// iv_strength replaces an I32 `iv * m` (m loop-invariant, `+ j` folded in) by an I32
+// add recurrence, exact modulo 2^32 without any range fact;
 // hoist_loads moves a loop-invariant load into the preheader when no store in the
 // loop may alias it, the loop has no call or trapping divide, and the load's
 // block dominates every exit; licm hoists invariant pure instrs into (created)

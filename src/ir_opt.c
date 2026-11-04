@@ -3040,6 +3040,7 @@ static bool sroa(IRFunc *f) {
 //   loop_rotate   guard + do-while: the header's exit test is copied into the
 //                 preheader (the guard) and re-evaluated at the bottom of the loop
 //   iv_widen      i32 induction variables that index memory become i64 phis
+//   iv_strength   i32 `iv * invariant (+ invariant)` becomes an exact i32 add recurrence
 //   hoist_loads   loop-invariant loads that no store in the loop can overwrite
 //
 // They run after the scalar fixpoint, on loops from find_loops(); each pass that
@@ -3296,26 +3297,35 @@ static int64_t sext_scale(IRFunc *f, const WUse *us, int nus, WUse **mu, int *nm
     return C;
 }
 
-static bool widen_iv(IRFunc *f, const Dom *d, const Loop *L, IRInstr *p, unsigned char *touched) {
-    IRBlock *H = L->header, *P = L->pre;
-    int pi = pred_index(H, P);
+// Header phi p = phi(init, q) with q = p + K on every back edge (K a nonzero constant,
+// q computed in the loop). pi is the preheader's slot in the phi.
+static bool iv_shape(IRFunc *f, const Loop *L, const IRInstr *p, int pi, int *init, int *q, int64_t *K) {
     if (pi < 0 || p->type != IRT_I32) return false;
-    int init = p->args[pi], q = IR_NONE;
-    int64_t K = 0;
-    for (int k = 0; k < H->npreds; k++) {
+    *init = p->args[pi];
+    *q = IR_NONE;
+    *K = 0;
+    for (int k = 0; k < L->header->npreds; k++) {
         if (k == pi) continue;
         IRInstr *s = V(f, p->args[k]);
         if ((s->op != IR_ADD && s->op != IR_SUB) || s->a != p->id || V(f, s->b)->op != IR_ICONST) return false;
         if (!L->in[s->blk->id]) return false;
         int64_t c = s->op == IR_ADD ? V(f, s->b)->imm : -V(f, s->b)->imm;
-        if (q == IR_NONE) {
-            q = s->id;
-            K = c;
-        } else if (q != s->id) {
+        if (*q == IR_NONE) {
+            *q = s->id;
+            *K = c;
+        } else if (*q != s->id) {
             return false;
         }
     }
-    if (q == IR_NONE || K == 0) return false;
+    return *q != IR_NONE && *K != 0;
+}
+
+static bool widen_iv(IRFunc *f, const Dom *d, const Loop *L, IRInstr *p, unsigned char *touched) {
+    IRBlock *H = L->header, *P = L->pre;
+    int pi = pred_index(H, P);
+    int init, q;
+    int64_t K;
+    if (!iv_shape(f, L, p, pi, &init, &q, &K)) return false;
     IRInstr *qi = V(f, q);
     Rng pr = rng_val(f, d, p->id, qi->blk->id, 2);
     if (K > 0 ? pr.hi + K > INT32_MAX : pr.lo + K < INT32_MIN) return false;
@@ -3552,6 +3562,192 @@ static bool iv_widen(IRFunc *f) {
     }
     free(touched);
     dom_free(&d);
+    free_loops(loops, nl);
+    return changed;
+}
+
+// --------------------------------------------- I32 multiply strength reduction
+//
+// p = phi(init, q), q = p + K (K constant), x = p * m with m loop-invariant: the I32
+// recurrence t = phi(init * m, t + m*K) equals p * m (and t + m*K equals q * m) modulo
+// 2^32 by construction, since both are the same polynomial over Z/2^32. Unlike iv_widen
+// that needs no range fact: wrapping products (INT_MIN, negative or zero m, an IV that
+// walks past INT_MAX) stay bit-exact. A single-use `x + j` with invariant j folds j into
+// the start value, so the `b[k*n + j]` index costs one add per iteration instead of
+// imul + add. The sign extension that consumes the sum stays: the narrow value may wrap.
+// Constant multipliers 0 and +-2^k are left alone (shifts and lea are as cheap as the add),
+// and a plain product by any constant is too (only the fold with `+ j` saves an instr);
+// each recurrence holds a register, hence the cap per loop.
+
+#define SR_MAX_PER_LOOP 4
+
+typedef struct {
+    int phi, next; // t at the top of the iteration (== p * m + j) and after the step (== q * m + j)
+} SrPair;
+
+static bool sr_inv(IRFunc *f, const Loop *L, int v) {
+    const IRInstr *i = V(f, v);
+    return i->op == IR_ICONST || !L->in[i->blk->id];
+}
+
+// v as available at the end of the preheader: constants may be defined inside the loop,
+// so they are re-materialized there; any other loop-invariant value dominates it already.
+static int sr_val(IRFunc *f, IRBlock *P, int v) {
+    const IRInstr *i = V(f, v);
+    if (i->op != IR_ICONST) return v;
+    IRInstr *c = new_iconst(f, IRT_I32, i->imm);
+    put_before_term(P, c);
+    return c->id;
+}
+
+static int sr_emit(IRFunc *f, IRBlock *P, IROp op, int a, int b) {
+    IRInstr *n = new_instr(f, op, IRT_I32, a, b);
+    put_before_term(P, n);
+    return n->id;
+}
+
+static SrPair sr_make(IRFunc *f, const Loop *L, const IRInstr *p, int pi, IRInstr *qi, int64_t K, int m, int j) {
+    IRBlock *H = L->header, *P = L->pre;
+    int m0 = sr_val(f, P, m);
+    int start = sr_emit(f, P, IR_MUL, p->args[pi], m0);
+    if (j != IR_NONE) start = sr_emit(f, P, IR_ADD, start, sr_val(f, P, j));
+    int step = m0;
+    if (K != 1) {
+        IRInstr *kc = new_iconst(f, IRT_I32, wrap(IRT_I32, (uint64_t)K));
+        put_before_term(P, kc);
+        step = sr_emit(f, P, IR_MUL, m0, kc->id);
+    }
+    IRInstr *t = ir_instr_new(f, IR_PHI, IRT_I32);
+    t->aux = IR_NONE;
+    t->nargs = H->npreds;
+    t->args = xcalloc((size_t)H->npreds, sizeof(int32_t));
+    IRInstr *nx = new_instr(f, IR_ADD, IRT_I32, t->id, step);
+    put_before(qi->blk, qi, nx); // q's position: every use of q * m is dominated by it
+    for (int k = 0; k < H->npreds; k++) t->args[k] = k == pi ? start : nx->id;
+    ir_block_add_phi(H, t);
+    return (SrPair){t->id, nx->id};
+}
+
+static int sr_users(IRFunc *f, int v, IRInstr **only) {
+    int n = 0;
+    for (int bi = 0; bi < f->nblocks; bi++) {
+        IRBlock *b = f->blocks[bi];
+        for (int k = 0; k < b->nphis + b->nins; k++) {
+            IRInstr *u = k < b->nphis ? b->phis[k] : b->ins[k - b->nphis];
+            int nsl = 3 + u->nargs;
+            for (int slot = 0; slot < nsl; slot++)
+                if (*use_slot(u, slot) == v) {
+                    n++;
+                    *only = u;
+                }
+        }
+    }
+    return n;
+}
+
+// Splits an in-loop I32 multiply of IV value src (p or q) by an invariant m. False if x is not
+// one or the multiplier is not worth a recurrence.
+static bool sr_split(IRFunc *f, const Loop *L, const IRInstr *x, int pid, int q, int *src, int *m) {
+    if (x->op != IR_MUL || x->type != IRT_I32) return false;
+    *src = x->a;
+    *m = x->b;
+    if (*src != pid && *src != q) {
+        *src = x->b;
+        *m = x->a;
+    }
+    if ((*src != pid && *src != q) || *m == pid || *m == q || !sr_inv(f, L, *m)) return false;
+    const IRInstr *mi = V(f, *m);
+    return mi->op != IR_ICONST || (mi->imm != 0 && !is_pow2(mi->imm < 0 ? -(uint64_t)mi->imm : (uint64_t)mi->imm));
+}
+
+// Rewrites one candidate of L (the first found; folding candidates before plain products).
+static bool sr_loop_one(IRFunc *f, const Loop *L, unsigned char *touched) {
+    IRBlock *H = L->header;
+    int pi = pred_index(H, L->pre), np = H->nphis;
+    for (int pass = 0; pass < 2; pass++) {
+        for (int pk = 0; pk < np; pk++) {
+            IRInstr *p = H->phis[pk];
+            int init, q;
+            int64_t K;
+            if (!iv_shape(f, L, p, pi, &init, &q, &K)) continue;
+            IRInstr *qi = V(f, q);
+            for (int bi = 0; bi < f->nblocks; bi++) {
+                if (!L->in[bi]) continue;
+                IRBlock *b = f->blocks[bi];
+                for (int k = 0; k < b->nins; k++) {
+                    IRInstr *x = b->ins[k];
+                    int src, m;
+                    if (!sr_split(f, L, x, p->id, q, &src, &m)) continue;
+                    IRInstr *u = NULL;
+                    int j = IR_NONE;
+                    if (sr_users(f, x->id, &u) == 1 && u->op == IR_ADD && u->type == IRT_I32 && L->in[u->blk->id]) {
+                        int o = u->a == x->id ? u->b : u->a;
+                        if (sr_inv(f, L, o)) j = o;
+                    }
+                    if (pass == 0 && j == IR_NONE) continue;
+                    // A plain product by a constant costs one imul/lea/shl with an immediate, no
+                    // more than the add that would replace it, and the recurrence holds a register.
+                    if (pass == 1 && (j != IR_NONE || V(f, m)->op == IR_ICONST)) continue;
+                    SrPair t = sr_make(f, L, p, pi, qi, K, m, j);
+                    if (j != IR_NONE) { // x + j is the recurrence itself
+                        fwd_set(f, u->id, src == p->id ? t.phi : t.next);
+                        touched[u->blk->id] = touched[x->blk->id] = 1;
+                        kill(u);
+                        kill(x);
+                        return true;
+                    }
+                    // Plain products: every product of p or q by this multiplier shares the pair.
+                    for (int bj = 0; bj < f->nblocks; bj++) {
+                        if (!L->in[bj]) continue;
+                        IRBlock *c = f->blocks[bj];
+                        for (int kj = 0; kj < c->nins; kj++) {
+                            IRInstr *y = c->ins[kj];
+                            int s2, m2;
+                            if (!sr_split(f, L, y, p->id, q, &s2, &m2)) continue;
+                            if (m2 != m) continue;
+                            fwd_set(f, y->id, s2 == p->id ? t.phi : t.next);
+                            touched[bj] = 1;
+                            kill(y);
+                        }
+                    }
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+static bool iv_strength(IRFunc *f) {
+    int nl;
+    Loop *loops = find_loops(f, &nl);
+    bool any = false;
+    for (int li = 0; li < nl && !any; li++)
+        for (int bi = 0; bi < f->nblocks && !any; bi++) {
+            if (!loops[li].in[bi]) continue;
+            for (int k = 0; k < f->blocks[bi]->nins && !any; k++) {
+                const IRInstr *i = f->blocks[bi]->ins[k];
+                any = i->op == IR_MUL && i->type == IRT_I32;
+            }
+        }
+    if (!any) {
+        free_loops(loops, nl);
+        return false;
+    }
+    ensure_preheaders(f, loops, nl);
+    fwd_reset(f);
+    unsigned char *touched = xcalloc((size_t)f->nblocks, 1);
+    bool changed = false;
+    for (int li = 0; li < nl; li++) {
+        for (int n = 0; n < SR_MAX_PER_LOOP && sr_loop_one(f, &loops[li], touched); n++) {
+            fwd_apply(f); // later candidates must not see operands that name the products just removed
+            for (int bi = 0; bi < f->nblocks; bi++)
+                if (touched[bi]) compact_block(f->blocks[bi]);
+            memset(touched, 0, (size_t)f->nblocks);
+            changed = true;
+        }
+    }
+    free(touched);
     free_loops(loops, nl);
     return changed;
 }
@@ -3932,5 +4128,12 @@ void ir_opt(IRFunc *f) {
         hoisted = true;
     }
     if (hoisted) gvn(f);
+    // Multipliers and offsets are loop-invariant only once licm has moved them out, hence
+    // after it. The products are gone afterwards, which can make an IV that used to be
+    // blocked by them profitable to widen.
+    if (iv_strength(f)) {
+        scalar_opts(f);
+        if (iv_widen(f)) scalar_opts(f);
+    }
     ir_analyze_loops(f);
 }
