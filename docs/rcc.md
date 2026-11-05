@@ -663,18 +663,19 @@ check. Never runs below `-O3`.
 
 ### Debugging and diagnostic output
 
-| Option                                      | Meaning                                                                                                  |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `-g`, `-g1`, `-g2`, `-g3`, `-ggdb[1\|2\|3]` | Emit DWARF line-number debug info (line/function mapping only — no variable locations or type info yet). |
-| `-g0`                                       | Disable debug info (default).                                                                            |
-| `-time`                                     | Print per-substage wall-clock timing (preprocess/parse/typecheck/opt/codegen/link) to stderr.            |
-| `-v`                                        | Be more verbose (echo assembler/linker invocations; with `-W` also enables dead-code notices).           |
-| `-fdump-ast`                                | Dump the parsed AST to stderr.                                                                           |
-| `-print-search-dirs`                        | Print install/include/library search paths, then exit.                                                   |
-| `-dumpmachine`                              | Print the target triple, then exit.                                                                      |
-| `-dumpversion`                              | Print a GCC-compatible version string, then exit.                                                        |
-| `--help`                                    | Print the built-in option summary, then exit.                                                            |
-| `--version`                                 | Print rcc's version and target triple, then exit.                                                        |
+| Option                                      | Meaning                                                                                                      |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `-g`, `-g1`, `-g2`, `-g3`, `-ggdb[1\|2\|3]` | Emit DWARF line-number debug info (line/function mapping only — no variable locations or type info yet).     |
+| `-g0`                                       | Disable debug info (default).                                                                                |
+| `-time`                                     | Print per-substage wall-clock timing (preprocess/parse/typecheck/opt/codegen/link) to stderr.                |
+| `-save-temps`                               | Keep the per-file objects of a compile+link as `<name>.o` in the current directory instead of deleting them. |
+| `-v`                                        | Be more verbose (echo assembler/linker invocations; with `-W` also enables dead-code notices).               |
+| `-fdump-ast`                                | Dump the parsed AST to stderr.                                                                               |
+| `-print-search-dirs`                        | Print install/include/library search paths, then exit.                                                       |
+| `-dumpmachine`                              | Print the target triple, then exit.                                                                          |
+| `-dumpversion`                              | Print a GCC-compatible version string, then exit.                                                            |
+| `--help`                                    | Print the built-in option summary, then exit.                                                                |
+| `--version`                                 | Print rcc's version and target triple, then exit.                                                            |
 
 ### Code generation and ABI
 
@@ -1035,10 +1036,9 @@ conformance macros), plus rcc-specific macros:
 
 ## Environment variables
 
-| Variable        | Effect                                                                                                 |
-| --------------- | ------------------------------------------------------------------------------------------------------ |
-| `RCC_KEEP_TMP`  | If set, keep temporary per-file object files instead of deleting them after a multi-file compile+link. |
-| `RCC_ASM_DEBUG` | If set, dump the generated assembly text for every function to stderr as it is emitted.                |
+| Variable        | Effect                                                                                  |
+| --------------- | --------------------------------------------------------------------------------------- |
+| `RCC_ASM_DEBUG` | If set, dump the generated assembly text for every function to stderr as it is emitted. |
 
 ## ABI and target notes
 

@@ -370,6 +370,15 @@ Disable debug info generation (default).
 Print wall-clock timing for each compilation substage (preprocess,
 parse, typecheck, optimize, codegen, link) to stderr.
 
+=item B<-save-temps>
+
+Keep the per-file object files that a multi-file compile+link creates.
+Without it they are named F<rcc_tmp_PID_N_NAME.o>, placed in the current
+directory and deleted once the link finishes; with it they are named
+F<NAME.o> (also in the current directory) and kept. B<-save-temps=cwd> is
+accepted as a synonym. Preprocessed and assembly output are not saved:
+use B<-E> and B<-S> for those. Has no effect with B<-c> or B<-S>.
+
 =item B<-v>
 
 Be more verbose (echoes assembler/linker invocations; combined with
@@ -812,12 +821,6 @@ mathematical notation using Greek identifiers alongside Latin ones).
 =head1 ENVIRONMENT
 
 =over 4
-
-=item B<RCC_KEEP_TMP>
-
-If set, do not delete the temporary object files rcc creates for
-multi-file compile+link invocations (useful for debugging codegen/link
-failures).
 
 =item B<RCC_ASM_DEBUG>
 

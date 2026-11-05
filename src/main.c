@@ -298,6 +298,7 @@ void help(void) {
            "-fsanitize=<list>   enable sanitizers (comma list): address, undefined\n"
            "-fstack-protector   insert stack-smashing canary (-strong/-all accepted)\n"
            "-time               print timing for each compilation substep\n"
+           "-save-temps         keep the per-file object files of a link as <name>.o\n"
            "-v                  be more verbose\n"
            "-xc                 treat next input as C\n"
            "-x none             reset language input\n"
@@ -400,6 +401,7 @@ bool opt_time = false;
 bool opt_defer_ts = false;
 bool opt_stack_protector = false;
 bool opt_v = false;
+bool opt_save_temps = false;
 bool opt_ms_bitfields =
 #ifdef _WIN32
     true;
@@ -785,6 +787,8 @@ int main(int argc, char **argv) {
             parse_sanitize_list(argv[i] + 11);
         } else if (!strcmp(argv[i], "-time")) {
             opt_time = true;
+        } else if (!strcmp(argv[i], "-save-temps") || !strcmp(argv[i], "-save-temps=cwd")) {
+            opt_save_temps = true;
         } else if (!strcmp(argv[i], "-v")) {
             opt_v = true;
         } else if (!strncmp(argv[i], "-o", 2)) {
@@ -1240,6 +1244,9 @@ int main(int argc, char **argv) {
             asm_path = opt_o ? out_path : replace_ext(path_basename(cur_path), ".s");
         } else if (opt_c) {
             asm_path = opt_o ? out_path : replace_ext(path_basename(cur_path), ".o");
+        } else if (opt_save_temps) {
+            // -save-temps: keep the per-file object as <basename>.o in the current directory
+            asm_path = replace_ext(path_basename(cur_path), ".o");
         } else {
             asm_path = format("rcc_tmp_%d_%d_%s.o", _getpid(), fi, path_basename(cur_path));
         }
@@ -1771,8 +1778,9 @@ int main(int argc, char **argv) {
                         }
                         remove(stdout_tmp);
                     }
-                    for (OutPath *p = out_paths; p; p = p->next)
-                        remove(p->path);
+                    if (!opt_save_temps)
+                        for (OutPath *p = out_paths; p; p = p->next)
+                            remove(p->path);
                     return 0;
                 }
                 // Native linker failed or unsupported; fall through to GCC.
@@ -1988,13 +1996,10 @@ int main(int argc, char **argv) {
         if (opt_stdout)
             remove(stdout_tmp);
 
-        // Cleanup temp files
-        if (getenv("RCC_KEEP_TMP")) {
+        // Cleanup temp files (-save-temps keeps the per-file objects)
+        if (!opt_save_temps)
             for (OutPath *p = out_paths; p; p = p->next)
-                fprintf(stderr, "DBG keep tmp: %s\n", p->path);
-        }
-        for (OutPath *p = out_paths; p; p = p->next)
-            remove(p->path);
+                remove(p->path);
         free(libs);
         free(cmd);
 
