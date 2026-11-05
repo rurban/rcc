@@ -70,7 +70,7 @@ RUN_TESTS = run_tests
 
 DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
 DEF_LIBDIR = -DRCC_LIBDIR='"$(RCC_LIBDIR)"'
-VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
+VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "v1.2.3")
 MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
 
 ifneq ($(findstring apple,$(MACHINE)),)

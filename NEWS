@@ -2,7 +2,7 @@ This is the NEWS file for RCC, the Regoshi C Compiler. It summarizes
 user-visible changes for each release, most recent first. For the
 complete list of changes see the git log.
 
-* Changes in v1.2.3 (????-??-??) (Reini Urban)
+* Changes in v1.2.3 (2026-11-06) (Reini Urban)
 
   -O2 SSA IR backend (x86-64 ELF, x86-64 Windows/COFF, AArch64 ELF and Darwin):
   - New Win64 x86-64 emitter path (mingw/PE): rcx/rdx/r8/r9 or xmm0-3
@@ -58,13 +58,34 @@ complete list of changes see the git log.
     --as-needed/--no-undefined/-v/-z), -nodefaultlibs, -nostdlib, and -r, and for
     linking only objects and libs instead of falling back to the external linker.
   - Implemented native macho linker for executables with external symbols.
+  - Native PE linker: COFF objects are read in binary mode (a text-mode read
+    rejected any object containing a 0x0d 0x0a byte pair and silently forced
+    the external gcc.exe: 464 of the tcc/unit/c-testsuite links under wine,
+    about 180 now), ___chkstk_ms is synthesized by the linker (no libgcc
+    needed for frames of 4 KiB or more), the stack reserve is 2 MiB like
+    GNU ld, and weak-external definitions (plain C99 inline bodies) stay
+    weak so &fn is identical across TUs. Links needing libmingwex/
+    libwinpthread symbols, -Wl,* (except --out-implib), -nostdlib, -r,
+    sanitizers or -static still use the external linker.
+
+  - Windows -O2: implicit-int calls keep the full pointer result, variadic
+    register arguments are also stored in the home area, and rdi is not kept
+    across calls (AST-compiled callees clobber it).
+  - New -save-temps (also -save-temps=cwd): keep the per-file objects of a
+    compile+link as <name>.o in the current directory. The RCC_KEEP_TMP
+    environment variable, which only printed a debug line, is gone, and the
+    native linkers' fallback traces are now enabled with -Wl,-v instead of
+    the RCC_LINK_DEBUG environment variable.
   - New -fsanitize=<list>: address, undefined, float-cast-overflow.
     `undefined` instruments divide-by-zero, signed overflow, shift
     out-of-range, null deref, null C-string argument, pointer-overflow,
     alignment, local array bounds, returns-nonnull-attribute, and reached
     __builtin_unreachable; `float-cast-overflow` (a separate flag, not in
     `undefined`) checks float->int cast overflow; `address` checks global
-    out-of-bounds on x86-64. All link the gcc sanitizer runtime.
+    out-of-bounds on x86-64. All link the gcc sanitizer runtime. About
+    10x faster compilation than with gcc or clang, so ideal for debugging
+    large programs; like my 140MB libredwg shared library. 2m vs 20m does
+    make a difference.
 
 * Changes in v1.2.2 (2026-09-19) (Reini Urban)
 
