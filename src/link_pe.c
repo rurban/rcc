@@ -376,7 +376,12 @@ int link_load_object(LinkState *s, const char *path) {
             type = (sym_type & 0x20) ? 2 : 0;
             out_sec = -1;
         } else if (sec_num <= (int16_t)n_secs) {
-            bind = (storage_class == IMAGE_SYM_CLASS_EXTERNAL) ? 1 : 0;
+            // A weak-external symbol that carries a section is a weak *definition* (rcc emits
+            // plain C99 `inline` bodies this way): it must stay global so identical copies in
+            // several objects collapse and a strong definition overrides them.
+            bind = (storage_class == IMAGE_SYM_CLASS_EXTERNAL)     ? 1
+                : (storage_class == IMAGE_SYM_CLASS_WEAK_EXTERNAL) ? 2
+                                                                   : 0;
             type = 0;
             out_sec = out_sec_map[sec_num - 1];
         } else {
@@ -1190,6 +1195,71 @@ int link_pe(LinkState *s) {
         }
     }
 
+    // ___chkstk_ms: the stack probe the code generators call for frames of a page or more
+    // (libgcc supplies it in a mingw link). Synthesize it when an object references it, so
+    // such programs no longer need the external linker. It touches every page between rsp
+    // and rsp - rax (the frame size) and preserves every register but flags.
+    {
+        int chk = link_find_sym(s, "___chkstk_ms");
+        if (chk >= 0 && s->syms[chk].sec < 0) {
+            static const uint8_t code[] = {
+                0x51, // push rcx
+                0x50, // push rax
+                0x48,
+                0x3d,
+                0x00,
+                0x10,
+                0x00,
+                0x00, // cmp rax, 0x1000
+                0x48,
+                0x8d,
+                0x4c,
+                0x24,
+                0x18, // lea rcx, [rsp+24]   (rsp before the two pushes)
+                0x72,
+                0x19, // jb done
+                0x48,
+                0x81,
+                0xe9,
+                0x00,
+                0x10,
+                0x00,
+                0x00, // loop: sub rcx, 0x1000
+                0x48,
+                0x83,
+                0x09,
+                0x00, // or qword [rcx], 0   (touch the page)
+                0x48,
+                0x2d,
+                0x00,
+                0x10,
+                0x00,
+                0x00, // sub rax, 0x1000
+                0x48,
+                0x3d,
+                0x00,
+                0x10,
+                0x00,
+                0x00, // cmp rax, 0x1000
+                0x77,
+                0xe7, // ja loop
+                0x48,
+                0x29,
+                0xc1, // done: sub rcx, rax
+                0x48,
+                0x83,
+                0x09,
+                0x00, // or qword [rcx], 0
+                0x58, // pop rax
+                0x59, // pop rcx
+                0xc3, // ret
+            };
+            int tsec = link_find_or_create_sec(s, ".text", true, false, true, false, false, 16);
+            uint64_t off = link_sec_append(s, tsec, code, sizeof(code), 16);
+            link_add_sym(s, "___chkstk_ms", tsec, off, sizeof(code), 1 /* global */, 2 /* func */, -1);
+        }
+    }
+
     // Resolve external symbols against system DLLs and synthesize the
     // import table + trampolines before layout, since this may add new
     // sections/symbols that layout and relocation application must see.
@@ -1366,7 +1436,7 @@ int link_pe(LinkState *s) {
     uint16_t dll_flags = IMAGE_DLLCHARACTERISTICS_NX_COMPAT;
     if (reloc_sec >= 0) dll_flags |= IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
     pe_w16le(f, dll_flags);
-    pe_w64le(f, 0x100000);
+    pe_w64le(f, 0x200000); // stack reserve: 2 MiB, what GNU ld (the external fallback) defaults to
     pe_w64le(f, 0x1000); // stack
     pe_w64le(f, 0x100000);
     pe_w64le(f, 0x1000); // heap
