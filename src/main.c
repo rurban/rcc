@@ -1779,6 +1779,16 @@ int main(int argc, char **argv) {
                 }
             }
         }
+        // RCC_LINK_LOG=<file>: append one line per link that needs the external linker, so a
+        // test run shows which inputs/options the native linkers still cannot handle.
+        if (getenv("RCC_LINK_LOG")) {
+            FILE *lf = fopen(getenv("RCC_LINK_LOG"), "a");
+            if (lf) {
+                fprintf(lf, "external-linker capable=%d out=%s libs=%s\n", (int)native_link_capable,
+                        backend_out, libs ? libs : "");
+                fclose(lf);
+            }
+        }
         // Build the linker command line: backend compiler + output flag first
         //
         // CodeQL cpp/command-line-injection, cpp/uncontrolled-process-

@@ -205,7 +205,10 @@ static int64_t pe_pc32_addend(uint16_t coff_type, uint16_t machine) {
 // ---------------------------------------------------------------------------
 
 int link_load_object(LinkState *s, const char *path) {
-    int fd = open(path, O_RDONLY);
+    // Binary mode: in the default text mode a 0x0d 0x0a byte pair inside the object is
+    // collapsed by read(), the size check below then fails and the link needlessly falls
+    // back to the external linker.
+    int fd = open(path, O_RDONLY | O_BINARY);
     if (fd < 0) {
         fprintf(stderr, "rcc: link: cannot open %s: %s\n", path, strerror(errno));
         return -1;
@@ -629,6 +632,9 @@ static int build_pe_imports(LinkState *s, int *idata_sec_out,
     bool all_resolved = true;
     for (int i = 0; i < n_undef; i++)
         if (owner_dll[i] < 0) all_resolved = false;
+    if (!all_resolved && getenv("RCC_LINK_DEBUG"))
+        for (int i = 0; i < n_undef; i++)
+            if (owner_dll[i] < 0) fprintf(stderr, "rcc: LINK_DEBUG PE: unresolved symbol %s\n", names[i]);
     if (!all_resolved) {
         free(names);
         free(owner_dll);

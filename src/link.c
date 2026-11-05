@@ -653,6 +653,7 @@ int rcc_link(const char *out_path, char **obj_paths, int n_objs,
 
     for (int i = 0; i < n_objs; i++) {
         if (link_load_object(&state, obj_paths[i]) != 0) {
+            if (getenv("RCC_LINK_DEBUG")) fprintf(stderr, "rcc: LINK_DEBUG cannot load object %s\n", obj_paths[i]);
             link_state_free(&state);
             return 1;
         }
@@ -667,6 +668,8 @@ int rcc_link(const char *out_path, char **obj_paths, int n_objs,
     rc = link_elf(&state);
 #endif
 
+    if (rc != 0 && getenv("RCC_LINK_DEBUG"))
+        fprintf(stderr, "rcc: LINK_DEBUG native link of %s failed in the final link step (rc=%d)\n", out_path, rc);
     link_state_free(&state);
     return rc;
 }
