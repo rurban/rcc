@@ -18,11 +18,11 @@
  *    carries a runtime dependency on libfoo.so it never actually calls
  *    into.
  *
- * Both scenarios assert the native path was actually taken (RCC_LINK_DEBUG
- * output must not mention falling back), not merely that *some* linker
+ * Both scenarios assert the native path was actually taken (the -Wl,-v
+ * trace must not mention falling back), not merely that *some* linker
  * eventually produced a working binary -- an external-linker fallback
  * would also pass a purely functional check. ELF/Linux-only: DT_NEEDED
- * introspection and RCC_LINK_DEBUG's own "falling back" trace are both
+ * introspection and the "falling back" trace are both
  * specific to link_elf.c; on other platforms this is a clean skip.
  */
 #include <stdio.h>
@@ -109,7 +109,7 @@ int main(void) {
         fclose(f);
 
         snprintf(cmd, sizeof(cmd),
-                 "RCC_LINK_DEBUG=1 %s %s -L. -Wl,--start-group -l%s -l%s -Wl,--end-group -o %s 2>&1",
+                 "%s %s -L. -Wl,-v -Wl,--start-group -l%s -l%s -Wl,--end-group -o %s 2>&1",
                  rcc, gmain_c, name_a, name_b, gprog);
         if (run_capture(cmd, buf, sizeof(buf), &rc) != 0) { printf("FAIL: popen\n"); return 2; }
         remove(gmain_c);
@@ -160,7 +160,7 @@ int main(void) {
         fclose(f);
 
         snprintf(cmd, sizeof(cmd),
-                 "RCC_LINK_DEBUG=1 %s %s -L. -Wl,--as-needed -l%s -o %s 2>&1",
+                 "%s %s -L. -Wl,-v -Wl,--as-needed -l%s -o %s 2>&1",
                  rcc, amain_c, libname, aprog);
         if (run_capture(cmd, buf, sizeof(buf), &rc) != 0) { printf("FAIL: popen\n"); return 7; }
         remove(amain_c);

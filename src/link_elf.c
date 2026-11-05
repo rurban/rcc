@@ -649,7 +649,7 @@ static int elf_load_object(LinkState *s, const char *path) {
                     // relocation left unresolved (e.g. R_AARCH64_LDST128 on
                     // the bundled libdfp.a's exception-flag globals produced
                     // a binary that read garbage data and segfaulted).
-                    if (getenv("RCC_LINK_DEBUG"))
+                    if (link_verbose)
                         fprintf(stderr, "rcc: link: %s: unhandled reloc type %u\n", path, r_type);
                     free(sec_map);
                     free(sym_map);
@@ -752,7 +752,7 @@ static int load_archive(LinkState *s, const char *path) {
         round++;
         for (uint32_t i = 0; i < nsym; i++) {
             if (used[i] || !symnames[i]) continue;
-            if (getenv("RCC_LINK_DEBUG") && strstr(symnames[i], "glbflags")) {
+            if (link_verbose && strstr(symnames[i], "glbflags")) {
                 int fs = link_find_sym(s, symnames[i]);
                 fprintf(stderr, "DBG sym %d %s find=%d sec=%d\n", i, symnames[i], fs,
                         fs >= 0 ? s->syms[fs].sec : -99);
@@ -791,7 +791,7 @@ static int load_archive(LinkState *s, const char *path) {
                             perror("write rcc_link_ar");
                             abort();
                         }
-                        if (getenv("RCC_LINK_DEBUG"))
+                        if (link_verbose)
                             fprintf(stderr, "DBG pulling member for sym %s (offs %u)\n", symnames[i], symoffs[i]);
                         if (elf_load_object(s, tmp) != 0) {
                             unlink(tmp);
@@ -801,7 +801,7 @@ static int load_archive(LinkState *s, const char *path) {
                             munmap(data, sz);
                             return -1;
                         }
-                        if (getenv("RCC_LINK_DEBUG"))
+                        if (link_verbose)
                             fprintf(stderr, "DBG loaded member for sym %s\n", symnames[i]);
                         unlink(tmp);
                         used[i] = 1;
@@ -1849,17 +1849,17 @@ static int load_crt_files(LinkState *s) {
         // unconditionally would misrepresent a successful fallback as an
         // error and pollute any captured stderr (e.g. run_tests.c
         // comparing a test's stdout against its .expect file); keep it
-        // behind RCC_LINK_DEBUG like the sibling fallback trace in
+        // behind -Wl,-v (link_verbose) like the sibling fallback trace in
         // main.c's rcc_link().
-        if (getenv("RCC_LINK_DEBUG")) fprintf(stderr, "rcc: link: cannot find crt1.o\n");
+        if (link_verbose) fprintf(stderr, "rcc: link: cannot find crt1.o\n");
         return -1;
     }
     if (try_load_crt(s, crt_dir, "crti.o") != 0) {
-        if (getenv("RCC_LINK_DEBUG")) fprintf(stderr, "rcc: link: cannot find crti.o\n");
+        if (link_verbose) fprintf(stderr, "rcc: link: cannot find crti.o\n");
         return -1;
     }
     if (try_load_crt(s, crt_dir, "crtn.o") != 0) {
-        if (getenv("RCC_LINK_DEBUG")) fprintf(stderr, "rcc: link: cannot find crtn.o\n");
+        if (link_verbose) fprintf(stderr, "rcc: link: cannot find crtn.o\n");
         return -1;
     }
     return 0;
@@ -2944,7 +2944,7 @@ int link_elf(LinkState *s) {
                         }
                 }
                 if (missing >= 0) {
-                    if (getenv("RCC_LINK_DEBUG"))
+                    if (link_verbose)
                         fprintf(stderr,
                                 "rcc: LINK_DEBUG undefined reference to '%s': "
                                 "provided by no linked library; deferring to system linker\n",
@@ -3344,12 +3344,12 @@ int link_elf(LinkState *s) {
             if (sym->sec == bss_sec) {
                 uint64_t end = sym->value + sym->size;
                 if (end > max_bss) max_bss = end;
-                if (getenv("RCC_LINK_DEBUG") && strstr(sym->name, "glbflags"))
+                if (link_verbose && strstr(sym->name, "glbflags"))
                     fprintf(stderr, "DBG bss sym %s sec=%d value=%llu size=%llu\n", sym->name, sym->sec,
                             (unsigned long long)sym->value, (unsigned long long)sym->size);
             }
         }
-        if (getenv("RCC_LINK_DEBUG"))
+        if (link_verbose)
             fprintf(stderr, "DBG bss_sec=%d len=%zu max_bss=%llu\n", bss_sec, s->secs[bss_sec].len,
                     (unsigned long long)max_bss);
         if (max_bss > s->secs[bss_sec].len)

@@ -728,7 +728,7 @@ fi
 #    line at all, the common "relink from prebuilt objects" shape used by
 #    incremental Makefile rules and muon/meson's link-only steps) always
 #    skipped the native path. Verified by presence of the
-#    RCC_LINK_DEBUG=1 "DBG link objs:" trace, only emitted once the
+#    -Wl,-v "DBG link objs:" trace, only emitted once the
 #    native linker is actually attempted -- a stronger check than merely
 #    "the program produces the right answer", which the GCC-fallback
 #    path (silently skipping the native attempt entirely, pre-fix) could
@@ -743,7 +743,7 @@ int main(void) { return lo_helper() == 19 ? 0 : 1; }
 EOF
 if "$RCC" -c "$TMP/lo_a.c" -o "$TMP/lo_a.o" 2>"$TMP/e18" \
     && "$RCC" -c "$TMP/lo_main.c" -o "$TMP/lo_main.o" 2>>"$TMP/e18"; then
-    if RCC_LINK_DEBUG=1 "$RCC" "$TMP/lo_main.o" "$TMP/lo_a.o" -o "$TMP/lo_prog" 2>"$TMP/e18lnk" \
+    if "$RCC" "$TMP/lo_main.o" "$TMP/lo_a.o" -Wl,-v -o "$TMP/lo_prog" 2>"$TMP/e18lnk" \
         && grep -q "DBG link objs:" "$TMP/e18lnk"; then
         if "$(winprog "$TMP/lo_prog")"; then
             pass "link-only .o inputs use the native linker"

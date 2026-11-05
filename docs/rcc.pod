@@ -824,11 +824,6 @@ failures).
 If set, dump the generated assembly text for each function to stderr
 as it is emitted.
 
-=item B<RCC_LINK_DEBUG>
-
-If set, print verbose diagnostics from the native ELF linker (archive
-member selection, symbol resolution) to stderr.
-
 =back
 
 =head1 FILES

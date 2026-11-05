@@ -61,6 +61,11 @@ typedef struct {
 // attempting a native link -- `*out` must not be acted on in that case.
 bool link_parse_opts(const char *libs, LinkOpts *out);
 
+// True when the link was asked for `-Wl,-v` (set by link_set_verbose()): the native linkers
+// then print their fallback / resolution traces to stderr.
+extern bool link_verbose;
+void link_set_verbose(const char *libs);
+
 // ---------------------------------------------------------------------------
 // Shared relocation kinds used by all backends internally.
 // Each backend converts its native relocation type to one of these.

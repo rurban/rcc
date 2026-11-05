@@ -637,9 +637,6 @@ static int build_pe_imports(LinkState *s, int *idata_sec_out,
     bool all_resolved = true;
     for (int i = 0; i < n_undef; i++)
         if (owner_dll[i] < 0) all_resolved = false;
-    if (!all_resolved && getenv("RCC_LINK_DEBUG"))
-        for (int i = 0; i < n_undef; i++)
-            if (owner_dll[i] < 0) fprintf(stderr, "rcc: LINK_DEBUG PE: unresolved symbol %s\n", names[i]);
     if (!all_resolved) {
         free(names);
         free(owner_dll);

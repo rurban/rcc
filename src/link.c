@@ -46,6 +46,25 @@ static void opts_set_soname(LinkOpts *out, const char *val, size_t len) {
     out->have_soname = true;
 }
 
+bool link_verbose;
+
+// Set link_verbose when `libs` carries a -Wl,... option list containing -v.
+void link_set_verbose(const char *libs) {
+    link_verbose = false;
+    for (const char *p = libs; p && (p = strstr(p, "-Wl,")) != NULL; p += 4) {
+        if (p != libs && p[-1] != ' ') continue;
+        const char *q = p + 4;
+        while (*q && *q != ' ') {
+            if (q[0] == '-' && q[1] == 'v' && (q[2] == ',' || q[2] == ' ' || q[2] == '\0') &&
+                (q == p + 4 || q[-1] == ',')) {
+                link_verbose = true;
+                return;
+            }
+            q++;
+        }
+    }
+}
+
 bool link_parse_opts(const char *libs, LinkOpts *out) {
     memset(out, 0, sizeof(*out));
     bool capable = true;
@@ -653,7 +672,6 @@ int rcc_link(const char *out_path, char **obj_paths, int n_objs,
 
     for (int i = 0; i < n_objs; i++) {
         if (link_load_object(&state, obj_paths[i]) != 0) {
-            if (getenv("RCC_LINK_DEBUG")) fprintf(stderr, "rcc: LINK_DEBUG cannot load object %s\n", obj_paths[i]);
             link_state_free(&state);
             return 1;
         }
@@ -668,8 +686,6 @@ int rcc_link(const char *out_path, char **obj_paths, int n_objs,
     rc = link_elf(&state);
 #endif
 
-    if (rc != 0 && getenv("RCC_LINK_DEBUG"))
-        fprintf(stderr, "rcc: LINK_DEBUG native link of %s failed in the final link step (rc=%d)\n", out_path, rc);
     link_state_free(&state);
     return rc;
 }

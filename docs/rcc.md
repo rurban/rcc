@@ -1035,11 +1035,10 @@ conformance macros), plus rcc-specific macros:
 
 ## Environment variables
 
-| Variable         | Effect                                                                                                       |
-| ---------------- | ------------------------------------------------------------------------------------------------------------ |
-| `RCC_KEEP_TMP`   | If set, keep temporary per-file object files instead of deleting them after a multi-file compile+link.       |
-| `RCC_ASM_DEBUG`  | If set, dump the generated assembly text for every function to stderr as it is emitted.                      |
-| `RCC_LINK_DEBUG` | If set, print verbose native-ELF-linker diagnostics (archive member selection, symbol resolution) to stderr. |
+| Variable        | Effect                                                                                                 |
+| --------------- | ------------------------------------------------------------------------------------------------------ |
+| `RCC_KEEP_TMP`  | If set, keep temporary per-file object files instead of deleting them after a multi-file compile+link. |
+| `RCC_ASM_DEBUG` | If set, dump the generated assembly text for every function to stderr as it is emitted.                |
 
 ## ABI and target notes
 

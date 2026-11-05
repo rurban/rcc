@@ -1635,6 +1635,7 @@ int main(int argc, char **argv) {
         // would otherwise "link" with the wrong semantics (e.g. a shared
         // lib whose DT_RUNPATH/DT_SONAME never got written) instead of
         // producing correct output.
+        link_set_verbose(libs); // -Wl,-v: print the native linker's fallback / resolution traces
 #if !defined(__linux__)
         bool native_link_capable = true;
         {
@@ -1653,7 +1654,9 @@ int main(int argc, char **argv) {
                 // fast native path -- important since an external mingw
                 // toolchain may not even be reachable at runtime (e.g.
                 // rcc.exe running standalone under wine in CI).
-                bool recognized_wl = wl && len > 4 + 13 && !strncmp(lp + 4, "--out-implib,", 13);
+                // -Wl,-v only asks for the native linker's trace (link_set_verbose()).
+                bool recognized_wl = wl &&
+                    ((len > 4 + 13 && !strncmp(lp + 4, "--out-implib,", 13)) || (len == 6 && !strncmp(lp, "-Wl,-v", 6)));
                 if ((wl && !recognized_wl) ||
                     (len >= 14 && !strncmp(lp, "-nodefaultlibs", 14)) ||
                     (len == 9 && !strncmp(lp, "-nostdlib", 9)) ||
@@ -1736,7 +1739,7 @@ int main(int argc, char **argv) {
                 for (OutPath *p = out_paths; p; p = p->next)
                     link_objs[i++] = p->path;
                 uint64_t t_link = opt_time ? timer_start() : 0;
-                if (getenv("RCC_LINK_DEBUG")) {
+                if (link_verbose) {
                     fprintf(stderr, "DBG link objs:");
                     for (int di = 0; di < n_link_objs; di++) fprintf(stderr, " %s", link_objs[di]);
                     fprintf(stderr, "\nDBG libs: %s\n", libs);
@@ -1773,20 +1776,10 @@ int main(int argc, char **argv) {
                     return 0;
                 }
                 // Native linker failed or unsupported; fall through to GCC.
-                if (getenv("RCC_LINK_DEBUG")) {
+                if (link_verbose) {
                     fprintf(stderr, "rcc: LINK_DEBUG native linker returned %d for %s, falling back to %s\n",
                             native, out_path, GCC);
                 }
-            }
-        }
-        // RCC_LINK_LOG=<file>: append one line per link that needs the external linker, so a
-        // test run shows which inputs/options the native linkers still cannot handle.
-        if (getenv("RCC_LINK_LOG")) {
-            FILE *lf = fopen(getenv("RCC_LINK_LOG"), "a");
-            if (lf) {
-                fprintf(lf, "external-linker capable=%d out=%s libs=%s\n", (int)native_link_capable,
-                        backend_out, libs ? libs : "");
-                fclose(lf);
             }
         }
         // Build the linker command line: backend compiler + output flag first
