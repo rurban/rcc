@@ -738,13 +738,28 @@ bool objfile_flush_debug_g3(ObjFile *obj, uint64_t text_end, void *program) {
             break;
         }
         if (len == 0) continue;
-        if (nout >= MAX_SECS) {
-            g.failed = true;
-            g.what = "too many sections";
-            break;
+        // libdwarfp hands a large section out in several chunks: join them,
+        // relocation offsets are section-global.
+        OutSec *os = NULL;
+        for (int i = 0; i < nout; i++)
+            if (out[i].idx == idx) os = &out[i];
+        if (!os) {
+            if (nout >= MAX_SECS) {
+                g.failed = true;
+                g.what = "too many sections";
+                break;
+            }
+            os = &out[nout++];
+            *os = (OutSec){objfile_find_or_add_section(obj, sec_name(idx), 0, 0), idx, NULL, 0};
         }
-        out[nout++] = (OutSec){objfile_find_or_add_section(obj, sec_name(idx), 0, 0), idx, bytes,
-                               (size_t)len};
+        unsigned char *nb = realloc((void *)os->bytes, os->len + (size_t)len);
+        if (!nb) {
+            fprintf(stderr, "rcc: out of memory\n");
+            exit(1);
+        }
+        memcpy(nb + os->len, bytes, (size_t)len);
+        os->bytes = nb;
+        os->len += (size_t)len;
     }
 
     if (g.macro_patch && !g.failed) {
@@ -855,6 +870,8 @@ bool objfile_flush_debug_g3(ObjFile *obj, uint64_t text_end, void *program) {
 
 done:
     pp_macro_events = NULL; // consumed (or abandoned on fallback)
+    for (int i = 0; i < nout; i++)
+        free((void *)out[i].bytes);
     free(rels);
     free(g.tt);
     free(g.mac);

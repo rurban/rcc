@@ -137,4 +137,6 @@
     (DWARF2 bit_offset used), DW_AT_macro_info is never added by the library
     (placeholder attribute patched after dwarf_transform_to_disk_form_a),
     dwarf_def_macro corrupts the stream (.debug_macinfo is written directly),
-    drd_length is unreliable.
+    dwarf_get_section_bytes_a hands large sections out in several chunks
+    (dwarf_g3.c merges them; obj_libdwarf.c only bounds-checks the first
+    chunk), drd_length is unreliable.

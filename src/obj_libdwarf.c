@@ -15,6 +15,7 @@
 #define TEXT_SYM 1000
 
 #define MAX_SECS 32
+#define MAX_OUT 4096 // section chunks
 
 // Section names libdwarfp asked us to create; the callback's return value
 // (index+1) is the "elf section index" it later reports bytes/relocs under.
@@ -78,7 +79,7 @@ bool objfile_flush_debug_libdwarf(ObjFile *obj, uint64_t text_end) {
     Dwarf_P_Debug dbg = NULL;
     Dwarf_Error err = NULL;
     bool ok = false;
-    Out out[MAX_SECS];
+    Out out[MAX_OUT];
     int nout = 0;
     // Where the single address relocation of each section sits (SIZE_MAX: none).
     size_t line_off = SIZE_MAX, info_off = SIZE_MAX, aranges_off = SIZE_MAX;
@@ -137,10 +138,11 @@ bool objfile_flush_debug_libdwarf(ObjFile *obj, uint64_t text_end) {
         }
         if (len == 0) continue;
         SecBuf *dst = debug_sec_by_name(obj, sec_name(&sn, idx));
-        if (!dst || nout >= MAX_SECS) {
+        if (!dst || nout >= MAX_OUT) {
             ok = fail("unexpected DWARF section", NULL);
             goto done;
         }
+        // A large section arrives in several chunks (appended in order).
         out[nout++] = (Out){dst, bytes, (size_t)len};
     }
 
@@ -175,6 +177,10 @@ bool objfile_flush_debug_libdwarf(ObjFile *obj, uint64_t text_end) {
     }
     for (int i = 0; i < nout; i++) {
         if (out[i].dst == &obj->debug_abbrev_section) continue; // no relocation
+        bool later_chunk = false; // the reloc offsets lie in a section's first chunk
+        for (int j = 0; j < i; j++)
+            if (out[j].dst == out[i].dst) later_chunk = true;
+        if (later_chunk) continue;
         size_t off = out[i].dst == &obj->debug_line_section ? line_off
             : out[i].dst == &obj->debug_info_section        ? info_off
                                                             : aranges_off;
