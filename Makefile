@@ -497,8 +497,8 @@ else
 	@if test -n "$(DARWIN_O)"; then install -m 644 $(DARWIN_O) "$(DESTDIR)$(LIBDIR)/"; fi
 	@if command -v $(POD2MAN) > /dev/null 2>&1; then \
 	  $(MAKE) man; \
-	  install -d "$(DESTDIR)$(MANDIR)"; \
-	  install -m 644 docs/rcc.1 "$(DESTDIR)$(MANDIR)/" || sudo install -m 644 docs/rcc.1 "$(DESTDIR)$(MANDIR)/"; \
+	  install -d "$(DESTDIR)$(MANDIR)" 2>/dev/null || sudo install -d "$(DESTDIR)$(MANDIR)"; \
+	  install -m 644 docs/rcc.1 "$(DESTDIR)$(MANDIR)/" 2>/dev/null || sudo install -m 644 docs/rcc.1 "$(DESTDIR)$(MANDIR)/"; \
 	else \
 	  echo "pod2man not found: skipping rcc.1 man page install"; \
 	fi
