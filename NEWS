@@ -2,6 +2,15 @@ This is the NEWS file for RCC, the Regoshi C Compiler. It summarizes
 user-visible changes for each release, most recent first. For the
 complete list of changes see the git log.
 
+* Changes in v1.2.4 (????-??-??) (Reini Urban)
+
+  Optional libdwarf support: if the Makefile finds libdwarfp (header +
+  library; probe result in HAVE_LIBDWARF, override with `make
+  HAVE_LIBDWARF=0|1`), -g builds .debug_line/.debug_info/.debug_abbrev/
+  .debug_aranges through it
+  (src/obj_libdwarf.c); otherwise, or if libdwarf fails, the built-in
+  emitter in src/obj.c is used.
+
 * Changes in v1.2.3 (2026-11-06) (Reini Urban)
 
   -O2 SSA IR backend (x86-64 ELF, x86-64 Windows/COFF, AArch64 ELF and Darwin):

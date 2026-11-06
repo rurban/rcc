@@ -554,6 +554,10 @@ void objfile_flush_debug_line(ObjFile *obj, uint64_t text_end) {
 
     if (obj->debug_file_count == 0) return;
 
+#ifdef HAVE_LIBDWARF
+    if (objfile_flush_debug_libdwarf(obj, text_end)) return;
+#endif
+
     // --- .debug_abbrev ---
     // Abbreviation 1: DW_TAG_compile_unit
     secbuf_emit_uleb128(da, 1); // abbreviation code

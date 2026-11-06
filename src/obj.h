@@ -350,6 +350,12 @@ struct ObjFile {
 int objfile_add_debug_file(ObjFile *obj, char *filename);
 void objfile_add_debug_line(ObjFile *obj, uint64_t text_offset, int file_idx, int line);
 void objfile_flush_debug_line(ObjFile *obj, uint64_t text_end);
+#ifdef HAVE_LIBDWARF
+// src/obj_libdwarf.c: build .debug_info/.debug_abbrev/.debug_line/.debug_aranges
+// through libdwarfp. Returns false (obj untouched) on any failure so the
+// caller can fall back to the built-in emitter.
+bool objfile_flush_debug_libdwarf(ObjFile *obj, uint64_t text_end);
+#endif
 bool objfile_has_debug(ObjFile *obj);
 
 void objfile_init(ObjFile *obj);

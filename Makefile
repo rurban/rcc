@@ -55,6 +55,23 @@ CFLAGS += -flto=thin
 endif
 
 SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/cg_builtins.c src/cg_vectors.c src/cg_opt.c src/opt.c src/alloc.c src/unicode.c src/keywords.c src/obj.c src/asm.c src/link.c
+
+# libdwarf (producer half, libdwarfp) is optional: when a usable libdwarfp is
+# found, -g DWARF sections are generated through it (src/obj_libdwarf.c);
+# otherwise rcc uses its built-in minimal emitter in src/obj.c. Detected by
+# compiling+linking a probe with $(CC), so cross builds (mingw, arm64, musl)
+# without a target libdwarf quietly fall back. Force with HAVE_LIBDWARF=1 or
+# disable with HAVE_LIBDWARF=0. Libraries go after the objects (TARGET_EXT)
+# so --as-needed linkers keep them.
+LIBDWARF_CFLAGS := $(if $(LIBDWARF_CFLAGS),$(LIBDWARF_CFLAGS),$(shell pkg-config --cflags libdwarfp 2>/dev/null || pkg-config --cflags libdwarf 2>/dev/null))
+LIBDWARF_LIBS := $(if $(LIBDWARF_LIBS),$(LIBDWARF_LIBS),$(shell pkg-config --libs-only-L libdwarfp 2>/dev/null || pkg-config --libs-only-L libdwarf 2>/dev/null) -ldwarfp -ldwarf)
+ifndef HAVE_LIBDWARF
+HAVE_LIBDWARF := $(shell printf '\043include <libdwarf.h>\n\043include <libdwarfp.h>\nint main(void){Dwarf_P_Debug d=0;Dwarf_Error e=0;return dwarf_producer_init(0,0,0,0,0,"x86_64","V4",0,&d,&e);}\n' | $(CC) $(LIBDWARF_CFLAGS) -x c - -o /dev/null $(LIBDWARF_LIBS) >/dev/null 2>&1 && echo 1 || echo 0)
+endif
+ifeq ($(HAVE_LIBDWARF),1)
+CFLAGS += -DHAVE_LIBDWARF $(LIBDWARF_CFLAGS)
+SRCS += src/obj_libdwarf.c
+endif
 # Shared headers every object must be rebuilt for (see %$(OBJ_EXT) rule).
 HDRS = $(wildcard src/*.h)
 
@@ -66,6 +83,10 @@ DOCDIR = $(PREFIX)/share/doc/rcc
 MANDIR = $(PREFIX)/share/man/man1
 TARGET_EXT = $(OBJS)
 INST_TARGET_EXT = $(INST_OBJS)
+ifeq ($(HAVE_LIBDWARF),1)
+TARGET_EXT += $(LIBDWARF_LIBS)
+INST_TARGET_EXT += $(LIBDWARF_LIBS)
+endif
 RUN_TESTS = run_tests
 
 DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
@@ -335,7 +356,7 @@ compile_commands.json: $(SRCS)
 
 # Profile build: rcc compiled with -pg for gprof analysis
 rcc_prof: $(SRCS) src/rcc.h src/sysinc_paths.h src/gcc_predefined.h
-	$(CC) $(CFLAGS) -pg $(LDFLAGS) -o $@ $(SRCS) -DGCC=\"$(RCC_GCC)\" $(DEF_INCDIR) $(DEF_LIBDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\" -lm
+	$(CC) $(CFLAGS) -pg $(LDFLAGS) -o $@ $(SRCS) -DGCC=\"$(RCC_GCC)\" $(DEF_INCDIR) $(DEF_LIBDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\" -lm $(if $(filter 1,$(HAVE_LIBDWARF)),$(LIBDWARF_LIBS))
 
 # Run profile: compile a decent-sized file to generate gmon.out
 prof: rcc_prof
