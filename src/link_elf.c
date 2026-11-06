@@ -535,8 +535,12 @@ static int elf_load_object(LinkState *s, const char *path) {
                     // computations that depend on it (e.g. AArch64 crt1.o's
                     // ADRP+ADD sequence loading &__wrap_main to pass to
                     // __libc_start_main).
+                    // st_value of a section symbol is normally 0, but a
+                    // `-r` output (see link_elf_relocatable()) carries the
+                    // contribution's base offset there instead of
+                    // rewriting every addend -- honor it.
                     int sym_idx = link_add_sym(s, "", out_sec,
-                                               out_sec >= 0 ? sec_base_off[shndx] : 0,
+                                               out_sec >= 0 ? sec_base_off[shndx] + value : 0,
                                                0, 0, 0, s->n_objs);
                     if (sym_idx < 0) {
                         free(sec_map);
@@ -1865,6 +1869,33 @@ static int load_crt_files(LinkState *s) {
     return 0;
 }
 
+// Merged non-alloc DWARF content (.debug_info, .debug_line, ...) is carried
+// into the output file after the last loaded byte, outside every PT_LOAD,
+// with a plain SHT_PROGBITS header (sh_addr 0, no flags). Other non-alloc
+// sections (.comment, .note.*) stay dropped, as before.
+static bool sec_is_debug_out(const LinkSec *sec) {
+    return !sec->alloc && !sec->is_bss && sec->len > 0 && strncmp(sec->name, ".debug", 6) == 0;
+}
+
+// Append `nm` to the growing .shstrtab image; returns its sh_name offset.
+static uint32_t shstr_append(char **buf, size_t *len, size_t *cap, const char *nm) {
+    size_t nl = strlen(nm) + 1;
+    if (*len + nl > *cap) {
+        while (*len + nl > *cap) *cap *= 2;
+        char *tmp = realloc(*buf, *cap);
+        if (!tmp) {
+            free(*buf);
+            fprintf(stderr, "rcc: out of memory\n");
+            exit(1);
+        }
+        *buf = tmp;
+    }
+    uint32_t off = (uint32_t)*len;
+    memcpy(*buf + *len, nm, nl);
+    *len += nl;
+    return off;
+}
+
 // Whether `sec` should get a real section-header-table entry. Every
 // alloc'd section qualifies except .gnu.version/.gnu.version_r when no
 // version info was ever found for this link (n_verneed_versions == 0):
@@ -1877,6 +1908,7 @@ static int load_crt_files(LinkState *s) {
 // object outright ("invalid version offset 1 (max 0)") the moment
 // .dynsym has any real entries but .gnu.version has zero.
 static bool sec_wants_shdr(const LinkSec *sec, int n_verneed_versions) {
+    if (!sec->alloc) return sec_is_debug_out(sec);
     if (n_verneed_versions == 0 &&
         (strcmp(sec->name, ".gnu.version") == 0 || strcmp(sec->name, ".gnu.version_r") == 0))
         return false;
@@ -3740,15 +3772,24 @@ int link_elf(LinkState *s) {
     // exclusively -- so it was omitted entirely until now; BFD's ELF
     // backend unconditionally rejects any object with e_shoff==0/
     // e_shnum==0 as unrecognized ("file in wrong format"), even though
-    // the kernel/ld.so loader has no such requirement. Non-alloc'd
-    // sections (a stray .comment/.note from a system crt*.o) are
-    // deliberately left out: this linker's own layout pass never
-    // assigns them a real fileoff/addr, so describing one here would
-    // be describing bytes that were never actually written.
+    // the kernel/ld.so loader has no such requirement. Merged .debug*
+    // sections get a header and are written after the last loaded
+    // section (never inside a PT_LOAD); other non-alloc'd sections (a
+    // stray .comment/.note from a system crt*.o) are deliberately left
+    // out: this linker's own layout pass never assigns them a real
+    // fileoff/addr, so describing one here would be describing bytes
+    // that were never actually written.
     int n_shdr_secs = 0;
     for (int i = 0; i < s->n_secs; i++)
-        if (s->secs[i].alloc && sec_wants_shdr(&s->secs[i], n_verneed_versions)) n_shdr_secs++;
-    uint16_t shnum = (uint16_t)(1 + n_shdr_secs + 1); // NULL + real secs + .shstrtab
+        if (sec_wants_shdr(&s->secs[i], n_verneed_versions)) n_shdr_secs++;
+    // A link that carries DWARF also gets a .symtab/.strtab (what `ld`
+    // always emits): without them nm/addr2line/debuggers can't map the
+    // DWARF addresses back to ELF symbols. Links with no debug sections
+    // keep their previous, symbol-table-free layout.
+    bool want_symtab = false;
+    for (int i = 0; i < s->n_secs; i++)
+        if (sec_is_debug_out(&s->secs[i])) want_symtab = true;
+    uint16_t shnum = (uint16_t)(1 + n_shdr_secs + (want_symtab ? 2 : 0) + 1); // NULL + real secs + [.symtab, .strtab] + .shstrtab
     uint16_t shstrndx = (uint16_t)(shnum - 1);
 
     int *sec_to_shidx = malloc((size_t)s->n_secs * sizeof(int));
@@ -3760,7 +3801,7 @@ int link_elf(LinkState *s) {
     {
         int k = 0;
         for (int i = 0; i < s->n_secs; i++) {
-            if (!s->secs[i].alloc || !sec_wants_shdr(&s->secs[i], n_verneed_versions)) continue;
+            if (!sec_wants_shdr(&s->secs[i], n_verneed_versions)) continue;
             sec_to_shidx[i] = k + 1; // header index 0 is NULL
             const char *nm = s->secs[i].name;
             size_t nl = strlen(nm) + 1;
@@ -3782,24 +3823,54 @@ int link_elf(LinkState *s) {
             k++;
         }
     }
-    uint32_t shstrtab_self_name_off = (uint32_t)shstrtab_len;
-    {
-        const char *nm = ".shstrtab";
-        size_t nl = strlen(nm) + 1;
-        if (shstrtab_len + nl > shstrtab_cap) {
-            while (shstrtab_len + nl > shstrtab_cap) shstrtab_cap *= 2;
-            {
-                char *tmp = realloc(shstrtab_buf, shstrtab_cap);
-                if (!tmp) {
-                    free(shstrtab_buf);
-                    fprintf(stderr, "rcc: out of memory\n");
-                    exit(1);
+    uint32_t symtab_name_off = 0, strtab_name_off = 0;
+    if (want_symtab) {
+        symtab_name_off = shstr_append(&shstrtab_buf, &shstrtab_len, &shstrtab_cap, ".symtab");
+        strtab_name_off = shstr_append(&shstrtab_buf, &shstrtab_len, &shstrtab_cap, ".strtab");
+    }
+    uint32_t shstrtab_self_name_off =
+        shstr_append(&shstrtab_buf, &shstrtab_len, &shstrtab_cap, ".shstrtab");
+
+    // .symtab/.strtab content: every named, defined symbol living in a
+    // section that has a header, locals first (sh_info = first non-local).
+    uint8_t *symtab_buf = NULL;
+    char *strtab_buf = NULL;
+    size_t symtab_sz = 0, strtab_len = 1;
+    uint32_t symtab_first_global = 1;
+    if (want_symtab) {
+        size_t strtab_cap = 256;
+        strtab_buf = malloc(strtab_cap);
+        strtab_buf[0] = '\0';
+        symtab_buf = calloc((size_t)(s->n_syms + 1), 24);
+        size_t nsym = 1; // null entry
+        for (int pass = 0; pass < 2; pass++) {
+            for (int i = 0; i < s->n_syms; i++) {
+                LinkSym *sym = &s->syms[i];
+                if (!sym->name || !sym->name[0] || sym->sec < 0) continue;
+                // TLS symbols' st_value would have to be a TLS-segment
+                // offset (STT_TLS), not an address; left out instead of
+                // emitting a misleading value.
+                if (s->secs[sym->sec].is_tls || sec_to_shidx[sym->sec] == 0) continue;
+                if ((sym->bind == STB_LOCAL) != (pass == 0)) continue;
+                size_t nl = strlen(sym->name) + 1;
+                if (strtab_len + nl > strtab_cap) {
+                    while (strtab_len + nl > strtab_cap) strtab_cap *= 2;
+                    strtab_buf = realloc(strtab_buf, strtab_cap);
                 }
-                shstrtab_buf = tmp;
+                uint8_t *e = symtab_buf + nsym * 24;
+                w32le_m(e + 0, (uint32_t)strtab_len);
+                e[4] = (uint8_t)(((uint8_t)sym->bind << 4) | (uint8_t)sym->type);
+                e[5] = (uint8_t)sym->visibility;
+                w16le_m(e + 6, (uint16_t)sec_to_shidx[sym->sec]);
+                w64le_m(e + 8, symbol_address(s, i));
+                w64le_m(e + 16, sym->size);
+                memcpy(strtab_buf + strtab_len, sym->name, nl);
+                strtab_len += nl;
+                nsym++;
             }
+            if (pass == 0) symtab_first_global = (uint32_t)nsym;
         }
-        memcpy(shstrtab_buf + shstrtab_len, nm, nl);
-        shstrtab_len += nl;
+        symtab_sz = nsym * 24;
     }
 
     // Where .shstrtab's bytes and the header array will physically land:
@@ -3814,6 +3885,21 @@ int link_elf(LinkState *s) {
         uint64_t end = sec->fileoff + sec->len;
         if (end > shstrtab_file_off) shstrtab_file_off = end;
     }
+    // Merged .debug* sections follow the last loaded byte back to back
+    // (alignment 1), outside every PT_LOAD; then .symtab/.strtab (if any),
+    // then .shstrtab.
+    for (int i = 0; i < s->n_secs; i++) {
+        LinkSec *sec = &s->secs[i];
+        if (!sec_is_debug_out(sec)) continue;
+        sec->fileoff = shstrtab_file_off;
+        shstrtab_file_off += sec->len;
+    }
+    uint64_t symtab_file_off = 0, strtab_file_off = 0;
+    if (want_symtab) {
+        symtab_file_off = align_up(shstrtab_file_off, 8);
+        strtab_file_off = symtab_file_off + symtab_sz;
+        shstrtab_file_off = strtab_file_off + strtab_len;
+    }
     uint64_t shoff = align_up(shstrtab_file_off + shstrtab_len, 8);
 
     FILE *f = fopen(s->out_path, "wb");
@@ -3822,6 +3908,8 @@ int link_elf(LinkState *s) {
         free(sec_to_shidx);
         free(shdr_name_off);
         free(shstrtab_buf);
+        free(symtab_buf);
+        free(strtab_buf);
         free(dyn_syms);
         free(dyn_idx);
         free(dyn_kind);
@@ -3951,6 +4039,20 @@ int link_elf(LinkState *s) {
         written = sec->fileoff + sec->len;
     }
     free(wsecs);
+    // Merged .debug* sections, laid out contiguously above.
+    for (int i = 0; i < s->n_secs; i++) {
+        LinkSec *sec = &s->secs[i];
+        if (!sec_is_debug_out(sec)) continue;
+        if (sec->fileoff > written) wzeros(f, sec->fileoff - written);
+        wbuf(f, sec->data, sec->len);
+        written = sec->fileoff + sec->len;
+    }
+    if (want_symtab) {
+        if (symtab_file_off > written) wzeros(f, symtab_file_off - written);
+        wbuf(f, symtab_buf, symtab_sz);
+        wbuf(f, strtab_buf, strtab_len);
+        written = strtab_file_off + strtab_len;
+    }
 
     // .shstrtab bytes, then the section header array -- both physically
     // land exactly where shoff/e_shstrndx above assumed they would.
@@ -3968,7 +4070,7 @@ int link_elf(LinkState *s) {
         int k = 0;
         for (int i = 0; i < s->n_secs; i++) {
             LinkSec *sec = &s->secs[i];
-            if (!sec->alloc || !sec_wants_shdr(sec, n_verneed_versions)) continue;
+            if (!sec_wants_shdr(sec, n_verneed_versions)) continue;
             uint32_t sh_type = sec->is_bss ? SHT_NOBITS : SHT_PROGBITS;
             uint32_t sh_link = 0, sh_info = 0;
             uint64_t sh_entsize = 0;
@@ -4009,7 +4111,8 @@ int link_elf(LinkState *s) {
             } else if (strcmp(sec->name, ".init_array") == 0) {
                 sh_type = SHT_INIT_ARRAY;
             }
-            uint32_t sh_flags = SHF_ALLOC;
+            bool dbg = !sec->alloc;
+            uint32_t sh_flags = dbg ? 0 : SHF_ALLOC;
             if (sec->write) sh_flags |= SHF_WRITE;
             if (sec->exec) sh_flags |= SHF_EXECINSTR;
             if (sec->is_tls) sh_flags |= SHF_TLS;
@@ -4024,11 +4127,31 @@ int link_elf(LinkState *s) {
             w64le_m(sh + 32, sec->len);
             w32le_m(sh + 40, sh_link);
             w32le_m(sh + 44, sh_info);
-            w64le_m(sh + 48, (uint64_t)(sec->align ? sec->align : 1));
+            w64le_m(sh + 48, dbg ? 1 : (uint64_t)(sec->align ? sec->align : 1));
             w64le_m(sh + 56, sh_entsize);
             wbuf(f, sh, 64);
             k++;
         }
+    }
+    if (want_symtab) {
+        uint8_t sh[64];
+        memset(sh, 0, sizeof(sh));
+        w32le_m(sh + 0, symtab_name_off);
+        w32le_m(sh + 4, SHT_SYMTAB);
+        w64le_m(sh + 24, symtab_file_off);
+        w64le_m(sh + 32, symtab_sz);
+        w32le_m(sh + 40, (uint32_t)(shnum - 2)); // sh_link: .strtab
+        w32le_m(sh + 44, symtab_first_global); // sh_info: first non-local symbol
+        w64le_m(sh + 48, 8);
+        w64le_m(sh + 56, 24);
+        wbuf(f, sh, 64);
+        memset(sh, 0, sizeof(sh));
+        w32le_m(sh + 0, strtab_name_off);
+        w32le_m(sh + 4, SHT_STRTAB);
+        w64le_m(sh + 24, strtab_file_off);
+        w64le_m(sh + 32, strtab_len);
+        w64le_m(sh + 48, 1);
+        wbuf(f, sh, 64);
     }
     // .shstrtab's own section header, last (index shstrndx).
     {
@@ -4044,6 +4167,8 @@ int link_elf(LinkState *s) {
     free(sec_to_shidx);
     free(shdr_name_off);
     free(shstrtab_buf);
+    free(symtab_buf);
+    free(strtab_buf);
 
     fclose(f);
     chmod(s->out_path, 0755);

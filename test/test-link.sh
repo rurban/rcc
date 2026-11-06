@@ -767,6 +767,50 @@ else
     fail "link inputs with .o2/.opic2 suffixes" "$(tr '\n' ' ' < "$TMP/e19")"
 fi
 
+# ---------------------------------------------------------------------------
+# 20. Debug info survives a link-only invocation. Two `-g` objects linked
+#    by rcc's native ELF linker must come out with merged .debug_*
+#    sections: two compilation units, whose DW_AT_low_pc values are the
+#    relocated final addresses (the first CU's text starts at main, the
+#    second's at f -- both checked against the executable's own symbol
+#    table).
+# ---------------------------------------------------------------------------
+if [ "$SOEXT" = so ] && command -v readelf >/dev/null 2>&1 && command -v nm >/dev/null 2>&1; then
+    cat > "$TMP/dbg_main.c" <<'EOF'
+int dbg_f(int);
+int main(void) { return dbg_f(3) == 4 ? 0 : 1; }
+EOF
+    cat > "$TMP/dbg_f.c" <<'EOF'
+int dbg_f(int x) { return x + 1; }
+EOF
+    if "$RCC" -g -c "$TMP/dbg_main.c" -o "$TMP/dbg_main.o" 2>"$TMP/e20" \
+        && "$RCC" -g -c "$TMP/dbg_f.c" -o "$TMP/dbg_f.o" 2>>"$TMP/e20" \
+        && "$RCC" "$TMP/dbg_main.o" "$TMP/dbg_f.o" -o "$TMP/dbg_prog" 2>>"$TMP/e20" \
+        && "$(winprog "$TMP/dbg_prog")"; then
+        ncu=$(readelf --debug-dump=info "$TMP/dbg_prog" 2>/dev/null | grep -c 'Compilation Unit @')
+        lowpcs=$(readelf --debug-dump=info "$TMP/dbg_prog" 2>/dev/null \
+            | sed -n 's/.*DW_AT_low_pc *: *\(0x[0-9a-f]*\).*/\1/p')
+        main_addr=$(nm "$TMP/dbg_prog" 2>/dev/null | sed -n 's/^\([0-9a-f]*\) [Tt] main$/\1/p')
+        f_addr=$(nm "$TMP/dbg_prog" 2>/dev/null | sed -n 's/^\([0-9a-f]*\) [Tt] dbg_f$/\1/p')
+        if ! readelf -S "$TMP/dbg_prog" 2>/dev/null | grep -q '\.debug_info'; then
+            fail "link keeps .debug_* of -g objects" "no .debug_info section in output"
+        elif [ "$ncu" != 2 ]; then
+            fail "link keeps .debug_* of -g objects" "expected 2 compilation units, got $ncu"
+        elif [ -z "$main_addr" ] || [ -z "$f_addr" ]; then
+            fail "link keeps .debug_* of -g objects" "nm found no main/dbg_f"
+        elif [ "$(echo "$lowpcs" | sed -n 1p)" != "$(printf '0x%x' "0x$main_addr")" ] \
+            || [ "$(echo "$lowpcs" | sed -n 2p)" != "$(printf '0x%x' "0x$f_addr")" ]; then
+            fail "link keeps .debug_* of -g objects" "low_pc $(echo "$lowpcs" | tr "\n" " ") != main 0x$main_addr / dbg_f 0x$f_addr"
+        else
+            pass "link keeps .debug_* of -g objects"
+        fi
+    else
+        fail "link keeps .debug_* of -g objects" "$(tr '\n' ' ' < "$TMP/e20")"
+    fi
+else
+    printf '  %-44s SKIP (needs ELF target + readelf/nm)\n' "link keeps .debug_* of -g objects"
+fi
+
 echo ""
 echo "Link tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
