@@ -284,7 +284,13 @@
  * Linux-only: mingw's limits.h transitively defines the C23 `thread_local`
  * keyword as a macro, which broke file-scope thread_local compound
  * literals (torture/c23-complit-5.c) on Windows. */
-#ifdef __linux__
+#if defined(__linux__)
+#include_next <limits.h>
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+/* The BSDs: PATH_MAX, NAME_MAX, PIPE_BUF, IOV_MAX, ... live only in the
+ * platform's own <limits.h> (sys/syslimits.h) and nothing above defines
+ * them; FreeBSD's <ssp/stdlib.h> (included by <stdlib.h> under
+ * _FORTIFY_SOURCE) needs PATH_MAX from here. */
 #include_next <limits.h>
 #endif
 
