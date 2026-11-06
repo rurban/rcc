@@ -794,6 +794,12 @@ EOF
         info_supported=true
         readelf --debug-dump=info "$TMP/dbg_prog" >/dev/null 2>&1 || info_supported=false
         ncu=$(readelf --debug-dump=info "$TMP/dbg_prog" 2>/dev/null | grep -c 'Compilation Unit @')
+        # Ancient readelfs (OpenBSD base binutils, pre-DWARF4) print the CU
+        # headers but no DIE attributes at all - treat like no support.
+        nattr=1
+        [ "$ncu" -gt 0 ] 2>/dev/null && \
+            nattr=$(readelf --debug-dump=info "$TMP/dbg_prog" 2>/dev/null | grep -c "DW_AT_")
+        [ "$nattr" -eq 0 ] 2>/dev/null && info_supported=false
         lowpcs=$(readelf --debug-dump=info "$TMP/dbg_prog" 2>/dev/null \
             | sed -n 's/.*DW_AT_low_pc *: *\(0x[0-9a-f]*\).*/\1/p')
         main_addr=$(nm "$TMP/dbg_prog" 2>/dev/null | sed -n 's/^\([0-9a-f]*\) [Tt] main$/\1/p')
