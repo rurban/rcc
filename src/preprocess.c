@@ -1372,6 +1372,27 @@ static struct Hideset *hs_add(struct Hideset *h, Macro *m) {
     n->next = h;
     return n;
 }
+// A ## paste result keeps the hide sets its operands already carried from
+// earlier lives (arguments substituted out of a macro's own expansion): the
+// pasted name, when it later expands as a macro, must not re-introduce a
+// macro that is still being expanded. FreeBSD's ssp <string.h> does
+// `__builtin___ ## fun ## _chk` with fun = memset coming out of memset's own
+// expansion; rcc maps __builtin_memset back to `memset`, which would
+// otherwise expand the user-visible fortify macro again and nest without
+// end (GCC/clang get this from their context-based macro disabling).
+static void hs_paste_inherit(Token *pt, const Token *l, const Token *r) {
+    struct Hideset *h = pt->blue;
+    for (const struct Hideset *x = l ? l->blue : NULL; x; x = x->next) h = hs_add(h, x->name);
+    for (const struct Hideset *x = r ? r->blue : NULL; x; x = x->next) h = hs_add(h, x->name);
+    pt->blue = h;
+}
+// Names present in both sets.
+static struct Hideset *hs_intersect(struct Hideset *a, struct Hideset *b) {
+    struct Hideset *r = NULL;
+    for (; a; a = a->next)
+        if (hs_contains(b, a->name)) r = hs_add(r, a->name);
+    return r;
+}
 static void push_frame(Token *list, Macro *mac) {
     Frame *f = arena_alloc(sizeof(Frame));
     f->pos = list;
@@ -1723,6 +1744,7 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
                     pasted[l1 + l2] = '\0';
                     Token *pt = lex_body_string(pasted, lhs->filename, lhs->lineno);
                     pt->no_paint = true;
+                    hs_paste_inherit(pt, lhs, sub);
                     if (sub->next)
                         pt->no_space_after = sub->no_space_after;
                     splice_tokens(&rhead, &rtail, pt);
@@ -1769,6 +1791,7 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
             pasted[l1 + l2] = '\0';
             Token *pt = lex_body_string(pasted, lhs->filename, lhs->lineno);
             pt->no_paint = true;
+            hs_paste_inherit(pt, lhs, xhead);
             // pt's spelling lives in a freshly lexed buffer, so the normal
             // pointer-adjacency check in str_needs_space() can never see it
             // as touching whatever follows — even when the macro body had
@@ -2264,6 +2287,13 @@ static void expand_token(Token *t) {
     for (int i = 0; i < argc; i++) exp_args[i] = (i < 32 && (m->hh_mask & (1u << i))) ? args_copy[i] : expand_list(args_copy[i]);
     Token *subst = subst_range(m, m->body, NULL, exp_args, args, argc);
     push_expansion(subst, m, t);
+    // A pasted macro name carries the hide sets of its operands (see
+    // hs_paste_inherit), but as for any function-like invocation (Prosser:
+    // HS = HS(name) ∩ HS(')') ∪ {name}) only the part still shared with the
+    // closing parenthesis applies: `CAT(A,B)(x)` ends CAT's expansion before
+    // the `(x)` from the source, so AB(x) may expand CAT again.
+    if (t->no_paint && frames && frames->mac == m)
+        frames->hide = hs_add(hs_intersect(t->blue, rp ? rp->blue : NULL), m);
     free(args);
     free(tails);
     free(exp_args);
