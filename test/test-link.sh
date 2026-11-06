@@ -787,22 +787,29 @@ EOF
         && "$RCC" -g -c "$TMP/dbg_f.c" -o "$TMP/dbg_f.o" 2>>"$TMP/e20" \
         && "$RCC" "$TMP/dbg_main.o" "$TMP/dbg_f.o" -o "$TMP/dbg_prog" 2>>"$TMP/e20" \
         && "$(winprog "$TMP/dbg_prog")"; then
+        # readelf feature probe: some BSDs ship a readelf without
+        # --debug-dump=info at all (llvm-based), and crt objects may add
+        # their own compilation units - so the value checks below accept
+        # ">= 2 CUs" and locate main/dbg_f's low_pc by presence.
+        info_supported=true
+        readelf --debug-dump=info "$TMP/dbg_prog" >/dev/null 2>&1 || info_supported=false
         ncu=$(readelf --debug-dump=info "$TMP/dbg_prog" 2>/dev/null | grep -c 'Compilation Unit @')
-        # GNU readelf prints "DW_AT_low_pc  : 0x...", llvm-readelf
-        # "DW_AT_low_pc (0x...)" - accept both.
         lowpcs=$(readelf --debug-dump=info "$TMP/dbg_prog" 2>/dev/null \
-            | sed -n 's/.*DW_AT_low_pc[^0-9a-fx]*\(0x[0-9a-f]*\).*/\1/p')
+            | sed -n 's/.*DW_AT_low_pc *: *\(0x[0-9a-f]*\).*/\1/p')
         main_addr=$(nm "$TMP/dbg_prog" 2>/dev/null | sed -n 's/^\([0-9a-f]*\) [Tt] main$/\1/p')
         f_addr=$(nm "$TMP/dbg_prog" 2>/dev/null | sed -n 's/^\([0-9a-f]*\) [Tt] dbg_f$/\1/p')
         if ! readelf -S "$TMP/dbg_prog" 2>/dev/null | grep -q '\.debug_info'; then
             fail "link keeps .debug_* of -g objects" "no .debug_info section in output"
-        elif [ "$ncu" != 2 ]; then
-            fail "link keeps .debug_* of -g objects" "expected 2 compilation units, got $ncu"
+        elif [ "$info_supported" = false ]; then
+            printf '  %-44s OK (readelf lacks --debug-dump=info; section-presence only)\n' \
+                "link keeps .debug_* of -g objects"
+        elif [ "$ncu" -lt 2 ] 2>/dev/null; then
+            fail "link keeps .debug_* of -g objects" "expected at least 2 compilation units, got $ncu"
         elif [ -z "$main_addr" ] || [ -z "$f_addr" ]; then
             fail "link keeps .debug_* of -g objects" "nm found no main/dbg_f"
-        elif [ "$(echo "$lowpcs" | sed -n 1p)" != "$(printf '0x%x' "0x$main_addr")" ] \
-            || [ "$(echo "$lowpcs" | sed -n 2p)" != "$(printf '0x%x' "0x$f_addr")" ]; then
-            fail "link keeps .debug_* of -g objects" "low_pc $(echo "$lowpcs" | tr "\n" " ") != main 0x$main_addr / dbg_f 0x$f_addr; readelf info follows" && \
+        elif ! echo "$lowpcs" | grep -q "$(printf '0x%x' "0x$main_addr")" \
+            || ! echo "$lowpcs" | grep -q "$(printf '0x%x' "0x$f_addr")"; then
+            fail "link keeps .debug_* of -g objects" "low_pc $(echo "$lowpcs" | tr "\n" " ") lacks main 0x$main_addr / dbg_f 0x$f_addr; readelf info follows" && \
                 readelf --debug-dump=info "$TMP/dbg_prog" 2>&1 | grep -E "Compilation Unit|low_pc" | head -20 >&2
         else
             pass "link keeps .debug_* of -g objects"
