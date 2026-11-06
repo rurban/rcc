@@ -21,8 +21,15 @@ complete list of changes see the git log.
   .debug_macinfo (gdb `info macro`/`macro expand`). Every section-relative
   reference carries a real relocation, so several -g3 objects link
   correctly; rcc's own linker keeps the debug sections. Not yet covered:
-  block-scope statics, VLAs, TLS variables, register-promoted locals (no
-  location), typedef names on variable types.
+  block-scope statics, VLAs, TLS variables, typedef names on variable types.
+
+  -g no longer disables the SSA IR backend: -O2 -g/-g2/-g3 produce the same
+  optimized code as -O2 alone and emit debug info from the IR emitter -
+  per-instruction line rows, .eh_frame for IR prologues (including
+  shrink-wrapped cold-block frames), and .debug_loc location lists for
+  register-allocated locals (IR_DBGVAL pseudo-instructions carried through the
+  SSA passes, resolved against the linear-scan register allocator's live
+  ranges). -fno-inline now also disables IR inlining.
 
   -g (every level, ELF x86-64) now also emits .eh_frame call-frame
   information for rcc's functions (src/eh_frame.c): backtrace(), C++

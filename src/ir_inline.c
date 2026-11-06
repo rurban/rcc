@@ -285,6 +285,7 @@ static void splice(IRFunc *caller, IRInstr *call, const IRFunc *callee, IRBlock 
             }
             ni->line = line;
             vmap[o->id] = ni->id;
+            if (o->op == IR_DBGVAL) continue; // callee locals are gone after inlining
             if (o->op == IR_PHI) ir_block_add_phi(nb, ni);
             else
                 ir_block_append(nb, ni);

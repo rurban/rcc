@@ -857,10 +857,10 @@ encoding; otherwise the table is skipped. Without `-g` no `.eh_frame` is
 generated for rcc's own code, as before. `.debug_frame` is not emitted: it
 would only duplicate `.eh_frame`, which gdb and `readelf -wF` read directly.
 
-`-g2` and `-g3` do not change the generated code, but they turn off the SSA IR
-backend (as every `-g` level does): functions are compiled by the AST backend
-even at `-O2`, so locals always live in memory slots and are visible to the
-debugger.
+`-g` does not change the generated code: the SSA IR backend compiles eligible
+functions even under `-g2`/`-g3` (verified: `-O2 -g` output is byte-identical
+to `-O2`), and the IR emitter produces line rows, `.eh_frame` and location
+lists itself. Only without `-g` is there no CFI, as before.
 
 ### Linking and sections
 
@@ -886,13 +886,15 @@ the abbreviation offset, `.debug_aranges` to `.debug_info`) and every address
 - Only compound statements and `for` initializers open lexical blocks; the
   scope of `if`/`switch`/`while` init declarations is not recorded.
 - Variables without a plain stack slot get no location: block-scope `static`
-  locals, variable-length arrays, `__thread` variables and register-promoted
-  locals.
+  locals, variable-length arrays and `__thread` variables. Register-promoted
+  locals of IR-compiled functions get `.debug_loc` location lists instead
+  (register and spill ranges, so gdb shows `<optimized out>` only where the
+  value is truly dead).
 - A typedef name is not kept on the type of a variable or member (it resolves
   to the underlying type); tagged types and enums that nothing references are
   not emitted.
-- CFI covers only AST-backend functions, which is every function under `-g`;
-  helper routines rcc generates itself (the `alloca` helper, ASan constructors)
+- CFI covers every user function under `-g`, AST or IR backend; helper routines
+  rcc generates itself (the `alloca` helper, ASan constructors)
   have no FDE. No CFI at all on AArch64, Mach-O and Windows targets.
 - Macros given with `-D` or predefined by rcc are not recorded, and the line of
   an `#include` is recorded as 0.

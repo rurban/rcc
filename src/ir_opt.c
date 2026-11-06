@@ -976,6 +976,13 @@ static bool dce(IRFunc *f) {
         IRBlock *b = f->blocks[bi];
         for (int k = 0; k < b->nins; k++) {
             IRInstr *i = b->ins[k];
+            if (i->op == IR_DBGVAL) { // kept only while the described value survives
+                if (i->a != IR_NONE && V(f, i->a)->op != IR_NOP && !live[i->id]) {
+                    live[i->id] = 1;
+                    stack[sp++] = i->id;
+                }
+                continue;
+            }
             if (!is_removable(f, i) && !live[i->id]) {
                 live[i->id] = 1;
                 stack[sp++] = i->id;
@@ -992,10 +999,12 @@ static bool dce(IRFunc *f) {
     } while (0)
     while (sp) {
         IRInstr *i = V(f, stack[--sp]);
-        MARK(i->a);
-        MARK(i->b);
-        MARK(i->c);
-        for (int j = 0; j < i->nargs; j++) MARK(i->args[j]);
+        if (V(f, i->id)->op != IR_DBGVAL) { // a debug binding must not keep its value alive
+            MARK(i->a);
+            MARK(i->b);
+            MARK(i->c);
+            for (int j = 0; j < i->nargs; j++) MARK(i->args[j]);
+        }
     }
 #undef MARK
     bool changed = false;

@@ -61,6 +61,15 @@ typedef struct {
     int32_t slot; // LK_SPILL: the value lives at [rbp - slot] (negative: incoming stack arg)
 } Loc;
 
+
+// A recorded IR_DBGVAL: C local `var` holds IR value `val` from .text offset `pc`.
+typedef struct {
+    LVar *var;
+    int val;
+    uint32_t pc;
+} DbgBind;
+#define MAX_DBGBIND 4096
+
 typedef struct {
     int from, to; // half-open position range [from, to)
 } Range;
@@ -138,6 +147,10 @@ static struct {
     int *pcls; // param index -> IRAggClass
     int *paggoff; // materialized aggregate param: rbp offset of its frame temp
     int *ctemp; // CALL value id -> rbp offset of its aggregate-return temp
+    DbgBind dbgv[MAX_DBGBIND];
+    int ndbgv;
+    uint32_t *ipos_pc; // emitted-instruction slot -> .text offset (debug locations)
+    int n_ipos_pc, cap_ipos_pc;
 } be;
 
 static SecBuf *sec(void) { return cg_sec; }
@@ -171,6 +184,7 @@ static inline X86Mem slot_mem(int v) { return off_mem(be.loc[v].slot); }
 
 // Use slots of an instruction: CALL = target + args, PHI = args, else a b c.
 static int nuse_slots(const IRInstr *i) {
+    if (i->op == IR_DBGVAL) return 0; // a debug binding is not a real use
     if (i->op == IR_PHI) return i->nargs;
     if (i->op == IR_CALL) return 1 + i->nargs;
     return 3;
@@ -1602,6 +1616,7 @@ typedef struct {
     int trail;
     unsigned cnt;
 } RipSave;
+
 static RipSave rip_save(void) { return (RipSave){x86_rip_disp_pos, x86_rip_trail, x86_rip_count}; }
 static void rip_restore(RipSave s) {
     x86_rip_disp_pos = s.pos;
@@ -2689,7 +2704,9 @@ static void emit_epilogue(void) {
     }
     for (int k = 0; k < be.ncs; k++) x86_mov_rm(S, 8, be.cs_reg[k], off_mem(be.cs_base + 8 * (k + 1)));
     x86_leave(S);
+    cg_ir_cfi(CFI_TEARDOWN, 0, 0);
     x86_ret(S);
+    cg_ir_cfi(CFI_RESTORE, 0, 0);
 }
 
 static void jmp_to(IRBlock *t, IRBlock *nxt) {
@@ -3030,8 +3047,11 @@ static void frame_layout(void) {
 // Frame setup at the start of a cold block when the hot path is frameless: rsp
 // is 8 mod 16 there (nothing was pushed), so the push re-aligns it for the call.
 static void emit_cold_prologue(void) {
+    cg_ir_cfi(CFI_ENTRY, 0, 0); // a previous cold block left its own frame rules behind
     x86_push(S, X86_RBP);
+    cg_ir_cfi(CFI_PUSH_RBP, 0, 0);
     x86_mov_rr(S, 8, X86_RBP, X86_RSP);
+    cg_ir_cfi(CFI_SET_FP, 0, 0);
     if (be.frame) x86_sub_ri(S, 8, X86_RSP, be.frame);
 }
 
@@ -3053,10 +3073,12 @@ static void emit_prologue(void) {
     IRFunc *f = be.f;
     if (!be.frameless) {
         x86_push(S, X86_RBP);
+        cg_ir_cfi(CFI_PUSH_RBP, 0, 0);
 #ifdef _WIN32
         cg_ir_uw_pushreg(X86_RBP);
 #endif
         x86_mov_rr(S, 8, X86_RBP, X86_RSP);
+        cg_ir_cfi(CFI_SET_FP, 0, 0);
 #ifdef _WIN32
         cg_ir_uw_setframe(X86_RBP);
 #endif
@@ -3069,7 +3091,10 @@ static void emit_prologue(void) {
     cg_ir_uw_endprologue(); // a frameless leaf has no unwind codes: the entry covers a bare `ret` frame
 #endif
     if (!be.frameless)
-        for (int k = 0; k < be.ncs; k++) x86_mov_mr(S, 8, off_mem(be.cs_base + 8 * (k + 1)), be.cs_reg[k]);
+        for (int k = 0; k < be.ncs; k++) {
+            x86_mov_mr(S, 8, off_mem(be.cs_base + 8 * (k + 1)), be.cs_reg[k]);
+            cg_ir_cfi(CFI_SAVE, be.cs_reg[k], be.cs_base + 8 * (k + 1)); // rbx/r12-r15: DWARF == x86 number
+        }
     IRBlock *entry = f->blocks[0];
     // Materialize aggregate params (VALUE8 / VALUE16 / MEMORY) into their
     // frame temps; the PARAM value rematerializes as the temp address.
@@ -3186,13 +3211,79 @@ void ir_emit_x86(Program *prog, IRFunc *f, bool emitting_local_copy) {
         if (be.coldframe && bi > 0 && is_cold(b)) emit_cold_prologue();
         for (int k = 0; k < b->nins; k++) {
             IRInstr *i = b->ins[k];
-            if (i->op == IR_NOP || (!emitted(i))) continue;
+            if (i->op == IR_NOP) continue;
+            if (i->op == IR_DBGVAL) {
+                if (opt_g && be.ndbgv < (int)(sizeof be.dbgv / sizeof be.dbgv[0]))
+                    be.dbgv[be.ndbgv++] = (DbgBind){(LVar *)i->sym, i->a, (uint32_t)S->len};
+                continue;
+            }
+            if (!emitted(i)) continue;
+            if (i->line) cg_ir_line(ir_dbg_file(IR_LOC_FILE(i->line)), IR_LOC_LINE(i->line));
             rip_start = S->len;
+            if (opt_g && be.vi[i->id].ipos >= 0) {
+                if (be.n_ipos_pc == be.cap_ipos_pc) {
+                    be.cap_ipos_pc = be.cap_ipos_pc ? be.cap_ipos_pc * 2 : 128;
+                    be.ipos_pc = realloc(be.ipos_pc, (size_t)be.cap_ipos_pc * sizeof *be.ipos_pc);
+                }
+                be.ipos_pc[be.n_ipos_pc++] = ((uint32_t)be.vi[i->id].ipos << 1) | (i->type == IRT_VOID ? 0u : 1u);
+                be.ipos_pc[be.n_ipos_pc++] = (uint32_t)rip_start;
+            }
             unsigned rip_c0 = x86_rip_count;
             emit_ins(b, i, nxt);
             rip_finish(rip_c0);
         }
     }
+    // Resolve debug bindings to location lists while regalloc results are alive.
+    if (be.ndbgv) {
+        DbgLoc *locs = calloc((size_t)be.ndbgv, sizeof *locs);
+        int nl = 0;
+        for (int i = 0; i < be.ndbgv; i++) {
+            DbgBind *db = &be.dbgv[i];
+            if (db->val < 0 || db->val >= be.nv) continue;
+            IRInstr *d = be.f->vals[db->val];
+            Loc *lo = &be.loc[db->val];
+            VInfo *vi = &be.vi[db->val];
+            if (!d || d->op == IR_NOP || vi->dead || vi->nrg == 0) continue;
+            if (lo->kind != LK_REG && lo->kind != LK_SPILL && lo->kind != LK_RAX) continue;
+            DbgRange r;
+            if (lo->kind == LK_SPILL) {
+                r = (DbgRange){db->pc, 0, 1, 0, lo->slot};
+            } else {
+                // DWARF x86-64 register numbers follow the original ABI order
+                // (rax,rdx,rcx,rbx,rsi,rdi,rbp,rsp,r8..r15), not ModRM order.
+                static const uint8_t dwarf_gpr[16] = {0, 2, 1, 3, 7, 6, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15};
+                int reg = lo->kind == LK_RAX ? 0 : lo->reg;
+                bool flt = d->type == IRT_F32 || d->type == IRT_F64;
+                r = (DbgRange){db->pc, 0, 0, (uint8_t)(flt ? 17 + reg : dwarf_gpr[reg & 15]), 0};
+            }
+            // The value stops being where the binding says when its live range ends:
+            // map the range end position back to a .text offset.
+            int endpos = vi->rg[vi->nrg - 1].to;
+            uint32_t endpc = (uint32_t)S->len;
+            for (int k = 0; k + 1 < be.n_ipos_pc; k += 2)
+                if ((int)(be.ipos_pc[k] >> 1) * 2 >= endpos) {
+                    endpc = be.ipos_pc[k + 1];
+                    break;
+                }
+            if (endpc <= r.start) continue;
+            r.end = endpc;
+            // Append to this variable's entry (bindings are recorded in layout order).
+            DbgLoc *dl = NULL;
+            for (int k = 0; k < nl; k++)
+                if (locs[k].var == db->var) dl = &locs[k];
+            if (!dl) {
+                dl = &locs[nl++];
+                dl->var = db->var;
+            }
+            dl->ranges = realloc(dl->ranges, (size_t)(dl->nranges + 1) * sizeof *dl->ranges);
+            dl->ranges[dl->nranges++] = r;
+        }
+        cg_ir_set_dbg_locs(locs, nl);
+    }
+    free(be.ipos_pc);
+    be.ipos_pc = NULL;
+    be.n_ipos_pc = be.cap_ipos_pc = 0;
+
     cg_ir_end_fn(sym, start);
 
     for (int v = 0; v < be.nv; v++) free(be.vi[v].rg);

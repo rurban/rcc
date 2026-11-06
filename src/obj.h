@@ -263,6 +263,7 @@ typedef enum {
     CFI_SAVE, // after saving callee-saved reg `reg` at rbp-`val`
     CFI_TEARDOWN, // after `pop %rbp` (before ret / tail jmp): CFA = rsp+8
     CFI_RESTORE, // after that ret/jmp: frame as before CFI_TEARDOWN
+    CFI_ENTRY, // back to the function-entry state (CFA = rsp+8, rbp not saved), no remember/restore
 } CfiKind;
 
 typedef struct {
@@ -277,6 +278,20 @@ typedef struct {
     CfiOp *ops;
     int nops, cap;
 } CfiFn;
+
+// One resolved location of an SSA local over a .text range (IR backend, -g2/-g3).
+typedef struct {
+    uint32_t start, end; // .text range the location is valid over
+    uint8_t kind; // 0 = DW_OP_regN (reg), 1 = DW_OP_breg6 (fbreg, off = 16 - slot)
+    uint8_t reg; // DWARF register number (kind 0)
+    int32_t off; // rbp-relative slot distance; fbreg operand = 16 - off (kind 1)
+} DbgRange;
+
+typedef struct {
+    void *var; // LVar* (obj.h must not depend on rcc.h)
+    DbgRange *ranges;
+    int nranges;
+} DbgLoc;
 
 #define MAX_DEBUG_FILES 128
 typedef struct {
@@ -304,6 +319,8 @@ typedef struct {
     void *fn;
     DebugScope *scopes;
     int scope_count, scope_cap;
+    DbgLoc *dbg_locs; // -g IR functions: resolved locations of promoted locals
+    int ndbg_locs;
 } DebugFnRec;
 
 // ---------------------------------------------------------------------------

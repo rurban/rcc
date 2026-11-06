@@ -672,6 +672,7 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i], "-fno-inline") || !strcmp(argv[i], "-fno-inline-functions") ||
                    !strcmp(argv[i], "-fno-inline-small-functions")) {
             opt_finline = false;
+            opt_fno_ir_inline = true;
         } else if (!strcmp(argv[i], "-funroll") || !strcmp(argv[i], "-funroll-loops")) {
             opt_funroll = true;
         } else if (!strcmp(argv[i], "-fno-unroll") || !strcmp(argv[i], "-fno-unroll-loops")) {

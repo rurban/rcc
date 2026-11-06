@@ -60,6 +60,27 @@ IRBlock *ir_block_new(IRFunc *f) {
     return b;
 }
 
+static const char **dbg_files;
+static int n_dbg_files, cap_dbg_files;
+
+int ir_dbg_file_idx(const char *filename) {
+    for (int i = 0; i < n_dbg_files; i++)
+        if (dbg_files[i] == filename) return i + 1;
+    if (n_dbg_files >= 2047) return 0; // IR_LOC keeps 11 bits of file index
+    if (n_dbg_files == cap_dbg_files) {
+        cap_dbg_files = cap_dbg_files ? cap_dbg_files * 2 : 16;
+        dbg_files = realloc(dbg_files, (size_t)cap_dbg_files * sizeof *dbg_files);
+        if (!dbg_files) {
+            fprintf(stderr, "rcc: out of memory\n");
+            exit(1);
+        }
+    }
+    dbg_files[n_dbg_files++] = filename;
+    return n_dbg_files;
+}
+
+const char *ir_dbg_file(int idx) { return idx >= 1 && idx <= n_dbg_files ? dbg_files[idx - 1] : NULL; }
+
 IRInstr *ir_instr_new(IRFunc *f, IROp op, IRType type) {
     IRInstr *i = calloc(1, sizeof *i);
     if (!i) {

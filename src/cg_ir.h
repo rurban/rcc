@@ -13,6 +13,16 @@ size_t cg_ir_begin_fn(Program *prog, Function *fn, bool emitting_local_copy, con
 // Finish: patch the symbol size, run -O1 jump threading over the branch sites.
 void cg_ir_end_fn(const char *sym, size_t start_off);
 
+// -g2/-g3 (IR path): attach resolved location lists (DbgLoc array from obj.h, ownership
+// taken) to the current function's debug record; no-op unless a record is open.
+void cg_ir_set_dbg_locs(void *locs, int n);
+
+// -g: a source line row at the current .text offset (no-op unless debug info is on, and
+// when the row repeats the previous one). `file` is the token filename (NULL = main file).
+void cg_ir_line(const char *file, int line);
+// -g: an unwind event at the current .text offset (CfiKind from obj.h); no-op without -g.
+void cg_ir_cfi(int kind, int reg, int val);
+
 // Conditional / unconditional jump to a label defined (possibly later) with
 // cg_ir_label(); backpatched through the asm fixup table. `cond` is an X86Cond.
 size_t cg_ir_jcc(int cond, const char *label);

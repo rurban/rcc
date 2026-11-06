@@ -90,6 +90,12 @@ static void emit_op(SecBuf *b, const CfiOp *op) {
     case CFI_RESTORE:
         secbuf_emit8(b, DW_CFA_restore_state);
         break;
+    case CFI_ENTRY: // e.g. the head of a cold block that sets up its own frame
+        secbuf_emit8(b, DW_CFA_def_cfa);
+        put_uleb(b, DW_REG_RSP);
+        put_uleb(b, 8);
+        secbuf_emit8(b, DW_CFA_restore | DW_REG_RBP);
+        break;
     }
 }
 

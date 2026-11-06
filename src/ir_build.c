@@ -12,6 +12,7 @@
 // (sign/zero-extended within its 32 bits per its C signedness).
 #include "ir.h"
 #include "cg_ir.h"
+#include "obj.h" // RCC_CFI: -g support in this backend
 
 // Vector values passed or returned by value are not modelled by the AArch64 emitter (the
 // IRAggClass classification covers structs and unions only); such functions stay on the AST
@@ -100,6 +101,7 @@ typedef struct {
     char **label_name;
     IRBlock **label_blk;
     int nlabels, caplabels;
+    int cur_loc; // -g: IR_LOC of the AST node being lowered (0 = none)
 } B;
 
 // ------------------------------------------------------------------ helpers
@@ -219,8 +221,16 @@ static IRBlock *cur_block(B *b) {
 
 static IRInstr *emit(B *b, IROp op, IRType t) {
     IRInstr *i = ir_instr_new(b->f, op, t);
+    i->line = b->cur_loc;
     ir_block_append(cur_block(b), i);
     return i;
+}
+
+// -g: remember the source position of the node being lowered; every instruction
+// emitted until the next node carries it (ir_x86.c turns changes into line rows).
+static void note_loc(B *b, Node *n) {
+    if (opt_g && n->tok && n->tok->filename && n->tok->lineno > 0)
+        b->cur_loc = IR_LOC(ir_dbg_file_idx(n->tok->filename), n->tok->lineno);
 }
 
 static int op0(B *b, IROp op, IRType t, int64_t imm) {
@@ -336,6 +346,16 @@ static int *blk_cur(B *b, IRBlock *blk) {
 }
 
 static void write_var(B *b, int var, IRBlock *blk, int val) { blk_cur(b, blk)[var] = val + 1; }
+
+// -g: note that SSA variable `var` (LVar* via LvInfo) now holds `val`, for the
+// location lists dwarf_g3.c emits. No-op unless -g: without debug info no
+// DBGVAL is ever created, so codegen is untouched.
+static void dbg_write(B *b, LVar *var, int val) {
+    if (!opt_g || b->fail || val == IR_NONE) return;
+    IRInstr *d = emit(b, IR_DBGVAL, IRT_VOID);
+    d->a = val;
+    d->sym = (const char *)var;
+}
 
 static int read_var(B *b, int var, IRBlock *blk);
 
@@ -1264,6 +1284,7 @@ static int assign_to(B *b, Node *lhs, int val) {
         LvInfo *e = lv_info(b, lhs->var);
         if (e->ssa >= 0) {
             write_var(b, e->ssa, cur_block(b), val);
+            dbg_write(b, lhs->var, val);
             return val;
         }
     }
@@ -1364,8 +1385,10 @@ static int gen_incdec(B *b, Node *n) {
     } else {
         nv = norm(b, op2(b, inc ? IR_ADD : IR_SUB, s.t, old, iconst(b, s.t, 1)), s);
     }
-    if (ssa) write_var(b, e->ssa, b->cur_blk, nv);
-    else
+    if (ssa) {
+        write_var(b, e->ssa, b->cur_blk, nv);
+        dbg_write(b, lhs->var, nv);
+    } else
         emit_store(b, mem_of(s), addr, nv, ty_volatile(lhs->ty));
     return post ? old : nv;
 }
@@ -1639,6 +1662,7 @@ fail_call:
 
 static int gen_expr(B *b, Node *n) {
     if (b->fail || !n) return IR_NONE;
+    note_loc(b, n);
     Sc s;
     switch (n->kind) {
     case ND_NUM: {
@@ -1832,6 +1856,7 @@ static void gen_zero_init(B *b, Node *n) {
         LvInfo *e = lv_info(b, v);
         if (e->ssa >= 0) {
             write_var(b, e->ssa, cur_block(b), zero_of(b, e->sc.t));
+            dbg_write(b, v, read_var(b, e->ssa, cur_block(b)));
             return;
         }
     }
@@ -1869,6 +1894,7 @@ static void gen_zero_init(B *b, Node *n) {
 
 static void gen_stmt(B *b, Node *n) {
     if (b->fail || !n) return;
+    note_loc(b, n);
     switch (n->kind) {
     case ND_NULL:
         return;
@@ -2146,7 +2172,11 @@ static bool fn_eligible(B *b) {
         fail(b, "function attribute");
         return false;
     }
-    if (opt_g || opt_ubsan || opt_asan || opt_float_cast_overflow || opt_sanitize_list || opt_stack_protector) {
+    if (
+#ifndef RCC_CFI
+        opt_g || // -g needs line rows and CFI from the IR emitter (x86-64 ELF only)
+#endif
+        opt_ubsan || opt_asan || opt_float_cast_overflow || opt_sanitize_list || opt_stack_protector) {
         fail(b, "debug/sanitizer/stack-protector");
         return false;
     }
@@ -2283,8 +2313,10 @@ IRFunc *ir_build(Program *prog, Function *fn) {
         int pv = op0(b, IR_PARAM, ps.t, idx);
         pv = norm(b, pv, ps); // callers may leave the high bits of narrow args undefined
         LvInfo *e = lv_info(b, p);
-        if (e->ssa >= 0) write_var(b, e->ssa, entry, pv);
-        else
+        if (e->ssa >= 0) {
+            write_var(b, e->ssa, entry, pv);
+            dbg_write(b, p, pv);
+        } else
             emit_store(b, mem_of(ps), op0(b, IR_FRAMEADDR, IRT_I64, p->offset), pv, false);
     }
 

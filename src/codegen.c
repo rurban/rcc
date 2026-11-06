@@ -778,6 +778,9 @@ void objfile_debug_scope_end(ObjFile *obj, void *vars_end) {
 // ---------------------------------------------------------------------------
 #ifdef RCC_CFI
 static int cfi_cur = -1; // index into cg_obj->cfi_fns, -1 = none open
+#ifdef RCC_DWARF3
+static int dbg_cur = -1; // index into cg_obj->debug_fns, -1 = none open
+#endif
 
 static void cfi_fn_begin(size_t start) {
     ObjFile *obj = cg_obj;
@@ -793,6 +796,9 @@ static void cfi_fn_begin(size_t start) {
         }
     }
     cfi_cur = obj->cfi_fn_count++;
+#ifdef RCC_DWARF3
+    dbg_cur = obj->debug_fn_count > 0 ? obj->debug_fn_count - 1 : -1;
+#endif
     CfiFn *f = &obj->cfi_fns[cfi_cur];
     memset(f, 0, sizeof(*f));
     f->start = start;
@@ -817,6 +823,17 @@ static void cfi_fn_end(void) {
     CfiFn *f = &cg_obj->cfi_fns[cfi_cur];
     f->size = cg_sec->len - f->start;
     cfi_cur = -1;
+}
+
+void cg_ir_set_dbg_locs(void *locs, int n) {
+#ifdef RCC_DWARF3
+    if (dbg_cur < 0) return;
+    DebugFnRec *r = &cg_obj->debug_fns[dbg_cur];
+    r->dbg_locs = locs;
+    r->ndbg_locs = n;
+#else
+    (void)locs, (void)n;
+#endif
 }
 #else
 #define cfi_fn_begin(start) ((void)(start))
@@ -20020,9 +20037,33 @@ size_t cg_ir_begin_fn(Program *prog, Function *fn, bool emitting_local_copy, con
 #ifdef _WIN32
     uw_begin(); // .seh_proc
 #endif
+#ifdef RCC_DWARF3
+    objfile_debug_fn_begin(cg_obj, *sym_out, fn);
+#endif
+    cfi_fn_begin(start);
+    last_debug_line = 0; // the first instruction of every function gets a row
     return start;
 }
+void cg_ir_line(const char *file, int line) {
+    if (!opt_g || !cg_obj || line <= 0) return;
+    int fidx = get_debug_file_idx((char *)file);
+    if (fidx == last_debug_file && line == last_debug_line) return;
+    objfile_add_debug_line(cg_obj, cg_sec->len, fidx, line);
+    last_debug_file = fidx;
+    last_debug_line = line;
+}
+void cg_ir_cfi(int kind, int reg, int val) {
+    (void)kind, (void)reg, (void)val;
+    cfi_op((CfiKind)kind, reg, val);
+}
 void cg_ir_end_fn(const char *sym, size_t start_off) {
+    cfi_fn_end();
+#ifdef RCC_DWARF3
+    dbg_cur = -1;
+#endif
+#ifdef RCC_DWARF3
+    objfile_debug_fn_end(cg_obj);
+#endif
     cg_patch_fn_size(sym, start_off);
     cg_thread_jumps(cg_sec);
 #ifdef _WIN32

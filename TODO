@@ -120,16 +120,18 @@
   Open:
   - Locals: if/switch/while init scopes (only blocks and for-init are
     recorded), block-scope statics, VLAs, TLS (DW_OP_const8u +
-    DW_OP_GNU_push_tls_address), register-promoted locals (-O2 vreg: emitted
-    without a location; IR backend is already off under -g).
+    DW_OP_GNU_push_tls_address). IR-backend (-O2) locals now have .debug_loc
+    location lists from IR_DBGVAL bindings + regalloc ranges; gaps remain:
+    inlined callees' locals are dropped, constants/rematerialized values show
+    as <optimized out>, and location ranges are clipped only at value
+    live-range ends (not at the next binding of the same variable).
   - Typedef names are not kept on variable/member types (they resolve to the
     underlying type); unused tagged types and enums are not emitted.
-  - Frame info: .eh_frame (src/eh_frame.c) exists only for -g builds on ELF
-    x86-64, AST backend only. Without -g, and for the SSA IR backend's
-    functions (which have their own prologues, including shrink-wrapped
-    per-cold-block ones), there is no CFI; extending it needs IR-side events
-    plus a -fasynchronous-unwind-tables default. rcc's own helper routines
-    (alloca helper, ASan ctors) have no FDE. No CFI for AArch64/Mach-O/COFF.
+  - Frame info: .eh_frame (src/eh_frame.c) exists for -g builds on ELF x86-64,
+    AST and IR backends (IR: codegen.c cg_ir_cfi events incl. cold-block
+    frames). Without -g there is no CFI, and no -fasynchronous-unwind-tables
+    default yet. rcc's own helper routines (alloca helper, ASan ctors) have no
+    FDE. No CFI for AArch64/Mach-O/COFF.
   - Macros: command-line (-D) and builtin macros are not recorded; include
     line numbers are 0.
   - Other targets: AArch64 ELF, Mach-O, COFF/PE (writers need extra-section

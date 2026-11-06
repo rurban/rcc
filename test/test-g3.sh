@@ -129,6 +129,25 @@ if gcc cfi.o -o cfi_gcc -lpthread && ./cfi_gcc; then ok "gcc link: backtrace/pth
 if "$RCC" -g cfi.c -o cfi_rcc -lpthread && ./cfi_rcc; then ok "rcc link: backtrace/pthread_exit unwind through rcc frames"; else bad "rcc link: backtrace/pthread_exit unwind through rcc frames"; fi
 if readelf -lW cfi_rcc | grep -q GNU_EH_FRAME; then ok "rcc link: PT_GNU_EH_FRAME"; else bad "rcc link: PT_GNU_EH_FRAME"; fi
 
+# --- -g with the SSA IR backend (-O2): -g must not disable IR, and promoted
+# locals get .debug_loc location lists (register + spill ranges).
+cat > irloc.c <<'EOF2'
+__attribute__((noinline)) int foo(int n) {
+    int a = n + 2;
+    int b = a * 3;
+    return b - a;
+}
+int main(void) { return foo(5) == 15 ? 0 : 1; }
+EOF2
+"$RCC" -O2 -c irloc.c -o irloc_plain.o 2>/dev/null
+"$RCC" -O2 -g -c irloc.c -o irloc_g.o 2>/dev/null
+"$RCC" -O2 -g2 -c irloc.c -o irloc_g2.o 2>/dev/null
+if cmp -s irloc_plain.o irloc_g.o; then bad "-O2 -g keeps the IR backend (identical code)"; else ok "-O2 -g keeps the IR backend (identical code)"; fi
+if readelf -SW irloc_g2.o | grep -q "\.debug_loc"; then ok "-O2 -g2: .debug_loc location lists"; else bad "-O2 -g2: .debug_loc location lists"; fi
+if readelf --debug-dump=info irloc_g2.o | grep -q "location list"; then ok "-O2 -g2: variables use location lists"; else bad "-O2 -g2: variables use location lists"; fi
+if readelf -wF irloc_g2.o | grep -q "rbp+16"; then ok "-O2 -g2: .eh_frame for IR functions"; else bad "-O2 -g2: .eh_frame for IR functions"; fi
+if readelf --debug-dump=decodedline irloc_g2.o | grep -q "irloc.c"; then ok "-O2 -g2: line table on IR code"; else bad "-O2 -g2: line table on IR code"; fi
+
 if command -v gdb >/dev/null 2>&1; then
     gdb -batch -ex 'break sq' -ex run -ex 'info args' -ex 'up' -ex 'info locals' \
         -ex 'p gcount' -ex 'ptype struct Point' -ex 'macro expand SQUARE(3)' t_gcc > gdb1.txt 2>&1
@@ -136,6 +155,13 @@ if command -v gdb >/dev/null 2>&1; then
     if grep -q 'int b5 : 5;' gdb1.txt; then ok "gdb: ptype bit-field"; else bad "gdb: ptype bit-field"; fi
     if grep -q "^[$]1 = 5" gdb1.txt; then ok "gdb: global value"; else bad "gdb: global value"; fi
     if grep -q '((3)\*(3))' gdb1.txt; then ok "gdb: macro expand"; else bad "gdb: macro expand"; fi
+    "$RCC" -O2 -g3 irloc.c -o irloc_t && gdb -batch -ex 'break foo' -ex run -ex 'p n' \
+        -ex 'next' -ex 'p a' -ex 'next' -ex 'p b' irloc_t > gdb4.txt 2>&1
+    if grep -q "^[$]1 = 5" gdb4.txt && grep -q "^[$]2 = 7" gdb4.txt && grep -q "^[$]3 = 21" gdb4.txt; then
+        ok "gdb: IR register location lists"
+    else
+        bad "gdb: IR register location lists"
+    fi
     gdb -batch -ex 'break *sq' -ex run -ex bt -ex 'info args' t_gcc > gdb3.txt 2>&1
     if grep -q '^#1 .* main ' gdb3.txt; then ok "gdb: backtrace from the first instruction"; else bad "gdb: backtrace from the first instruction"; fi
     gdb -batch -ex 'break 15' -ex run -ex 'info locals' -ex 'p p' t_gcc > gdb2.txt 2>&1

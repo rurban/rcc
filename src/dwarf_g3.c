@@ -25,6 +25,9 @@ int cg_obj_var_sym_idx(LVar *var);
 #define SYMBASE 1000000
 #define MAX_SECS 32
 #define MACRO_SENTINEL 0x7ffffff1u // 4-byte (data4) placeholder, see emit_macros()
+#define LOC_SENTINEL_BASE 0x60000000u // per-variable DW_AT_location placeholder, see loclists
+#define MAX_LOCREF 1024
+#define LOC_SENTINEL_BASE 0x60000000u // per-variable DW_AT_location placeholder, see loclists
 
 typedef struct {
     const void *key;
@@ -53,6 +56,12 @@ typedef struct {
     bool macro_patch;
     unsigned char *mac; // .debug_macinfo bytes
     size_t maclen, maccap;
+    // per-variable .debug_loc location lists pending their patch (loclists)
+    struct {
+        DbgLoc *loc;
+        uint32_t sentinel;
+    } locref[MAX_LOCREF];
+    int nlocref;
     BaseEnt base[64];
     int nbase;
 } G;
@@ -395,11 +404,23 @@ static int cmp_ptr(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
-static void emit_local(LVar *v, Dwarf_P_Die parent, bool is_param) {
+static void emit_local_rec(DebugFnRec *rec, LVar *v, Dwarf_P_Die parent, bool is_param) {
     Dwarf_P_Die d = new_die(is_param ? DW_TAG_formal_parameter : DW_TAG_variable, parent);
     at_name(d, v->name);
     at_ref(d, DW_AT_type, type_die(v->ty));
     if (v->vreg) return; // lives in a register: no memory location
+    // IR-compiled function with resolved locations for this promoted local:
+    // a .debug_loc location list, patched in after the transform (loclists).
+    if (rec && g.nlocref < MAX_LOCREF) {
+        for (int k = 0; k < rec->ndbg_locs; k++)
+            if (rec->dbg_locs[k].var == v && rec->dbg_locs[k].nranges > 0) {
+                at_u(d, DW_AT_decl_line, LOC_SENTINEL_BASE + (unsigned)g.nlocref);
+                g.locref[g.nlocref].loc = &rec->dbg_locs[k];
+                g.locref[g.nlocref].sentinel = LOC_SENTINEL_BASE + (unsigned)g.nlocref;
+                g.nlocref++;
+                return;
+            }
+    }
     at_loc_fbreg(d, -v->offset - 16); // CFA = rbp+16 (push rbp; mov rsp,rbp)
 }
 
@@ -410,7 +431,7 @@ static int cmp_scope(const void *a, const void *b) {
     return 0;
 }
 
-static void emit_slice(Dwarf_P_Die parent, LVar *stop, LVar *newest) {
+static void emit_slice_rec(DebugFnRec *rec, Dwarf_P_Die parent, LVar *stop, LVar *newest) {
     // Chain is newest-first; emit in declaration order.
     int n = 0;
     for (LVar *v = newest; v && v != stop; v = v->next)
@@ -420,7 +441,7 @@ static void emit_slice(Dwarf_P_Die parent, LVar *stop, LVar *newest) {
     for (LVar *v = newest; v && v != stop; v = v->next)
         a[--i] = v;
     for (i = 0; i < n; i++)
-        if (var_ok(a[i]) && !a[i]->is_static) emit_local(a[i], parent, false);
+        if (var_ok(a[i]) && !a[i]->is_static) emit_local_rec(rec, a[i], parent, false);
     free(a);
 }
 
@@ -465,7 +486,7 @@ static void emit_function(DebugFnRec *rec) {
     for (LVar *p = fn->params; p; p = p->param_next) {
         if (nmark == cap) mark = realloc(mark, (cap *= 2) * sizeof *mark);
         mark[nmark++] = (uintptr_t)p;
-        if (var_ok(p)) emit_local(p, sp, true);
+        if (var_ok(p)) emit_local_rec(rec, p, sp, true);
     }
     if (fn->is_variadic) new_die(DW_TAG_unspecified_parameters, sp);
 
@@ -491,7 +512,7 @@ static void emit_function(DebugFnRec *rec) {
         if (!bsearch(&k, mark, nmark, sizeof *mark, cmp_ptr)) top[ntop++] = v;
     }
     for (int i = ntop - 1; i >= 0; i--)
-        if (var_ok(top[i]) && !top[i]->is_static) emit_local(top[i], sp, false);
+        if (var_ok(top[i]) && !top[i]->is_static) emit_local_rec(rec, top[i], sp, false);
     free(top);
     free(mark);
 
@@ -505,7 +526,7 @@ static void emit_function(DebugFnRec *rec) {
         Dwarf_P_Die parent = sd ? stk[sd - 1].die : sp;
         Dwarf_P_Die blk = new_die(DW_TAG_lexical_block, parent);
         at_text_range(blk, s->start, s->end - s->start);
-        emit_slice(blk, s->vars, s->vars_end);
+        emit_slice_rec(rec, blk, s->vars, s->vars_end);
         if (sd < 128) stk[sd++] = (StkEnt){s->end, blk};
     }
 }
@@ -623,6 +644,7 @@ static void emit_macros(void) {
     g.macro_patch = true;
 }
 
+
 // ---------------------------------------------------------------- driver
 typedef struct {
     int sec;
@@ -638,6 +660,312 @@ typedef struct {
     const unsigned char *bytes;
     size_t len;
 } OutSec;
+static const char *sec_name(Dwarf_Unsigned idx);
+static bool fail(const char *what);
+
+// ---------------------------------------------------------------- loclists
+// Per-variable location lists (.debug_loc, DWARF 4). libdwarfp cannot produce
+// them, so the section is built here and each variable's placeholder attribute
+// (a DW_AT_decl_line with a sentinel value, added in emit_local_rec) is
+// retargeted to DW_AT_location/sec_offset after the transform: the DIE walk
+// finds the sentinels, and only the abbreviation codes that actually describe
+// a sentinel-carrying DIE are patched.
+static unsigned char *loc_buf;
+static size_t loc_len, loc_cap;
+
+static void loc_byte(unsigned v) {
+    if (loc_len == loc_cap) {
+        loc_cap = loc_cap ? loc_cap * 2 : 4096;
+        loc_buf = realloc(loc_buf, loc_cap);
+        if (!loc_buf) {
+            fprintf(stderr, "rcc: out of memory\n");
+            exit(1);
+        }
+    }
+    loc_buf[loc_len++] = (unsigned char)v;
+}
+
+
+static int cmp_range(const void *a, const void *b) {
+    uint32_t x = ((const DbgRange *)a)->start, y = ((const DbgRange *)b)->start;
+    return x < y ? -1 : x > y;
+}
+
+typedef struct {
+    int sec; // ObjFile section id of .debug_loc
+    uint64_t off; // byte offset of the list
+    uint32_t sentinel;
+} LocOut;
+
+// Build the .debug_loc bytes for every pending list, appending relocations
+// (against .text for the ranges, .debug_loc for the attribute offsets).
+static bool build_loclists(ObjFile *obj, OutSec *out, int nout, PendRel **rels, size_t *nrel,
+                           size_t *caprel) {
+    OutSec *info = NULL, *abbrev = NULL;
+    for (int i = 0; i < nout; i++) {
+        if (!strcmp(sec_name(out[i].idx), ".debug_info")) info = &out[i];
+        if (!strcmp(sec_name(out[i].idx), ".debug_abbrev")) abbrev = &out[i];
+    }
+    if (!info || !abbrev) return fail("missing .debug_info/.debug_abbrev for location lists");
+
+    int text_sym = objfile_add_sym(obj, ".text", SEC_TEXT, 0, 0, SB_LOCAL, ST_SECTION);
+    int loc_sec = objfile_find_or_add_section(obj, ".debug_loc", 0, 0);
+    int loc_sym = objfile_add_sym(obj, ".debug_loc", loc_sec, 0, 0, SB_LOCAL, ST_SECTION);
+
+    static LocOut lo[MAX_LOCREF];
+    for (int i = 0; i < g.nlocref; i++) {
+        DbgLoc *dl = g.locref[i].loc;
+        DbgRange *rs = malloc((size_t)dl->nranges * sizeof *rs);
+        memcpy(rs, dl->ranges, (size_t)dl->nranges * sizeof *rs);
+        qsort(rs, (size_t)dl->nranges, sizeof *rs, cmp_range);
+        lo[i] = (LocOut){loc_sec, loc_len, g.locref[i].sentinel};
+        for (int k = 0; k < dl->nranges; k++) {
+            uint32_t a = rs[k].start, b = rs[k].end;
+            if (k + 1 < dl->nranges && rs[k + 1].start < b) b = rs[k + 1].start; // clip overlaps
+            if (b <= a) continue;
+            // v4 entry: begin offset, end offset (relative to the CU base
+            // address; gdb adds DW_AT_low_pc back), 2-byte length, expression.
+            // Offsets from the .text base need no relocation.
+            (void)text_sym;
+            uint64_t vv = a;
+            for (int w = 0; w < 8; w++) loc_byte((unsigned)(vv >> (8 * w)) & 0xff);
+            vv = b;
+            for (int w = 0; w < 8; w++) loc_byte((unsigned)(vv >> (8 * w)) & 0xff);
+            unsigned char expr[16];
+            size_t en = 0;
+            if (rs[k].kind == 0) {
+                expr[en++] = (unsigned char)(0x50 + rs[k].reg); // DW_OP_regN
+            } else {
+                expr[en++] = 0x76; // DW_OP_breg6 (rbp)
+                int64_t v = -(int64_t)rs[k].off;
+                for (;;) { // sleb128
+                    unsigned by = v & 0x7f;
+                    v >>= 7;
+                    if ((v == 0 && !(by & 0x40)) || (v == -1 && (by & 0x40))) {
+                        expr[en++] = (unsigned char)by;
+                        break;
+                    }
+                    expr[en++] = (unsigned char)(by | 0x80);
+                }
+            }
+            loc_byte((unsigned)en & 0xff); // v4: fixed 2-byte little-endian length
+            loc_byte((unsigned)(en >> 8) & 0xff);
+            for (size_t w = 0; w < en; w++) loc_byte(expr[w]);
+        }
+        free(rs);
+        // v4 end-of-list marker: two address-sized (8-byte) zeros
+        for (int w = 0; w < 16; w++) loc_byte(0);
+    }
+
+    unsigned char *ab = (unsigned char *)abbrev->bytes;
+    size_t alen = abbrev->len;
+    // Parse .debug_abbrev once: code -> attribute list.
+    typedef struct {
+        uint32_t code;
+        uint16_t attr[32], form[32];
+        int nattr;
+        uint8_t children;
+    } AbEnt;
+    AbEnt ents[256];
+    int nent = 0;
+    {
+        size_t e = 0;
+        while (e < alen && nent < 256) {
+            uint32_t code, tag;
+            unsigned shift = 0;
+            code = 0;
+            for (;;) {
+                uint8_t byte = ab[e++];
+                code |= (uint32_t)(byte & 0x7f) << shift;
+                if (!(byte & 0x80)) break;
+                shift += 7;
+            }
+            if (!code) break;
+            shift = 0;
+            tag = 0;
+            for (;;) {
+                uint8_t byte = ab[e++];
+                tag |= (uint32_t)(byte & 0x7f) << shift;
+                if (!(byte & 0x80)) break;
+                shift += 7;
+            }
+            (void)tag;
+            AbEnt *en = &ents[nent++];
+            en->code = code;
+            en->children = ab[e];
+            e++; // children flag
+            en->nattr = 0;
+            while (ab[e] || ab[e + 1]) {
+                if (en->nattr < 32) {
+                    en->attr[en->nattr] = ab[e];
+                    en->form[en->nattr] = ab[e + 1];
+                    en->nattr++;
+                }
+                e += 2;
+            }
+            e += 2;
+        }
+    }
+
+    // Walk the DIEs, skipping values by form; record sentinel sites.
+    uint8_t patched[256] = {0}; // abbrev codes retargeted to DW_AT_location
+    int nsite = 0;
+    struct {
+        size_t valoff;
+        uint32_t abcode;
+    } sites[MAX_LOCREF];
+    size_t pos = 11; // skip the 32-bit CU header
+    int depth = 0;
+    while (pos < info->len && nsite < MAX_LOCREF) {
+        size_t p = pos;
+        uint32_t code = 0;
+        unsigned shift = 0;
+        for (;;) {
+            if (p >= info->len) goto walkdone;
+            uint8_t byte = info->bytes[p++];
+            code |= (uint32_t)(byte & 0x7f) << shift;
+            if (!(byte & 0x80)) break;
+            shift += 7;
+        }
+        if (!code) {
+            if (depth == 0) break;
+            depth--;
+            pos = p;
+            continue;
+        }
+        AbEnt *en = NULL;
+        for (int i = 0; i < nent; i++)
+            if (ents[i].code == code) en = &ents[i];
+        if (!en) {
+            fprintf(stderr, "rcc: -g3: DIE abbrev code %u not found\n", code);
+            return fail("abbrev code not found in .debug_abbrev walk");
+        }
+        bool hit = false;
+        for (int ai = 0; ai < en->nattr; ai++) {
+            uint32_t form = en->form[ai];
+            size_t vlen = 0;
+            switch (form) {
+            case 0x01: vlen = 8; break;
+            case 0x03: vlen = 2 + ((size_t)info->bytes[p] | ((size_t)info->bytes[p + 1] << 8)); break;
+            case 0x04:
+                vlen = 4 + ((size_t)info->bytes[p] | ((size_t)info->bytes[p + 1] << 8) | ((size_t)info->bytes[p + 2] << 16) | ((size_t)info->bytes[p + 3] << 24));
+                break;
+            case 0x09:
+            case 0x18: { // block, exprloc (uleb length)
+                size_t q = p, n = 0;
+                unsigned sh = 0;
+                for (;;) {
+                    uint8_t byte = info->bytes[q++];
+                    n |= (size_t)(byte & 0x7f) << sh;
+                    if (!(byte & 0x80)) break;
+                    sh += 7;
+                }
+                vlen = (q - p) + n;
+                break;
+            }
+            case 0x0a: vlen = 1 + info->bytes[p]; break;
+            case 0x05: vlen = 2; break;
+            case 0x06: vlen = 4; break;
+            case 0x07: vlen = 8; break;
+            case 0x08: vlen = strnlen((const char *)info->bytes + p, info->len - p) + 1; break;
+            case 0x0b:
+            case 0x0c:
+            case 0x11: vlen = 1; break;
+            case 0x12: vlen = 2; break;
+            case 0x13:
+            case 0x0e:
+            case 0x17: vlen = 4; break;
+            case 0x14:
+            case 0x10: vlen = 8; break;
+            case 0x0d:
+            case 0x0f:
+            case 0x15: { // sdata, udata, ref_udata
+                size_t q = p;
+                while (q < info->len && (info->bytes[q] & 0x80)) q++;
+                vlen = q - p + 1;
+                break;
+            }
+            default:
+                fprintf(stderr, "rcc: -g3: abbrev walk: unsupported form 0x%x\n", form);
+                return fail("unsupported form in .debug_abbrev walk");
+            }
+            if (en->attr[ai] == 0x3b && form == 0x06 && p + 4 <= info->len) {
+                uint32_t v;
+                memcpy(&v, info->bytes + p, 4);
+                if ((v & 0xf0000000u) == LOC_SENTINEL_BASE) {
+                    hit = true;
+                    sites[nsite].valoff = p;
+                    sites[nsite].abcode = code;
+                    nsite++;
+                }
+            }
+            p += vlen;
+        }
+        if (en->children) depth++;
+        if (hit && !patched[code & 0xff]) {
+            // retarget this abbrev's (decl_line, data4) pair to (location, sec_offset)
+            for (int ai = 0; ai < en->nattr; ai++)
+                if (en->attr[ai] == 0x3b && en->form[ai] == 0x06) {
+                    // find the pair in the abbrev bytes: walk entries again
+                    size_t e = 0;
+                    while (e < alen) {
+                        size_t q = e;
+                        unsigned sh = 0;
+                        uint32_t c2 = 0;
+                        for (;;) {
+                            uint8_t byte = ab[q++];
+                            c2 |= (uint32_t)(byte & 0x7f) << sh;
+                            if (!(byte & 0x80)) break;
+                            sh += 7;
+                        }
+                        // skip tag uleb + children byte
+                        while (ab[q] & 0x80) q++;
+                        q += 2;
+                        if (c2 == code) {
+                            while (ab[q] || ab[q + 1]) {
+                                if (ab[q] == 0x3b && ab[q + 1] == 0x06) {
+                                    ab[q] = 0x02; // DW_AT_location
+                                    ab[q + 1] = 0x17; // DW_FORM_sec_offset
+                                    patched[code & 0xff] = 1;
+                                    break;
+                                }
+                                q += 2;
+                            }
+                            break;
+                        }
+                        // advance to the next entry
+                        while (q < alen && (ab[q] || ab[q + 1])) q += 2;
+                        e = q + 2;
+                    }
+                    break;
+                }
+        }
+        pos = p;
+    }
+walkdone:
+    if (nsite != g.nlocref) return fail("location-list placeholder not found in .debug_info");
+    // patch the sentinel values into real .debug_loc offsets, with relocs
+    for (int i = 0; i < nsite; i++) {
+        int k;
+        for (k = 0; k < g.nlocref; k++)
+            if (g.locref[k].sentinel == 0) break;
+        uint32_t v;
+        memcpy(&v, info->bytes + sites[i].valoff, 4);
+        for (k = 0; k < g.nlocref; k++)
+            if (g.locref[k].sentinel == v) break;
+        if (k == g.nlocref) return fail("location-list sentinel mismatch");
+        uint32_t off32 = (uint32_t)lo[k].off;
+        memcpy((void *)(info->bytes + sites[i].valoff), &off32, 4);
+        if (*nrel == *caprel) {
+            *caprel = *caprel ? *caprel * 2 : 64;
+            *rels = realloc(*rels, *caprel * sizeof **rels);
+        }
+        (*rels)[(*nrel)++] =
+            (PendRel){info->sec, sites[i].valoff, loc_sym, R_X86_64_32, (int64_t)lo[k].off};
+    }
+    return true;
+}
+
 
 static bool fail(const char *what) {
     fprintf(stderr, "rcc: libdwarf -g3: %s failed: %s; using line-table-only DWARF\n", what,
@@ -763,6 +1091,11 @@ bool objfile_flush_debug_g3(ObjFile *obj, uint64_t text_end, void *program) {
         os->len += (size_t)len;
     }
 
+    if (g.nlocref && !g.failed && !build_loclists(obj, out, nout, &rels, &nrel, &caprel)) {
+        g.failed = true;
+        g.what = "location lists";
+    }
+
     if (g.macro_patch && !g.failed) {
         OutSec *info = NULL, *abbrev = NULL;
         for (int i = 0; i < nout; i++) {
@@ -865,6 +1198,10 @@ bool objfile_flush_debug_g3(ObjFile *obj, uint64_t text_end, void *program) {
     if (g.maclen)
         secbuf_emitbuf(objfile_section_buf(obj, objfile_find_or_add_section(obj, ".debug_macinfo", 0, 0)),
                        g.mac, g.maclen);
+    if (loc_len)
+        secbuf_emitbuf(
+            objfile_section_buf(obj, objfile_find_or_add_section(obj, ".debug_loc", 0, 0)), loc_buf,
+            loc_len);
     for (size_t i = 0; i < nrel; i++)
         objfile_add_reloc(obj, rels[i].sec, rels[i].off, rels[i].sym, rels[i].type, rels[i].addend);
     ok = true;
@@ -876,6 +1213,7 @@ done:
     free(rels);
     free(g.tt);
     free(g.mac);
+    free(loc_buf);
     if (g.dbg) {
         Dwarf_Error ferr = NULL;
         dwarf_producer_finish_a(g.dbg, &ferr);

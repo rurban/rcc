@@ -136,6 +136,11 @@ typedef enum {
     IR_RET,
     IR_UNREACHABLE,
 
+    // -g only: "the C local `sym` (LVar*) currently holds value `a`". Never
+    // emits code; the x86 backend turns it into a DWARF location-list entry.
+    // Invisible to the register allocator and every use-counting pass
+    // (nuse_slots() returns 0 for it), so it cannot change codegen.
+    IR_DBGVAL,
     IR_NOP, // removed instr (passes may leave these; emitters skip them)
     IR_NUM_OPS
 } IROp;
@@ -277,6 +282,15 @@ IRFunc *ir_build(Program *prog, Function *fn);
 
 // ---------------------------------------------------------------- ir_core.c
 // Construction and bookkeeping shared by all passes.
+// Source location packed into IRInstr.line under -g: (file index << 20) | line,
+// 0 = none. File indices come from ir_dbg_file_idx() (1-based, 0 = unknown).
+#define IR_LOC_LINE_MAX 0xFFFFF
+#define IR_LOC(file, line) (((file) << 20) | ((line) > IR_LOC_LINE_MAX ? IR_LOC_LINE_MAX : (line)))
+#define IR_LOC_FILE(loc) ((loc) >> 20)
+#define IR_LOC_LINE(loc) ((loc) & IR_LOC_LINE_MAX)
+int ir_dbg_file_idx(const char *filename); // pointer-identity table, like objfile_add_debug_file
+const char *ir_dbg_file(int idx);
+
 IRFunc *ir_func_new(Function *fn);
 void ir_func_free(IRFunc *f);
 IRBlock *ir_block_new(IRFunc *f); // appended to f->blocks
