@@ -129,7 +129,13 @@ static int write_src(const char *path, const char *src) {
 // signal, sh reports that as its own NORMAL exit with code 128+signum
 // (the convention test_kr_param_list_eof.c also documents).
 static int aborted_via_shell(int status) {
-    return status >= 0 && WIFEXITED(status) && WEXITSTATUS(status) == 128 + SIGABRT;
+    // Two POSIX-conforming sh conventions for a child killed by a signal:
+    // dash (Linux) exits 128+signum itself; the BSD ashes re-raise the
+    // signal and die by it (wait status WIFSIGNALED, often with the
+    // WCOREDUMP 0x80 bit set). Accept either.
+    if (status >= 0 && WIFEXITED(status))
+        return WEXITSTATUS(status) == 128 + SIGABRT;
+    return status >= 0 && WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
 }
 #else
 // Windows system() returns the child's exit code directly, without

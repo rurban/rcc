@@ -825,6 +825,11 @@ static void cfi_fn_end(void) {
     cfi_cur = -1;
 }
 
+#else
+#define cfi_fn_begin(start) ((void)(start))
+#define cfi_op(kind, reg, val) ((void)0)
+#define cfi_fn_end() ((void)0)
+#endif
 void cg_ir_set_dbg_locs(void *locs, int n) {
 #ifdef RCC_DWARF3
     if (dbg_cur < 0) return;
@@ -835,11 +840,7 @@ void cg_ir_set_dbg_locs(void *locs, int n) {
     (void)locs, (void)n;
 #endif
 }
-#else
-#define cfi_fn_begin(start) ((void)(start))
-#define cfi_op(kind, reg, val) ((void)0)
-#define cfi_fn_end() ((void)0)
-#endif
+
 int fn_struct_ret_off = 0; // next free offset within the struct-ret-buf area
 // Per-function cache of the comparison lhs-protect stack slot (see the
 // ND_EQ/NE/LT/LE cmp path in gen()), indexed by comparison-nesting depth.

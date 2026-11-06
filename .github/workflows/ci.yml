@@ -288,6 +288,8 @@ jobs:
           prepare: |
             pkg install -y gmake libdwarf
           run: |
+            mkdir -p "$HOME/bin" && ln -sf "$(command -v gmake)" "$HOME/bin/make"
+            export PATH="$HOME/bin:$PATH" MAKE=gmake
             cd "$GITHUB_WORKSPACE"
             gmake CC=cc
             ./rcc --version
@@ -332,6 +334,8 @@ jobs:
             /usr/sbin/pkg_add gmake
             /usr/sbin/pkg_add libdwarf || true
           run: |
+            mkdir -p "$HOME/bin" && ln -sf "$(command -v gmake)" "$HOME/bin/make"
+            export PATH="$HOME/bin:$PATH" MAKE=gmake
             cd "$GITHUB_WORKSPACE"
             gmake CC=cc
             ./rcc --version
@@ -376,6 +380,8 @@ jobs:
             pkg_add gmake
             pkg_add libdwarf || true
           run: |
+            mkdir -p "$HOME/bin" && ln -sf "$(command -v gmake)" "$HOME/bin/make"
+            export PATH="$HOME/bin:$PATH" MAKE=gmake
             cd "$GITHUB_WORKSPACE"
             gmake CC=cc
             ./rcc --version
