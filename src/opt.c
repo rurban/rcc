@@ -1182,33 +1182,56 @@ static bool is_all_ones_at_width(long long val, int width_bytes) {
     return ((uint64_t)val & mask) == mask;
 }
 
-typedef struct LocalOptAddr LocalOptAddr;
-struct LocalOptAddr {
-    LocalOptAddr *next;
-    LVar *var;
-};
-
-static LocalOptAddr *local_opt_addrs;
+// Address-taken locals of the function being optimized, as an open-addressing
+// hash set keyed by LVar pointer. A list here made collect (once per `&var`)
+// and the eligibility test (once per variable) both quadratic in the number
+// of address-taken locals: 101_cleanup's 65536 `__cleanup__` locals spent
+// ~90% of its compile time in these two scans.
+static LVar **local_opt_addr_tab;
+static size_t local_opt_addr_cap, local_opt_addr_n;
 static bool local_opt_has_asm;
 
+static size_t local_opt_addr_hash(const LVar *var) {
+    uintptr_t x = (uintptr_t)var >> 4;
+    x ^= x >> 17;
+    x *= 0x9e3779b97f4a7c15ULL;
+    return (size_t)(x >> 20);
+}
+
 static bool local_opt_addr_taken(LVar *var) {
-    for (LocalOptAddr *p = local_opt_addrs; p; p = p->next)
-        if (p->var == var) return true;
-    return false;
+    if (!local_opt_addr_cap) return false;
+    for (size_t i = local_opt_addr_hash(var) & (local_opt_addr_cap - 1);; i = (i + 1) & (local_opt_addr_cap - 1)) {
+        if (!local_opt_addr_tab[i]) return false;
+        if (local_opt_addr_tab[i] == var) return true;
+    }
+}
+
+static void local_opt_addr_insert(LVar *var) {
+    if (local_opt_addr_taken(var)) return;
+    if ((local_opt_addr_n + 1) * 2 > local_opt_addr_cap) {
+        size_t ncap = local_opt_addr_cap ? local_opt_addr_cap * 2 : 64;
+        LVar **ntab = calloc(ncap, sizeof(*ntab));
+        for (size_t i = 0; i < local_opt_addr_cap; i++)
+            if (local_opt_addr_tab[i]) {
+                size_t j = local_opt_addr_hash(local_opt_addr_tab[i]) & (ncap - 1);
+                while (ntab[j]) j = (j + 1) & (ncap - 1);
+                ntab[j] = local_opt_addr_tab[i];
+            }
+        free(local_opt_addr_tab);
+        local_opt_addr_tab = ntab;
+        local_opt_addr_cap = ncap;
+    }
+    size_t j = local_opt_addr_hash(var) & (local_opt_addr_cap - 1);
+    while (local_opt_addr_tab[j]) j = (j + 1) & (local_opt_addr_cap - 1);
+    local_opt_addr_tab[j] = var;
+    local_opt_addr_n++;
 }
 
 static void local_opt_collect_addrs(Node *node) {
     if (!node) return;
     if (node->kind == ND_ASM) local_opt_has_asm = true;
-    if (node->kind == ND_ADDR && node->lhs && node->lhs->kind == ND_LVAR) {
-        for (LocalOptAddr *p = local_opt_addrs; p; p = p->next)
-            if (p->var == node->lhs->var) goto descend;
-        LocalOptAddr *addr = calloc(1, sizeof(*addr));
-        addr->var = node->lhs->var;
-        addr->next = local_opt_addrs;
-        local_opt_addrs = addr;
-    }
-descend:
+    if (node->kind == ND_ADDR && node->lhs && node->lhs->kind == ND_LVAR)
+        local_opt_addr_insert(node->lhs->var);
     local_opt_collect_addrs(node->lhs);
     local_opt_collect_addrs(node->rhs);
     local_opt_collect_addrs(node->cond);
@@ -1222,11 +1245,9 @@ descend:
 }
 
 static void local_opt_clear_addrs(void) {
-    while (local_opt_addrs) {
-        LocalOptAddr *next = local_opt_addrs->next;
-        free(local_opt_addrs);
-        local_opt_addrs = next;
-    }
+    free(local_opt_addr_tab);
+    local_opt_addr_tab = NULL;
+    local_opt_addr_cap = local_opt_addr_n = 0;
     local_opt_has_asm = false;
 }
 
