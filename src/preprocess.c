@@ -40,6 +40,23 @@ struct Macro {
 #define MACRO_HT_SIZE 2048
 static Macro *macro_htab[MACRO_HT_SIZE];
 
+// -g3 macro info: events in source order (see rcc.h PPMacroEvent).
+PPMacroEvent *pp_macro_events;
+static PPMacroEvent *pp_macro_tail;
+
+static void pp_record_macro_event(const char *file, int line, char *name, char *value) {
+    PPMacroEvent *e = arena_alloc(sizeof *e);
+    e->file = file;
+    e->line = line;
+    e->name = name;
+    e->value = value;
+    if (pp_macro_events && pp_macro_tail)
+        pp_macro_tail->next = e;
+    else
+        pp_macro_events = e;
+    pp_macro_tail = e;
+}
+
 static char *kw_line;
 static char *kw_file;
 static char *kw_base_file;
@@ -3065,6 +3082,35 @@ static void do_directive(void) {
             memcpy(pc, params, sizeof(char *) * np);
         }
         define_macro_tok(mname, is_function, pc, np, mbody, is_variadic, is_gnu_variadic);
+        if (opt_g_level == 3) {
+            // Spell "NAME(a,b)" and the body text straight from the source.
+            char *nm = mname;
+            if (is_function) {
+                size_t cap = strlen(mname) + 4;
+                for (int i = 0; i < np; i++)
+                    cap += strlen(pc[i]) + 1;
+                nm = arena_alloc(cap + 8);
+                strcpy(nm, mname);
+                strcat(nm, "(");
+                for (int i = 0; i < np; i++) {
+                    if (i) strcat(nm, ",");
+                    strcat(nm, pc[i]);
+                }
+                if (is_variadic) strcat(nm, np ? ",..." : "...");
+                strcat(nm, ")");
+            }
+            char *val = "";
+            Token *last = NULL;
+            for (Token *t = b; t && t->kind != TK_NL && t->kind != TK_EOF; t = t->next)
+                last = t;
+            if (b && last && last->ptr >= b->ptr) {
+                size_t n = (size_t)(last->ptr + last->len - b->ptr);
+                val = arena_alloc(n + 1);
+                memcpy(val, b->ptr, n);
+                val[n] = 0;
+            }
+            pp_record_macro_event(lvl->filename, lvl->reported_line, nm, val);
+        }
         return;
     }
     if (dn == dn_undef) {
@@ -3072,6 +3118,8 @@ static void do_directive(void) {
         if (id && id->kind == TK_IDENT) {
             pp_check_ident(id->name, id->len, lvl->filename, lvl->reported_line);
             add_undef(id->name);
+            if (opt_g_level == 3)
+                pp_record_macro_event(lvl->filename, lvl->reported_line, id->name, NULL);
         }
         return;
     }

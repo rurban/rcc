@@ -104,6 +104,13 @@ OBJS = $(SRCS:.c=$(OBJ_EXT))
 TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
 else
 SRCS += src/elf_write.c src/link_elf.c src/x86_enc.c src/ir_core.c src/ir_build.c src/ir_inline.c src/ir_opt.c src/ir_x86.c
+# -g3 full debug info: only on this ELF x86-64 path (RCC_DWARF3 in obj.h
+# additionally requires HAVE_LIBDWARF and __x86_64__).
+ifeq ($(HAVE_LIBDWARF),1)
+ifeq ($(findstring x86_64,$(MACHINE)),x86_64)
+SRCS += src/dwarf_g3.c
+endif
+endif
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
 TARGET_DEPS += $(MINGW_O)
@@ -379,7 +386,7 @@ endif
 # Shell-driven link test (shared libs + static archives, incl. sqlite3.c).
 # Native builds only: a cross-built rcc.exe/darwin binary can't run here.
 ifeq ($(EXE_EXT),)
-LINK_TEST = ./test/test-link.sh ./$(TARGET)
+LINK_TEST = ./test/test-link.sh ./$(TARGET) && ./test/test-g3.sh ./$(TARGET)
 else
 LINK_TEST = true
 endif

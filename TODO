@@ -109,64 +109,31 @@
 
 - interchange and extended float types (just aliased, no __STDC_IEC_60559_TYPES__)
 
-- DWARF: full debug info at -g3 only
+- DWARF -g3: remaining gaps
 
-  State. -g/-g1/-g2 emit line tables + a bare DW_TAG_compile_unit
-  (.debug_line/.debug_info/.debug_abbrev/.debug_aranges; obj.c
-  objfile_flush_debug_line). With HAVE_LIBDWARF (Makefile probe for libdwarfp)
-  the same four sections come from src/obj_libdwarf.c; otherwise the built-in
-  emitter is used. No types, functions, variables or locations yet, so gdb
-  shows no `info locals`/`print`/`ptype`, and unwinding relies on .eh_frame.
+  Done (ELF x86-64 + libdwarfp, src/dwarf_g3.c, test/test-g3.sh): subprograms,
+  parameters, locals, lexical blocks, globals, typedefs, types, bit-fields,
+  macros (.debug_macinfo), real section-relative relocations. -g/-g1/-g2 stay
+  line-table only; -g3 elsewhere degrades to -g2.
 
-  Scope. Keep -g/-g1/-g2 exactly as they are (line mapping only, cheap).
-  Everything below is gated on -g3 (also -ggdb3) and must not change the
-  codegen of non-debug or lower -g levels.
-
-  Steps:
-  1. Plumb the level: main.c currently folds -g1/-g2/-g3/-ggdb* into one
-     "debug" flag; keep a debug_level and let objfile_flush_debug_line take
-     it, so level < 3 never builds DIEs.
-  2. Functions: DW_TAG_subprogram (name, decl_file/line, low_pc/high_pc per
-     function via symbol+size relocs, external, prototyped, frame_base =
-     DW_OP_call_frame_cfa). Needs per-function start/size in codegen.c.
-  3. Types: DW_TAG_base_type, pointer/const/volatile/restrict, typedef,
-     struct/union/enum with members and bit-fields (DW_AT_data_bit_offset),
-     arrays (subrange, VLA bound = DIE ref/expr), function types. One DIE per
-     Type*, memoized (recursive structs); _Complex, _BitInt, _Decimal*,
-     __int128, vectors, _Float16/bf16 need DW_ATE_* + byte_size.
-  4. Variables and params: DW_TAG_variable / formal_parameter with DW_OP_fbreg
-     for stack slots, DW_OP_addr (+reloc) for globals/statics, TLS via
-     DW_OP_const8u + DW_OP_GNU_push_tls_address. Lexical blocks
-     (DW_TAG_lexical_block with low/high_pc) for nested scopes. Register-
-     promoted locals (-O2 "hot scalar locals" and the IR backend's regalloc)
-     need location lists or must be spilled/marked optimized-out at -g3;
-     decide which (-g3 implying no IR/regalloc promotion is the simple option).
-  5. Frame info: emit .debug_frame/.eh_frame CFI with the real prologue
-     (push rbp / sub rsp / callee-saved saves), including shrink-wrapped IR
-     functions with per-cold-block prologues, so backtraces from inside
-     callees and from signal frames work. Check the existing .eh_frame
-     (unwind sections) already covers this before adding anything.
-  6. Macros (-g3 in gcc/clang also means .debug_macro): emit #define/#undef
-     from the preprocessor with file/line.
-  7. Targets: ELF x86-64 first, then AArch64 ELF, Mach-O (__DWARF segment,
-     already carried by macho_write.c), COFF/PE (coff_write.c; gdb on mingw).
-     Relocation model is symbol-relative ADDR64; the writers currently
-     support exactly one reloc each in .debug_line/.debug_info/.debug_aranges
-     (debug_*_off fields in obj.h) and must grow a real list. Also each CU
-     today hard-codes DW_AT_stmt_list = 0 with no reloc, which breaks when
-     the linker concatenates several objects' .debug_info/.debug_line
-     (needs a section-relative reloc; libdwarfp already reports it).
-  8. libdwarf: extend src/obj_libdwarf.c for DIEs/CFI (dwarf_new_die_a,
-     dwarf_add_AT_*, dwarf_add_frame_*, with symbolic relocs mapped through
-     the new reloc list above) and keep the built-in emitter producing the
-     same -g3 output when libdwarfp is absent, or document -g3 as requiring
-     HAVE_LIBDWARF=1 (decide before step 3; duplicating DIE emission in both
-     is the expensive path). libdwarfp reports drd_length 4 for the 8-byte
-     DW_LNE_set_address operand, so do not trust it for sizing.
-
-  Tests. Compile a fixture at -g3, check with `readelf --debug-dump=info`
-  or `dwarfdump` (libdwarf-tools) that expected DIEs exist, and run a gdb
-  batch script (break main; info locals; ptype struct S; bt) for the real
-  signal. Add to test/ and to the arm64/mingw/darwin reports only where a
-  consumer for that format is available. Verify -g/-g2 output is byte-
-  identical to before for the same input.
+  Open:
+  - Locals: if/switch/while init scopes (only blocks and for-init are
+    recorded), block-scope statics, VLAs, TLS (DW_OP_const8u +
+    DW_OP_GNU_push_tls_address), register-promoted locals (-O2 vreg: emitted
+    without a location; IR backend is already off under -g).
+  - Typedef names are not kept on variable/member types (they resolve to the
+    underlying type); unused tagged types and enums are not emitted.
+  - Frame info: no .debug_frame/.eh_frame CFI; DW_AT_frame_base is rbp (so
+    breakpoints at the very first instruction see wrong locals), unwinding
+    through rcc frames relies on gdb's prologue analyzer.
+  - Macros: command-line (-D) and builtin macros are not recorded; include
+    line numbers are 0.
+  - Other targets: AArch64 ELF, Mach-O, COFF/PE (writers need extra-section
+    reloc support for .debug_*, then reuse dwarf_g3.c with arch-specific
+    frame base/reloc types).
+  - Without libdwarfp there is no built-in -g3 emitter (documented degrade).
+  - libdwarfp quirks worked around: DW_AT_data_bit_offset is rejected
+    (DWARF2 bit_offset used), DW_AT_macro_info is never added by the library
+    (placeholder attribute patched after dwarf_transform_to_disk_form_a),
+    dwarf_def_macro corrupts the stream (.debug_macinfo is written directly),
+    drd_length is unreliable.

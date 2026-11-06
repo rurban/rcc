@@ -238,14 +238,45 @@ typedef struct UnwindEntry {
 } UnwindEntry;
 
 // ---------------------------------------------------------------------------
-// Debug info entries (for -g / DWARF)
+// Debug info entries (for -g)
 // ---------------------------------------------------------------------------
+
+// -g3 (full debug info) support: libdwarf producer, ELF x86-64 target only.
+#ifndef _WIN32
+#if defined(__x86_64__) && !defined(ARCH_ARM64)
+#ifdef HAVE_LIBDWARF
+#define RCC_DWARF3 1
+#endif
+#endif
+#endif
+
 #define MAX_DEBUG_FILES 128
 typedef struct {
     uint64_t text_offset; // offset in .text section
     uint32_t file_idx;
     uint32_t line;
 } DebugLineEntry;
+
+// -g3: one lexical scope recorded by codegen (a compound statement or a
+// for/if/switch init). `vars` heads the LVar chain declared inside this
+// block; `vars_end` points just past it (may equal vars). Ranges are
+// offsets in .text, from the scope's first emitted byte to one past the
+// last. dwarf_g3.c casts vars/vars_end back to LVar*.
+typedef struct {
+    uint64_t start, end;
+    void *vars;
+    void *vars_end;
+} DebugScope;
+
+// -g3: one emitted function. `fn` is the compiler's Function* (opaque here).
+typedef struct {
+    const char *name;
+    int sym_idx; // obj->syms[] index of the function's .text symbol
+    uint64_t start, size; // offsets in .text
+    void *fn;
+    DebugScope *scopes;
+    int scope_count, scope_cap;
+} DebugFnRec;
 
 // ---------------------------------------------------------------------------
 // Complete assembled object
@@ -318,6 +349,7 @@ struct ObjFile {
     int unwind_count;
     int unwind_cap;
     // Debug info (for -g DWARF)
+    int debug_level; // 0/1/2 = line table only, 3 = full (-g3)
     char *debug_files[MAX_DEBUG_FILES];
     int debug_file_count;
     DebugLineEntry *debug_lines;
@@ -331,6 +363,8 @@ struct ObjFile {
     bool debug_has_low_pc; // true if DW_AT_low_pc needs R_X86_64_64 vs .text
     size_t debug_aranges_addr_off; // offset of address in .debug_aranges (needs reloc)
     bool debug_has_aranges_addr; // true if .debug_aranges address needs reloc
+    DebugFnRec *debug_fns; // -g3: emitted functions, code order
+    int debug_fn_count, debug_fn_cap;
     size_t debug_line_addr_off; // offset of DW_LNE_set_address value in .debug_line
     bool debug_has_line_addr; // true if DW_LNE_set_address needs reloc
     // True if this compilation unit created at least one GNU
@@ -355,6 +389,19 @@ void objfile_flush_debug_line(ObjFile *obj, uint64_t text_end);
 // through libdwarfp. Returns false (obj untouched) on any failure so the
 // caller can fall back to the built-in emitter.
 bool objfile_flush_debug_libdwarf(ObjFile *obj, uint64_t text_end);
+#endif
+#ifdef RCC_DWARF3
+// src/dwarf_g3.c: full -g3 debug info (subprograms, types, variables,
+// lexical scopes, macros) through libdwarfp. Returns false (obj untouched)
+// on any failure so the caller falls back to the line-table emitter.
+bool objfile_flush_debug_g3(ObjFile *obj, uint64_t text_end, void *program);
+// codegen hooks (no-ops when -g3 is inactive): begin/end a function's
+// recording (name/Function* resolved here, .text offsets captured) and
+// record a lexical scope's var chain plus its .text range.
+void objfile_debug_fn_begin(ObjFile *obj, const char *name, void *fn);
+void objfile_debug_fn_end(ObjFile *obj);
+void objfile_debug_scope_begin(ObjFile *obj, void *vars);
+void objfile_debug_scope_end(ObjFile *obj, void *vars_end);
 #endif
 bool objfile_has_debug(ObjFile *obj);
 

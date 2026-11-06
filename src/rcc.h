@@ -316,6 +316,19 @@ struct Member {
     Token *tok; // declaration site, for diagnostics (may be NULL)
 };
 
+// -g3 debug-info records hung off Type (see dwarf_g3.c)
+typedef struct DebugTMember {
+    char *name;
+    Type *ty;
+    uint32_t offset; // byte offset
+    uint32_t bit_width; // 0 = not a bitfield
+    uint32_t bit_offset; // bit position within the storage unit
+} DebugTMember;
+typedef struct DebugEnumConst {
+    char *name;
+    int64_t val;
+} DebugEnumConst;
+
 struct Type {
     TypeKind kind;
     int64_t size; // sizeof
@@ -397,6 +410,13 @@ struct Type {
     void *vla_len_val; // LVar temporary for evaluated VLA dimension
     int64_t array_len; // array size (for both TY_ARRAY and TY_VLA constant fallback)
     int bitint_width; // N in _BitInt(N) (for TY_BITINT only)
+
+    // ---- -g3 debug-info fields (see dwarf_g3.c) ----
+    char *tag_name; // struct/union/enum tag (NULL for anonymous and non-aggregate)
+    DebugTMember *dbg_members; // struct/union members, in declaration order
+    int dbg_member_count;
+    DebugEnumConst *dbg_enums; // enum constants, in declaration order
+    int dbg_enum_count;
 };
 
 static inline bool ty_const(const Type *t) { return t->qual & QUAL_CONST; }
@@ -410,6 +430,10 @@ struct Typedef {
     Typedef *hash_next;
     char *name;
     Type *ty;
+    // -g3: non-NULL once the typedef name is referenced as a type
+    // specifier; the pointer targets the (qualified) type at that use.
+    // dwarf_g3.c emits a DW_TAG_typedef for every used Typedef.
+    Type *dbg_type;
 };
 
 extern Type *ty_void;
@@ -470,6 +494,20 @@ extern bool opt_ms_bitfields;
 extern bool opt_dM;
 extern bool opt_E;
 extern bool opt_g;
+extern int opt_g_level; // 0=off, 1/2=-g/-g1/-g2 (line info only), 3=-g3/-ggdb3 (full info)
+
+// -g3: #define/#undef events in source order, recorded by the preprocessor
+// and turned into DWARF macro info by dwarf_g3.c. `name` carries the
+// parameter list for function-like macros ("MAX(a,b)"); value is NULL for #undef.
+typedef struct PPMacroEvent PPMacroEvent;
+struct PPMacroEvent {
+    PPMacroEvent *next;
+    const char *file;
+    int line;
+    char *name;
+    char *value;
+};
+extern PPMacroEvent *pp_macro_events;
 extern bool opt_pie;
 extern bool opt_pic;
 extern bool opt_shared;
@@ -810,6 +848,13 @@ struct Node {
 
     // Local variable
     LVar *var;
+    // -g3 lexical scope (set by the parser on ND_BLOCK and on ND_FOR):
+    // vars declared directly in this scope, as a slice of the LVar chain:
+    // the chain runs from scope_end (oldest, the outer scope's head) up to
+    // scope_vars (newest, this scope's declarations). NULL scope_vars = no
+    // lexical-scope recording for this node.
+    LVar *scope_vars;
+    LVar *scope_end;
     // Nested-function static-chain access: 0 = var belongs to the function
     // currently being codegen'd (ordinary rbp/x29-relative access); N>0 =
     // var was resolved N enclosing-function levels up (see parser.c's
@@ -975,6 +1020,7 @@ struct Program {
     LVar *globals;
     StrLit *strs;
     char *in_path;
+    Typedef *typedefs; // -g3: all typedefs (newest first)
 };
 
 // Parser entry point

@@ -685,6 +685,93 @@ static void emit_loc(Node *node) {
     last_debug_file = fidx;
     last_debug_line = line;
 }
+
+// ---------------------------------------------------------------------------
+// -g3 recording: function/scope ranges in .text, consumed by dwarf_g3.c.
+// Active only for -g3 in the real (non dry-run) pass.
+// ---------------------------------------------------------------------------
+#ifdef RCC_DWARF3
+static DebugFnRec *dbg_fn_cur;
+static uint64_t dbg_fn_start;
+#define DBG_SCOPE_MAX 64
+static struct {
+    uint64_t start;
+    void *vars;
+} dbg_scope_stack[DBG_SCOPE_MAX];
+static int dbg_scope_depth;
+static int dbg_scope_skipped; // scopes deeper than DBG_SCOPE_MAX (begin/end still pair up)
+
+void objfile_debug_fn_begin(ObjFile *obj, const char *name, void *fn) {
+    if (!cg_dry_run && obj->debug_level == 3 && !dbg_fn_cur) {
+        if (obj->debug_fn_count == obj->debug_fn_cap) {
+            obj->debug_fn_cap = obj->debug_fn_cap ? obj->debug_fn_cap * 2 : 16;
+            obj->debug_fns = realloc(obj->debug_fns,
+                                     (size_t)obj->debug_fn_cap * sizeof(DebugFnRec));
+            if (!obj->debug_fns) {
+                fprintf(stderr, "objfile: out of memory\n");
+                exit(1);
+            }
+        }
+        DebugFnRec *r = &obj->debug_fns[obj->debug_fn_count++];
+        memset(r, 0, sizeof(*r));
+        r->name = name;
+        r->fn = fn;
+        r->sym_idx = objfile_find_sym(obj, name);
+        dbg_fn_start = cg_sec->len;
+        dbg_fn_cur = r;
+        dbg_scope_depth = dbg_scope_skipped = 0;
+    }
+}
+
+void objfile_debug_fn_end(ObjFile *obj) {
+    (void)obj;
+    if (dbg_fn_cur) {
+        dbg_fn_cur->start = dbg_fn_start;
+        dbg_fn_cur->size = cg_sec->len - dbg_fn_start;
+        dbg_fn_cur = NULL;
+    }
+    dbg_scope_depth = dbg_scope_skipped = 0;
+}
+
+// Scopes nest (a block inside a block); begin/end calls are strictly paired
+// by the gen() wrapper, so a small explicit stack records each one.
+void objfile_debug_scope_begin(ObjFile *obj, void *vars) {
+    (void)obj;
+    if (!dbg_fn_cur) return;
+    if (dbg_scope_depth == DBG_SCOPE_MAX) {
+        dbg_scope_skipped++;
+        return;
+    }
+    dbg_scope_stack[dbg_scope_depth].start = cg_sec->len;
+    dbg_scope_stack[dbg_scope_depth].vars = vars;
+    dbg_scope_depth++;
+}
+
+void objfile_debug_scope_end(ObjFile *obj, void *vars_end) {
+    (void)obj;
+    if (!dbg_fn_cur) return;
+    if (dbg_scope_skipped) {
+        dbg_scope_skipped--;
+        return;
+    }
+    if (dbg_scope_depth == 0) return;
+    dbg_scope_depth--;
+    DebugFnRec *r = dbg_fn_cur;
+    if (r->scope_count == r->scope_cap) {
+        r->scope_cap = r->scope_cap ? r->scope_cap * 2 : 8;
+        r->scopes = realloc(r->scopes, (size_t)r->scope_cap * sizeof(DebugScope));
+        if (!r->scopes) {
+            fprintf(stderr, "objfile: out of memory\n");
+            exit(1);
+        }
+    }
+    DebugScope *sc = &r->scopes[r->scope_count++];
+    sc->start = dbg_scope_stack[dbg_scope_depth].start;
+    sc->end = cg_sec->len;
+    sc->vars = dbg_scope_stack[dbg_scope_depth].vars;
+    sc->vars_end = vars_end;
+}
+#endif // RCC_DWARF3
 int fn_struct_ret_off = 0; // next free offset within the struct-ret-buf area
 // Per-function cache of the comparison lhs-protect stack slot (see the
 // ND_EQ/NE/LT/LE cmp path in gen()), indexed by comparison-nesting depth.
@@ -964,7 +1051,21 @@ static char *reg(VReg r, int size);
 static void materialize_reg(VReg r);
 static int free_reg_count(void);
 #endif
-VReg gen(Node *node);
+VReg gen_inner(Node *node);
+VReg gen(Node *node) {
+#ifdef RCC_DWARF3
+    // -g3 lexical scopes: record the node's .text range and var chain
+    // (Node.scope_vars/scope_end set by the parser on blocks and on
+    // for/if/switch init declarations).
+    if (node->scope_vars && cg_obj && cg_obj->debug_level == 3 && !cg_dry_run) {
+        objfile_debug_scope_begin(cg_obj, node->scope_vars);
+        VReg r = gen_inner(node);
+        objfile_debug_scope_end(cg_obj, node->scope_end);
+        return r;
+    }
+#endif
+    return gen_inner(node);
+}
 VReg gen_addr(Node *node);
 static void cg_ubsan_null_check(Node *node, VReg r); // defined below (null-deref check)
 static void cg_ubsan_align_check(Node *node, VReg r); // defined below (misalign-deref check)
@@ -1738,6 +1839,14 @@ static const char *asm_sym_name(const char *name) {
 #endif
     return name;
 }
+
+#ifdef RCC_DWARF3
+// -g3: object-file symbol index of a global variable (-1 when the variable
+// has no symbol in this object). Used by dwarf_g3.c for DW_OP_addr.
+int cg_obj_var_sym_idx(LVar *var) {
+    return objfile_find_sym(cg_obj, asm_sym_name(var_sym_label(var)));
+}
+#endif
 
 static void emit_direct_call(const char *name, bool is_asm_label) {
     if (cg_dry_run) return;
@@ -11463,8 +11572,9 @@ static void cg_emit_asan_globals(Program *prog) {
     cg_set_section(SEC_TEXT);
 }
 
-// Generate code for a given node.
-VReg gen(Node *node) {
+// Generate code for a given node. (gen() above wraps this for -g3 scope
+// recording; all internal callers still call gen().)
+VReg gen_inner(Node *node) {
     if (!node) return R_NONE;
     if (node->tok && node->tok->lineno > 0) cg_dbg_line = node->tok->lineno;
     if (node->tok && node->tok->filename) cg_dbg_file = node->tok->filename;
@@ -20070,6 +20180,7 @@ struct ObjFile *codegen(Program *prog) {
     cg_obj = &_obj;
     memset(cg_obj, 0, sizeof(*cg_obj));
     objfile_init(cg_obj);
+    cg_obj->debug_level = opt_g_level;
     cg_set_section(SEC_TEXT);
     cg_dry_run = false;
     all_items = prog->items;
@@ -21816,6 +21927,9 @@ struct ObjFile *codegen(Program *prog) {
         // Emit prologue - handle is_weak, inline, and static linkage.
         const char *fn_sym_name;
         size_t fn_sym_start = cg_begin_fn_symbol(prog, fn, fn_emitting_local_copy, &fn_sym_name);
+#ifdef RCC_DWARF3
+        objfile_debug_fn_begin(cg_obj, fn_sym_name, fn);
+#endif
 
         // -fstack-protector-strong: canary needed if any local is an
         // array/VLA, any local's address is taken, or the frame is > 8B.
@@ -22481,6 +22595,9 @@ struct ObjFile *codegen(Program *prog) {
         asm_mov_rbp_rsp(cg_sec); // movq %rbp, %rsp
         asm_pop(cg_sec, X86_RBP); // popq %rbp
         asm_ret(cg_sec); // ret
+#ifdef RCC_DWARF3
+        objfile_debug_fn_end(cg_obj);
+#endif
         cg_patch_fn_size(fn_sym_name, fn_sym_start);
 #ifdef _WIN32
         uw_endproc(); // .seh_endproc
@@ -22747,9 +22864,18 @@ struct ObjFile *codegen(Program *prog) {
                         SB_GLOBAL, ST_GNU_IFUNC);
     }
 #endif
-    // Flush DWARF debug line info
-    if (objfile_has_debug(cg_obj))
+    // Flush DWARF debug info: -g3 full info via dwarf_g3.c (with a
+    // fallback to the line-table emitter), else the line table.
+    if (cg_obj->debug_level == 3) {
+#ifdef RCC_DWARF3
+        if (objfile_flush_debug_g3(cg_obj, cg_obj->text.len, prog))
+            return cg_obj;
+#endif
+        if (objfile_has_debug(cg_obj))
+            objfile_flush_debug_line(cg_obj, cg_obj->text.len);
+    } else if (objfile_has_debug(cg_obj)) {
         objfile_flush_debug_line(cg_obj, cg_obj->text.len);
+    }
 #ifdef BENCH
     if (opt_time)
         fprintf(stderr, "  pass1       %-20s: %6llu us\n", "(dry-run, cumulative)",

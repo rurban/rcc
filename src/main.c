@@ -269,7 +269,10 @@ void help(void) {
            "-O3                 -O2 plus the contract range prover (pre/post/contract_assert/contract_assume)\n"
            "-finline            inline tiny \"return EXPR;\" functions (-fno-inline to disable)\n"
            "-funroll            unroll const-sized for-loops (-fno-unroll to disable)\n"
-           "-g                  emit DWARF line-number debug info\n"
+           "-g, -g1, -g2        emit DWARF debug info (line table)\n"
+           "-g3, -ggdb3         full debug info: functions, types, variables,\n"
+           "                    lexical blocks, macros (libdwarf + ELF x86-64\n"
+           "                    builds only; degrades to -g2 elsewhere)\n"
            "-std={c2y,c23,c17,c11,c99,c89,...}  sets __STDC_VERSION__\n"
            "-W                  enable more compiler warnings\n"
            "-Werror             treat all warnings as errors\n"
@@ -377,6 +380,7 @@ bool opt_fdump_ir = false;
 bool opt_fno_ir = false;
 bool opt_fno_ir_inline = false;
 bool opt_g = false;
+int opt_g_level = 0;
 bool opt_pie = false;
 bool opt_pic = false;
 bool opt_shared = false;
@@ -740,12 +744,18 @@ int main(int argc, char **argv) {
             // plain -g; rcc's own debug info is already gdb-oriented, so
             // there is no separate format to select -- alias it to -g.
             // Without this, real-world Makefiles that unconditionally
-            // pass -ggdb (found via test_rvvm, test_valkey) hit the
+            // passes -ggdb (found via test_rvvm, test_valkey) hit the
             // generic unknown-option path, which is a hard error whenever
             // -Werror is also active on the same command line.
+            // -g3/-ggdb3: full debug info (types, functions, variables,
+            // macros) on top of the line table. Requires the libdwarf
+            // producer build (HAVE_LIBDWARF) and an ELF x86-64 target;
+            // anywhere else it degrades to -g2 (line table) with a note.
+            opt_g_level = !strcmp(argv[i], "-g3") || !strcmp(argv[i], "-ggdb3") ? 3 : 2;
             opt_g = true;
         } else if (!strcmp(argv[i], "-g0")) {
             opt_g = false;
+            opt_g_level = 0;
         } else if (!strcmp(argv[i], "-Os") || !strcmp(argv[i], "-Ofast") ||
                    !strcmp(argv[i], "-Og") || !strcmp(argv[i], "-Oz")) {
             // -Os/-Ofast/-Og/-Oz: real GCC/clang optimization levels rcc has

@@ -11,6 +11,18 @@ complete list of changes see the git log.
   (src/obj_libdwarf.c); otherwise, or if libdwarf fails, the built-in
   emitter in src/obj.c is used.
 
+  -g3 (also -ggdb3) now emits full DWARF 4 (ELF x86-64 with libdwarfp,
+  src/dwarf_g3.c; elsewhere -g3 silently behaves like -g2): subprograms
+  with parameters, locals in lexical blocks (compound statements and for
+  initializers), globals, typedefs, base/pointer/array/function types,
+  cv-qualifiers, struct/union/enum with bit-fields, and #define/#undef as
+  .debug_macinfo (gdb `info macro`/`macro expand`). Every section-relative
+  reference carries a real relocation, so several -g3 objects link
+  correctly; rcc's own linker keeps the debug sections. -g/-g1/-g2 are
+  unchanged (line tables only). Not yet covered: block-scope statics, VLAs,
+  TLS variables, register-promoted locals (no location), typedef names on
+  variable types, .debug_frame CFI.
+
 * Changes in v1.2.3 (2026-11-06) (Reini Urban)
 
   -O2 SSA IR backend (x86-64 ELF, x86-64 Windows/COFF, AArch64 ELF and Darwin):

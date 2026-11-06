@@ -5064,6 +5064,7 @@ static Type *enum_specifier(Token **rest, Token *tok) {
             fixed_ret->is_enum = true;
             fixed_ret->is_enum_fixed = true;
             fixed_ret->enum_id = fixed_ret;
+            fixed_ret->tag_name = tag_name; // -g3 (may be NULL)
             if (tag_name) {
                 EnumTag *et = arena_alloc(sizeof(EnumTag));
                 et->name = tag_name;
@@ -5236,6 +5237,22 @@ static Type *enum_specifier(Token **rest, Token *tok) {
         et->members_int = !any_outside_int;
         et->next = enum_tags;
         enum_tags = et;
+    }
+    if (tag_name) {
+        if (ret->dbg_enum_count == 0) {
+            int n = 0;
+            for (EnumConst *ec = enum_consts; ec && ec != before_consts; ec = ec->next)
+                n++;
+            if (n > 0) {
+                ret->dbg_enums = arena_alloc(sizeof(DebugEnumConst) * (size_t)n);
+                // enum_consts is a prepend list: reverse into declaration order
+                int i = n;
+                for (EnumConst *ec = enum_consts; ec && ec != before_consts; ec = ec->next)
+                    ret->dbg_enums[--i] = (DebugEnumConst){ec->name, ec->val};
+                ret->dbg_enum_count = n;
+            }
+        }
+        ret->tag_name = tag_name;
     }
     return ret;
 }
@@ -5440,6 +5457,35 @@ static bool struct_bodies_identical(Type *a, Type *b) {
             return false;
     }
     return !ma && !mb;
+}
+
+// -g3: fill Type's debug member list from the layout members. Stored on the
+// canonical tag type (struct_id) so qualified variants (and their plain
+// copies) all resolve to the one member list / one DWARF DIE.
+static void type_fill_dbg_members(Type *ty) {
+    Type *canon = (ty->kind == TY_STRUCT || ty->kind == TY_UNION)
+        ? (ty->struct_id ? ty->struct_id : ty)
+        : ty;
+    if (canon->dbg_member_count > 0)
+        return; // completed before (e.g. redefinition path)
+    int n = 0;
+    for (Member *m = ty->members; m; m = m->next)
+        n++;
+    if (n == 0) {
+        canon->dbg_member_count = 0;
+        return;
+    }
+    canon->dbg_members = arena_alloc(sizeof(DebugTMember) * (size_t)n);
+    int i = 0;
+    for (Member *m = ty->members; m; m = m->next) {
+        canon->dbg_members[i].name = m->name;
+        canon->dbg_members[i].ty = m->ty;
+        canon->dbg_members[i].offset = (uint32_t)m->offset;
+        canon->dbg_members[i].bit_width = (uint32_t)m->bit_width;
+        canon->dbg_members[i].bit_offset = (uint32_t)m->bit_offset;
+        i++;
+    }
+    canon->dbg_member_count = n;
 }
 
 static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) {
@@ -6095,8 +6141,11 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     in_type_name = _saved_in_type_name_su;
     if (type_cleanup)
         ty->cleanup_func = type_cleanup;
+    if (tag_tok)
+        ty->tag_name = tag_tok->name;
     ty->members = head.next;
     ty->has_body = true;
+    type_fill_dbg_members(ty);
     int final_align = max_align;
     if (struct_pack > 0 && struct_pack < max_align)
         final_align = struct_pack;
@@ -6189,6 +6238,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     bool is_unsigned = false;
     bool is_short = false;
     int long_count = 0;
+    Typedef *typeref = NULL; // -g3: last typedef name used as a type specifier
     bool is_int = false;
     bool is_char = false;
     bool is_float = false;
@@ -6532,6 +6582,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
                 is_double || is_bool || is_void || is_signed || is_unsigned || is_int128 || ty)
                 break;
             ty = td->ty;
+            typeref = td;
             tok = tok->next;
             continue;
         }
@@ -6598,6 +6649,9 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         }
     }
 
+
+    if (typeref)
+        typeref->dbg_type = ty; // -g3: typedef used as a type specifier
 
     if (is_complex && ty) {
         if (ty->size > 8 && !is_flonum(ty))
@@ -9798,6 +9852,10 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals,
     Node *node = new_node(ND_BLOCK, tok);
     node->body = head.next;
     *rest = tok->next;
+    // -g3 lexical scope: vars declared directly in this block (chain from
+    // the pre-block `locals` up to the block's own list).
+    node->scope_vars = saved_locals;
+    node->scope_end = locals;
 
     if (out_locals)
         *out_locals = locals;
@@ -10467,6 +10525,10 @@ static Node *stmt(Token **rest, Token *tok) {
         tok = skip(tok, ";");
 
         LVar *for_init_locals = locals;
+        // -g3 lexical scope for the for-init declarations (the chain from
+        // the pre-loop locals up to the ones declared in the for-init).
+        node->scope_vars = saved_locals;
+        node->scope_end = for_init_locals;
 
         if (!equalc(tok, ")"))
             node->inc = expr(&tok, tok);
@@ -16540,5 +16602,6 @@ Program *parse(Token *tok) {
     prog->items = tl_item_head.next;
     prog->globals = globals;
     prog->strs = str_lits;
+    prog->typedefs = typedefs;
     return prog;
 }
