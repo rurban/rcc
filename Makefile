@@ -66,7 +66,9 @@ SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codeg
 LIBDWARF_CFLAGS := $(if $(LIBDWARF_CFLAGS),$(LIBDWARF_CFLAGS),$(shell pkg-config --cflags libdwarfp 2>/dev/null || pkg-config --cflags libdwarf 2>/dev/null))
 LIBDWARF_LIBS := $(if $(LIBDWARF_LIBS),$(LIBDWARF_LIBS),$(shell pkg-config --libs-only-L libdwarfp 2>/dev/null || pkg-config --libs-only-L libdwarf 2>/dev/null) -ldwarfp -ldwarf)
 ifndef HAVE_LIBDWARF
-HAVE_LIBDWARF := $(shell printf '\043include <libdwarf.h>\n\043include <libdwarfp.h>\nint main(void){Dwarf_P_Debug d=0;Dwarf_Error e=0;return dwarf_producer_init(0,0,0,0,0,"x86_64","V4",0,&d,&e);}\n' | $(CC) $(LIBDWARF_CFLAGS) -x c - -o /dev/null $(LIBDWARF_LIBS) >/dev/null 2>&1 && echo 1 || echo 0)
+# Probing lives in a script, not an inline $(shell ...): BSD makes (NetBSD)
+# reject the spaces inside the inline command with a fatal parse error.
+HAVE_LIBDWARF := $(shell sh tools/probe-libdwarf.sh "$(CC)" "$(LIBDWARF_CFLAGS)" "$(LIBDWARF_LIBS)")
 endif
 ifeq ($(HAVE_LIBDWARF),1)
 CFLAGS += -DHAVE_LIBDWARF $(LIBDWARF_CFLAGS)
@@ -104,10 +106,12 @@ OBJS = $(SRCS:.c=$(OBJ_EXT))
 TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
 else
 SRCS += src/elf_write.c src/link_elf.c src/x86_enc.c src/ir_core.c src/ir_build.c src/ir_inline.c src/ir_opt.c src/ir_x86.c
+# .eh_frame CFI: self-gating on RCC_CFI (x86-64 ELF only, obj.h), so build
+# it on every non-Windows target; it compiles to an empty object elsewhere.
+SRCS += src/eh_frame.c
 # -g3 full debug info: only on this ELF x86-64 path (RCC_DWARF3 in obj.h
 # additionally requires HAVE_LIBDWARF and __x86_64__).
 ifeq ($(findstring x86_64,$(MACHINE)),x86_64)
-SRCS += src/eh_frame.c
 ifeq ($(HAVE_LIBDWARF),1)
 SRCS += src/dwarf_g3.c
 endif
