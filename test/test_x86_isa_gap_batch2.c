@@ -72,14 +72,21 @@ int main(void)
         "\tjz fail\n"
 
         /* smsw: CR0 bit0 (PE, protected-mode enable) is always set on any
-         * running x86-64 OS */
+         * running x86-64 OS. Skipped on OpenBSD: its kernel enables UMIP
+         * (User-Mode Instruction Prevention) on CPUs that have it, where
+         * smsw/sldt fault with #GP -> SIGSEGV in user mode (Linux emulates
+         * them instead); both still get assembled in dead_code below. */
+#ifndef __OpenBSD__
         "\tsmsw %ax\n"
         "\ttestw $1, %ax\n"
         "\tjz fail\n"
+#endif
 
         /* sldt: just needs to execute without faulting; the LDTR selector
          * value itself (commonly 0, LDT unused) isn't asserted */
+#ifndef __OpenBSD__
         "\tsldt %ax\n"
+#endif
 
         /* fxsave/fxrstor: not privileged — any process may save/restore
          * its own FPU/SSE state. FXSAVE requires a 16-byte-aligned
@@ -96,6 +103,8 @@ int main(void)
          * deliberate #UD traps, and GDT/LDT/XCR0-dependent forms this test
          * has no portable way to predict the outcome of. */
         "dead_code:\n"
+        "\tsmsw %ax\n"
+        "\tsldt %ax\n"
         "\tclts\n"
         "\tinvd\n"
         "\twbnoinvd\n"

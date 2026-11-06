@@ -3539,59 +3539,6 @@ static bool is_todo_test(const char *base) {
         NULL};
     for (const char **p = todo_tests; *p; p++)
         if (streq(base, *p)) return true;
-    /* test_fortify / test_fortify_chk_arity / test_open_fortify exercise
-     * glibc's specific _FORTIFY_SOURCE __*_chk() ABI by design (see each
-     * file's own header comment: they reference glibc's
-     * <bits/unistd-decl.h>, __read_chk, __glibc_fortify). FreeBSD's ssp
-     * headers (ssp/stdlib.h etc.) implement an entirely different,
-     * non-glibc fortify mechanism (__ssp_bos() etc.) that these tests
-     * were never written to exercise -- not an rcc bug, a glibc-specific
-     * test running against a non-glibc libc. */
-    if ((streq(base, "test_fortify") || streq(base, "test_fortify_chk_arity") ||
-         streq(base, "test_open_fortify")) &&
-        streq(platform, "FreeBSD"))
-        return true;
-    /* test_fortify alone (not test_fortify_chk_arity/test_open_fortify,
-     * which pass cleanly) crashes rcc itself with a stack overflow on
-     * NetBSD: its ssp headers' _FORTIFY_SOURCE macros expand memcpy/
-     * memset/strcpy/strcat/... into far more deeply nested conditional
-     * expressions than glibc's or FreeBSD's equivalents, and rcc's
-     * recursive-descent expression parser has no depth limit -- it
-     * blows the stack recursing through the full binary-expression
-     * grammar (shift/relational/equality/.../primary) for each nested
-     * level. A real, narrow robustness gap (unbounded parser
-     * recursion), not a semantic mismatch; fixing it needs a
-     * depth-limited parser, out of scope here. */
-    if (streq(base, "test_fortify") && streq(platform, "NetBSD"))
-        return true;
-    /* test_contracts: a violated precondition must abort() (SIGABRT),
-     * but on FreeBSD and NetBSD the child process SIGSEGVs instead --
-     * a genuine, still-undiagnosed difference in how the abort path
-     * behaves there (no FreeBSD/NetBSD environment available yet for
-     * interactive root-cause debugging; not simply a missing-symbol/
-     * header gap like the others above). */
-    if (streq(base, "test_contracts") &&
-        (streq(platform, "FreeBSD") || streq(platform, "NetBSD")))
-        return true;
-    /* test_x86_isa_gap_batch1 issues a raw `syscall` instruction from
-     * ordinary .text (not libc's own syscall stub) to exercise
-     * getpid(2) directly. OpenBSD's kernel enforces "system call
-     * origin verification" (msyscall(2), on since 6.4): any syscall
-     * attempted from outside libc's registered trampoline region is
-     * killed with SIGABRT on the spot, regardless of compiler --
-     * real gcc/clang hand-assembling the identical instruction hits
-     * the same kernel-level rejection. */
-    if (streq(base, "test_x86_isa_gap_batch1") && streq(platform, "OpenBSD"))
-        return true;
-    /* test_x86_isa_gap_batch2 SIGSEGVs on OpenBSD's CI runner specifically
-     * (vmactions' virtualized CPU) inside the fxsave/fxrstor stack-buffer
-     * sequence, reproducibly across separate CI runs -- but never on a
-     * locally-run OpenBSD 7.9 VM (same OS release, different underlying
-     * CPU/hypervisor config), pointing at an XSAVE/FXSR CPUID-exposure
-     * or stack-protection difference specific to that CI VM rather than
-     * an rcc codegen bug. */
-    if (streq(base, "test_x86_isa_gap_batch2") && streq(platform, "OpenBSD"))
-        return true;
     return false;
 }
 

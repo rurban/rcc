@@ -134,11 +134,17 @@ int main(void)
         "\tjne fail\n"
 
         /* syscall: getpid (__NR_getpid=39 on x86_64 Linux) — real syscall,
-         * checked to actually return a positive pid rather than crashing. */
+         * checked to actually return a positive pid rather than crashing.
+         * Linux only: 39 is a different call on the BSDs, and OpenBSD's
+         * syscall-origin check kills any process issuing `syscall` from
+         * outside libc (the instruction is still assembled and encoded in
+         * the unreachable dead_code block below). */
+#ifdef __linux__
         "\tmovq $39, %rax\n"
         "\tsyscall\n"
         "\tcmpq $0, %rax\n"
         "\tjle fail\n"
+#endif
 
         /* repz cmpsb / repnz scasb: two identical 4-byte buffers built on
          * the stack (sidesteps a separate, real gap this test steers around
@@ -170,6 +176,7 @@ int main(void)
          * execute here (ring transitions, deliberate traps/#UD) — proves
          * the assembler accepts and encodes them without ever running them. */
         "dead_code:\n"
+        "\tsyscall\n"
         "\tendbr32\n"
         "\tendbr64\n"
         "\tint3\n"

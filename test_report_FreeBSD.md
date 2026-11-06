@@ -2,14 +2,14 @@
 
 **Platform**: FreeBSD
 
-Generated: November 05 2026 18:35
+Generated: November 06 2026 22:20
 
 ## Overall Summary
 
 - **Total**: 763
-- **Passed**: 538
+- **Passed**: 542
 - **Failed**: 0
-- **Overall Pass Rate**: 70%
+- **Overall Pass Rate**: 71%
 
 ## TCC Compatibility Tests
 
@@ -21,9 +21,9 @@ Generated: November 05 2026 18:35
 ## RCC Unit Tests
 
 - **Total**: 425
-- **Passed**: 421
+- **Passed**: 425
 - **Failed**: 0
-- **Pass Rate**: 99%
+- **Pass Rate**: 100%
 
 ## c-testsuite
 
