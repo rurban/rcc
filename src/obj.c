@@ -517,10 +517,10 @@ void objfile_add_debug_line(ObjFile *obj, uint64_t text_offset, int file_idx, in
 }
 
 bool objfile_has_debug(ObjFile *obj) {
-    // At level 3 the -g3 path (dwarf_g3.c) owns the .debug_* sections and
+    // At level >= 2 the full-DWARF path (dwarf_g3.c) owns the .debug_* sections and
     // emits them as dynamically-registered sections instead of the built-in
     // SecBufs below; the line-table writers must not run.
-    if (obj->debug_level >= 3) return false;
+    if (obj->debug_level >= 2) return false;
     return obj->debug_file_count > 0;
 }
 

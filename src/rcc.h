@@ -494,7 +494,7 @@ extern bool opt_ms_bitfields;
 extern bool opt_dM;
 extern bool opt_E;
 extern bool opt_g;
-extern int opt_g_level; // 0=off, 1/2=-g/-g1/-g2 (line info only), 3=-g3/-ggdb3 (full info)
+extern int opt_g_level; // 0=off, 1=-g/-g1 (line info only), 2=-g2 (full info), 3=-g3 (full info + macros)
 
 // -g3: #define/#undef events in source order, recorded by the preprocessor
 // and turned into DWARF macro info by dwarf_g3.c. `name` carries the

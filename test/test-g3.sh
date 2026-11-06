@@ -1,7 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # -g3 (full DWARF) tests: DIEs, locations, lexical blocks, types, macros,
-# debugger-visible behaviour and the line-table-only default of -g/-g2.
+# debugger-visible behaviour, and the level split (-g/-g1 line table only,
+# -g2 full, -g3 full + macros).
 # Needs an rcc linked against libdwarfp (HAVE_LIBDWARF), readelf, gcc;
 # skips (exit 0) otherwise.  gdb checks run only when gdb is installed.
 #
@@ -70,13 +71,22 @@ if readelf --debug-dump=macro t.o 2>/dev/null | grep -q 'undef.*LIMIT'; then ok 
 if readelf -r t.o | grep -q 'R_X86_64_32 .*\.debug_abbrev'; then ok "abbrev reloc"; else bad "abbrev reloc"; fi
 if readelf -r t.o | grep -q 'R_X86_64_32 .*\.debug_line'; then ok "stmt_list reloc"; else bad "stmt_list reloc"; fi
 
-# -g / -g2 stay line-table only.
+# Level split: -g/-g1 line table only, -g2 full without macros.
+for lvl in -g -g1; do
+    "$RCC" $lvl -c t.c -o t1.o 2>/dev/null
+    if readelf --debug-dump=info t1.o 2>/dev/null | grep -q DW_TAG_subprogram; then
+        bad "$lvl is line table only"
+    else
+        ok "$lvl is line table only"
+    fi
+done
 "$RCC" -g2 -c t.c -o t2.o 2>/dev/null
-if readelf --debug-dump=info t2.o 2>/dev/null | grep -q DW_TAG_subprogram; then
-    bad "-g2 is line table only"
+if readelf --debug-dump=info t2.o 2>/dev/null | grep -q 'DW_AT_name .*: sq$'; then
+    ok "-g2 emits subprograms"
 else
-    ok "-g2 is line table only"
+    bad "-g2 emits subprograms"
 fi
+if readelf -S t2.o | grep -q debug_macinfo; then bad "-g2 has no macros"; else ok "-g2 has no macros"; fi
 
 # Link + run with gcc and with rcc's own linker.
 if gcc t.o -o t_gcc && ./t_gcc; then ok "gcc link, runs"; else bad "gcc link, runs"; fi

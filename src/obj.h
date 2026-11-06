@@ -349,7 +349,7 @@ struct ObjFile {
     int unwind_count;
     int unwind_cap;
     // Debug info (for -g DWARF)
-    int debug_level; // 0/1/2 = line table only, 3 = full (-g3)
+    int debug_level; // 0 off, 1 line table only, 2 full DWARF, 3 full + macros
     char *debug_files[MAX_DEBUG_FILES];
     int debug_file_count;
     DebugLineEntry *debug_lines;

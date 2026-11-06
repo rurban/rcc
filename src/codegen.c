@@ -702,7 +702,7 @@ static int dbg_scope_depth;
 static int dbg_scope_skipped; // scopes deeper than DBG_SCOPE_MAX (begin/end still pair up)
 
 void objfile_debug_fn_begin(ObjFile *obj, const char *name, void *fn) {
-    if (!cg_dry_run && obj->debug_level == 3 && !dbg_fn_cur) {
+    if (!cg_dry_run && obj->debug_level >= 2 && !dbg_fn_cur) {
         if (obj->debug_fn_count == obj->debug_fn_cap) {
             obj->debug_fn_cap = obj->debug_fn_cap ? obj->debug_fn_cap * 2 : 16;
             obj->debug_fns = realloc(obj->debug_fns,
@@ -1057,7 +1057,7 @@ VReg gen(Node *node) {
     // -g3 lexical scopes: record the node's .text range and var chain
     // (Node.scope_vars/scope_end set by the parser on blocks and on
     // for/if/switch init declarations).
-    if (node->scope_vars && cg_obj && cg_obj->debug_level == 3 && !cg_dry_run) {
+    if (node->scope_vars && cg_obj && cg_obj->debug_level >= 2 && !cg_dry_run) {
         objfile_debug_scope_begin(cg_obj, node->scope_vars);
         VReg r = gen_inner(node);
         objfile_debug_scope_end(cg_obj, node->scope_end);
@@ -20180,7 +20180,11 @@ struct ObjFile *codegen(Program *prog) {
     cg_obj = &_obj;
     memset(cg_obj, 0, sizeof(*cg_obj));
     objfile_init(cg_obj);
+#ifdef RCC_DWARF3
     cg_obj->debug_level = opt_g_level;
+#else
+    cg_obj->debug_level = opt_g_level > 1 ? 1 : opt_g_level; // full DWARF unavailable
+#endif
     cg_set_section(SEC_TEXT);
     cg_dry_run = false;
     all_items = prog->items;
@@ -22864,13 +22868,14 @@ struct ObjFile *codegen(Program *prog) {
                         SB_GLOBAL, ST_GNU_IFUNC);
     }
 #endif
-    // Flush DWARF debug info: -g3 full info via dwarf_g3.c (with a
+    // Flush DWARF debug info: -g2/-g3 full info via dwarf_g3.c (with a
     // fallback to the line-table emitter), else the line table.
-    if (cg_obj->debug_level == 3) {
+    if (cg_obj->debug_level >= 2) {
 #ifdef RCC_DWARF3
         if (objfile_flush_debug_g3(cg_obj, cg_obj->text.len, prog))
             return cg_obj;
 #endif
+        cg_obj->debug_level = 1; // fallback: line table through the usual writers
         if (objfile_has_debug(cg_obj))
             objfile_flush_debug_line(cg_obj, cg_obj->text.len);
     } else if (objfile_has_debug(cg_obj)) {

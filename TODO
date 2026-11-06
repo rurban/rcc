@@ -109,12 +109,13 @@
 
 - interchange and extended float types (just aliased, no __STDC_IEC_60559_TYPES__)
 
-- DWARF -g3: remaining gaps
+- DWARF -g2/-g3: remaining gaps
 
   Done (ELF x86-64 + libdwarfp, src/dwarf_g3.c, test/test-g3.sh): subprograms,
   parameters, locals, lexical blocks, globals, typedefs, types, bit-fields,
-  macros (.debug_macinfo), real section-relative relocations. -g/-g1/-g2 stay
-  line-table only; -g3 elsewhere degrades to -g2.
+  macros (.debug_macinfo, -g3 only), real section-relative relocations.
+  Levels follow gcc: -g/-g1 line table only (default), -g2 full, -g3 full +
+  macros; -g2/-g3 elsewhere degrade to -g1.
 
   Open:
   - Locals: if/switch/while init scopes (only blocks and for-init are
@@ -131,7 +132,7 @@
   - Other targets: AArch64 ELF, Mach-O, COFF/PE (writers need extra-section
     reloc support for .debug_*, then reuse dwarf_g3.c with arch-specific
     frame base/reloc types).
-  - Without libdwarfp there is no built-in -g3 emitter (documented degrade).
+  - Without libdwarfp there is no built-in -g2/-g3 emitter (documented degrade).
   - libdwarfp quirks worked around: DW_AT_data_bit_offset is rejected
     (DWARF2 bit_offset used), DW_AT_macro_info is never added by the library
     (placeholder attribute patched after dwarf_transform_to_disk_form_a),

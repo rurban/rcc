@@ -11,15 +11,16 @@ complete list of changes see the git log.
   (src/obj_libdwarf.c); otherwise, or if libdwarf fails, the built-in
   emitter in src/obj.c is used.
 
-  -g3 (also -ggdb3) now emits full DWARF 4 (ELF x86-64 with libdwarfp,
-  src/dwarf_g3.c; elsewhere -g3 silently behaves like -g2): subprograms
+  Debug levels now follow gcc: -g and -g1 (the default -g level) emit the
+  line table only; -g2 (-ggdb2) and -g3 (-ggdb3) emit full DWARF 4 (ELF
+  x86-64 with libdwarfp, src/dwarf_g3.c; elsewhere both silently behave like
+  -g1), -g3 additionally with macros: subprograms
   with parameters, locals in lexical blocks (compound statements and for
   initializers), globals, typedefs, base/pointer/array/function types,
   cv-qualifiers, struct/union/enum with bit-fields, and #define/#undef as
   .debug_macinfo (gdb `info macro`/`macro expand`). Every section-relative
   reference carries a real relocation, so several -g3 objects link
-  correctly; rcc's own linker keeps the debug sections. -g/-g1/-g2 are
-  unchanged (line tables only). Not yet covered: block-scope statics, VLAs,
+  correctly; rcc's own linker keeps the debug sections. Not yet covered: block-scope statics, VLAs,
   TLS variables, register-promoted locals (no location), typedef names on
   variable types, .debug_frame CFI.
 
