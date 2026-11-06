@@ -2250,6 +2250,147 @@ static int link_elf_relocatable(LinkState *s) {
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// .eh_frame_hdr / PT_GNU_EH_FRAME: the binary-search table libgcc's unwinder
+// (backtrace(), C++ exceptions, pthread_exit's forced unwind) finds through
+// dl_iterate_phdr. Built from the merged .eh_frame; if any CIE uses an
+// encoding other than pc-relative sdata4 (what GCC and rcc emit on x86-64)
+// the table is not generated and the output stays as it was before.
+// ---------------------------------------------------------------------------
+#define PT_GNU_EH_FRAME 0x6474e550
+
+typedef struct {
+    uint64_t pc, fde;
+} EhEnt;
+
+static uint64_t eh_uleb(const uint8_t *d, size_t *p) {
+    uint64_t v = 0;
+    int shift = 0;
+    for (;;) {
+        uint8_t b = d[(*p)++];
+        v |= (uint64_t)(b & 0x7f) << shift;
+        if (!(b & 0x80)) return v;
+        shift += 7;
+    }
+}
+
+// Walks the merged .eh_frame. Returns the FDE count, or -1 if the section is
+// malformed or uses an unsupported pointer encoding. With `ents` non-NULL
+// each FDE's absolute start address (valid once relocations are applied) and
+// own address are recorded.
+static long eh_frame_scan(const LinkSec *eh, EhEnt *ents) {
+    typedef struct {
+        size_t off;
+        uint8_t enc;
+    } CieEnc;
+    CieEnc *cies = NULL;
+    int ncie = 0, capcie = 0;
+    long nfde = 0;
+    size_t pos = 0;
+    while (pos + 4 <= eh->len) {
+        uint32_t l = r32le(eh->data + pos);
+        if (l == 0) { // a terminator of one input; keep going
+            pos += 4;
+            continue;
+        }
+        if (l == 0xffffffffu || pos + 4 + l > eh->len || l < 4) goto bad;
+        size_t end = pos + 4 + l;
+        uint32_t id = r32le(eh->data + pos + 4);
+        if (id == 0) { // CIE
+            size_t p = pos + 8;
+            uint8_t version = eh->data[p++];
+            if (version != 1 && version != 3) goto bad;
+            const char *aug = (const char *)eh->data + p;
+            size_t alen = strnlen(aug, end - p);
+            if (p + alen >= end) goto bad;
+            p += alen + 1;
+            eh_uleb(eh->data, &p); // code alignment
+            eh_uleb(eh->data, &p); // data alignment (sleb, same length rule)
+            if (version == 1) p++;
+            else
+                eh_uleb(eh->data, &p);
+            uint8_t enc = 0;
+            if (aug[0] == 'z') {
+                eh_uleb(eh->data, &p); // augmentation data length
+                for (const char *c = aug + 1; *c; c++) {
+                    if (*c == 'R') {
+                        enc = eh->data[p++];
+                    } else if (*c == 'L') {
+                        p++;
+                    } else if (*c == 'P') {
+                        uint8_t penc = eh->data[p++];
+                        switch (penc & 7) {
+                        case 0:
+                        case 4: p += 8; break;
+                        case 2: p += 2; break;
+                        case 3: p += 4; break;
+                        default: goto bad;
+                        }
+                    } else if (*c != 'S' && *c != 'B') {
+                        goto bad;
+                    }
+                }
+            } else if (aug[0]) {
+                goto bad;
+            }
+            if (p > end || enc != 0x1b) goto bad; // pcrel | sdata4 only
+            if (ncie == capcie) {
+                capcie = capcie ? capcie * 2 : 8;
+                cies = realloc(cies, (size_t)capcie * sizeof(CieEnc));
+            }
+            cies[ncie++] = (CieEnc){pos, enc};
+        } else { // FDE: id is the distance back from its own id field to the CIE
+            size_t cie_off = pos + 4 - id;
+            bool found = false;
+            for (int i = 0; i < ncie; i++)
+                if (cies[i].off == cie_off) found = true;
+            if (!found || pos + 16 > end) goto bad;
+            if (ents) {
+                int32_t rel = (int32_t)r32le(eh->data + pos + 8);
+                ents[nfde].pc = eh->addr + pos + 8 + (int64_t)rel;
+                ents[nfde].fde = eh->addr + pos;
+            }
+            nfde++;
+        }
+        pos = end;
+    }
+    free(cies);
+    return nfde;
+bad:
+    free(cies);
+    return -1;
+}
+
+static int eh_ent_cmp(const void *a, const void *b) {
+    uint64_t x = ((const EhEnt *)a)->pc, y = ((const EhEnt *)b)->pc;
+    return x < y ? -1 : x > y;
+}
+
+// Fill the already-sized .eh_frame_hdr once final addresses and relocations exist.
+static void eh_hdr_fill(LinkState *s, int eh_idx, int hdr_idx) {
+    LinkSec *eh = &s->secs[eh_idx], *hdr = &s->secs[hdr_idx];
+    long n = eh_frame_scan(eh, NULL);
+    if (n < 0 || hdr->len != 12 + 8 * (size_t)n) return;
+    EhEnt *ents = malloc((size_t)(n ? n : 1) * sizeof *ents);
+    if (eh_frame_scan(eh, ents) != n) {
+        free(ents);
+        return;
+    }
+    qsort(ents, (size_t)n, sizeof *ents, eh_ent_cmp);
+    uint8_t *d = hdr->data;
+    d[0] = 1; // version
+    d[1] = 0x1b; // eh_frame_ptr: pcrel sdata4
+    d[2] = 0x03; // fde_count: udata4
+    d[3] = 0x3b; // table: datarel sdata4
+    w32le_m(d + 4, (uint32_t)(int32_t)(eh->addr - (hdr->addr + 4)));
+    w32le_m(d + 8, (uint32_t)n);
+    for (long i = 0; i < n; i++) {
+        w32le_m(d + 12 + 8 * i, (uint32_t)(int32_t)(ents[i].pc - hdr->addr));
+        w32le_m(d + 16 + 8 * i, (uint32_t)(int32_t)(ents[i].fde - hdr->addr));
+    }
+    free(ents);
+}
+
 int link_elf(LinkState *s) {
     // -r: partial link, not an executable/shared object -- entirely
     // different output shape (ET_REL, no program headers, no crt/libc),
@@ -3388,6 +3529,22 @@ int link_elf(LinkState *s) {
             s->secs[bss_sec].len = (size_t)max_bss;
     }
 
+    // .eh_frame_hdr: size it now (layout), fill it after relocations.
+    int ehframe_sec = -1, ehhdr_sec = -1;
+    for (int i = 0; i < s->n_secs; i++)
+        if (!strcmp(s->secs[i].name, ".eh_frame") && s->secs[i].alloc && s->secs[i].len)
+            ehframe_sec = i;
+    if (ehframe_sec >= 0) {
+        long nfde = eh_frame_scan(&s->secs[ehframe_sec], NULL);
+        if (nfde > 0) {
+            size_t sz = 12 + 8 * (size_t)nfde;
+            uint8_t *zero = calloc(sz, 1);
+            ehhdr_sec = link_find_or_create_sec(s, ".eh_frame_hdr", true, false, false, false, false, 4);
+            link_sec_append(s, ehhdr_sec, zero, sz, 4);
+            free(zero);
+        }
+    }
+
     if (link_layout(s, base, 0x1000) != 0) {
         free(dyn_syms);
         free(dyn_idx);
@@ -3402,6 +3559,7 @@ int link_elf(LinkState *s) {
     // Compute page-aligned header size for address shifting.
     {
         int phnum = 3;
+        if (ehhdr_sec >= 0) phnum++; // PT_GNU_EH_FRAME
         if (do_dynamic) {
             phnum += 1; // PT_DYNAMIC
             if (!s->opt_shared) phnum += 1; // PT_INTERP
@@ -3681,6 +3839,8 @@ int link_elf(LinkState *s) {
         link_apply_relocs(s, 0);
     }
 
+    if (ehhdr_sec >= 0) eh_hdr_fill(s, ehframe_sec, ehhdr_sec);
+
     // Build program headers.
     uint64_t text_off = 0, text_addr = 0, text_filesz = 0, text_memsz = 0;
     uint64_t rodata_off = 0, rodata_addr = 0, rodata_filesz = 0, rodata_memsz = 0;
@@ -3741,6 +3901,7 @@ int link_elf(LinkState *s) {
         if (!s->opt_shared) phnum += 1; // PT_INTERP
     }
     phnum++; // PT_GNU_STACK
+    if (ehhdr_sec >= 0) phnum++; // PT_GNU_EH_FRAME
     {
         bool htls = false;
         for (int i = 0; i < s->n_secs; i++)
@@ -3999,6 +4160,11 @@ int link_elf(LinkState *s) {
         need_exec_stack = true;
     write_phdr(f, PT_GNU_STACK, PF_R | PF_W | (need_exec_stack ? PF_X : 0), 0, 0, 0, 0, 0, 0x10);
     cur += 56;
+    if (ehhdr_sec >= 0) {
+        LinkSec *hs = &s->secs[ehhdr_sec];
+        write_phdr(f, PT_GNU_EH_FRAME, PF_R, hs->fileoff, hs->addr, hs->addr, hs->len, hs->len, 4);
+        cur += 56;
+    }
     wzeros(f, file_off - cur);
 
     // Write section data in file-offset order so later sections never

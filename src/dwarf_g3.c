@@ -133,7 +133,7 @@ static void at_text_range(Dwarf_P_Die die, uint64_t start, uint64_t size) {
     at_u(die, DW_AT_high_pc, size);
 }
 
-// DW_AT_location = DW_OP_fbreg(off); frame base is rbp (see subprogram).
+// DW_AT_location = DW_OP_fbreg(off); the frame base is the CFA (see emit_function).
 static void at_loc_fbreg(Dwarf_P_Die die, int off) {
     Dwarf_P_Expr e = NULL;
     Dwarf_Unsigned n;
@@ -400,7 +400,7 @@ static void emit_local(LVar *v, Dwarf_P_Die parent, bool is_param) {
     at_name(d, v->name);
     at_ref(d, DW_AT_type, type_die(v->ty));
     if (v->vreg) return; // lives in a register: no memory location
-    at_loc_fbreg(d, -v->offset);
+    at_loc_fbreg(d, -v->offset - 16); // CFA = rbp+16 (push rbp; mov rsp,rbp)
 }
 
 static int cmp_scope(const void *a, const void *b) {
@@ -453,9 +453,10 @@ static void emit_function(DebugFnRec *rec) {
     }
     if (fn->ty && !is_void(fn->ty->return_ty)) at_ref(sp, DW_AT_type, type_die(fn->ty->return_ty));
     at_text_range(sp, rec->start, rec->size);
-    // Frame base = rbp+0: rcc functions keep rbp as the frame pointer and
-    // address every local as rbp - offset (no CFI is emitted).
-    static const char fb[] = {DW_OP_breg6, 0};
+    // Frame base = CFA, which eh_frame.c describes at every instruction, so
+    // locals resolve correctly even before the prologue has run. rcc
+    // addresses a local as rbp - offset and CFA = rbp + 16.
+    static const char fb[] = {DW_OP_call_frame_cfa};
     at_block(sp, DW_AT_frame_base, fb, sizeof fb);
 
     // Parameters.

@@ -106,8 +106,9 @@ else
 SRCS += src/elf_write.c src/link_elf.c src/x86_enc.c src/ir_core.c src/ir_build.c src/ir_inline.c src/ir_opt.c src/ir_x86.c
 # -g3 full debug info: only on this ELF x86-64 path (RCC_DWARF3 in obj.h
 # additionally requires HAVE_LIBDWARF and __x86_64__).
-ifeq ($(HAVE_LIBDWARF),1)
 ifeq ($(findstring x86_64,$(MACHINE)),x86_64)
+SRCS += src/eh_frame.c
+ifeq ($(HAVE_LIBDWARF),1)
 SRCS += src/dwarf_g3.c
 endif
 endif

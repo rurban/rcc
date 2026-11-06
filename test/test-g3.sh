@@ -93,6 +93,42 @@ if gcc t.o -o t_gcc && ./t_gcc; then ok "gcc link, runs"; else bad "gcc link, ru
 if "$RCC" -g3 t.c -o t_rcc && ./t_rcc; then ok "rcc link, runs"; else bad "rcc link, runs"; fi
 if readelf --debug-dump=info t_rcc 2>/dev/null | grep -q DW_TAG_subprogram; then ok "rcc-linked exe keeps DIEs"; else bad "rcc-linked exe keeps DIEs"; fi
 
+# --- call-frame information (.eh_frame): every -g level, rcc-linked or not ---
+cat > cfi.c <<'EOF2'
+#include <execinfo.h>
+#include <pthread.h>
+static int frames;
+__attribute__((noinline)) int leaf(int x) {
+    void *bt[32];
+    int n = backtrace(bt, 32);
+    if (n > frames) frames = n;
+    return x + 1;
+}
+int mid(int a, int b, int c, int d, int e, int f, int g) {
+    int arr[40];
+    arr[a % 40] = g;
+    return leaf(arr[a % 40] + b + c + d + e + f);
+}
+int top(int v) { return mid(v, 1, 2, 3, 4, 5, 6) + 1; }
+static void *thr(void *p) { top(1); pthread_exit(p); return 0; }
+int main(void) {
+    top(3);
+    pthread_t t;
+    pthread_create(&t, 0, thr, 0);
+    pthread_join(t, 0);
+    return frames >= 6 ? 0 : 1; /* leaf mid top main + libc frames */
+}
+EOF2
+"$RCC" -c cfi.c -o cfi0.o && if readelf -S cfi0.o | grep -q eh_frame; then bad "no .eh_frame without -g"; else ok "no .eh_frame without -g"; fi
+for lvl in -g1 -g2 -g3; do
+    "$RCC" $lvl -c cfi.c -o cfi.o 2>/dev/null
+    if readelf -S cfi.o | grep -q '\.eh_frame' && readelf -wF cfi.o 2>/dev/null | grep -q 'rbp+16'; then ok "$lvl: .eh_frame with rbp frame rules"; else bad "$lvl: .eh_frame with rbp frame rules"; fi
+done
+"$RCC" -g -c cfi.c -o cfi.o
+if gcc cfi.o -o cfi_gcc -lpthread && ./cfi_gcc; then ok "gcc link: backtrace/pthread_exit unwind through rcc frames"; else bad "gcc link: backtrace/pthread_exit unwind through rcc frames"; fi
+if "$RCC" -g cfi.c -o cfi_rcc -lpthread && ./cfi_rcc; then ok "rcc link: backtrace/pthread_exit unwind through rcc frames"; else bad "rcc link: backtrace/pthread_exit unwind through rcc frames"; fi
+if readelf -lW cfi_rcc | grep -q GNU_EH_FRAME; then ok "rcc link: PT_GNU_EH_FRAME"; else bad "rcc link: PT_GNU_EH_FRAME"; fi
+
 if command -v gdb >/dev/null 2>&1; then
     gdb -batch -ex 'break sq' -ex run -ex 'info args' -ex 'up' -ex 'info locals' \
         -ex 'p gcount' -ex 'ptype struct Point' -ex 'macro expand SQUARE(3)' t_gcc > gdb1.txt 2>&1
@@ -100,6 +136,8 @@ if command -v gdb >/dev/null 2>&1; then
     if grep -q 'int b5 : 5;' gdb1.txt; then ok "gdb: ptype bit-field"; else bad "gdb: ptype bit-field"; fi
     if grep -q "^[$]1 = 5" gdb1.txt; then ok "gdb: global value"; else bad "gdb: global value"; fi
     if grep -q '((3)\*(3))' gdb1.txt; then ok "gdb: macro expand"; else bad "gdb: macro expand"; fi
+    gdb -batch -ex 'break *sq' -ex run -ex bt -ex 'info args' t_gcc > gdb3.txt 2>&1
+    if grep -q '^#1 .* main ' gdb3.txt; then ok "gdb: backtrace from the first instruction"; else bad "gdb: backtrace from the first instruction"; fi
     gdb -batch -ex 'break 15' -ex run -ex 'info locals' -ex 'p p' t_gcc > gdb2.txt 2>&1
     if grep -q 'local_i = ' gdb2.txt; then ok "gdb: block local"; else bad "gdb: block local"; fi
     if grep -q 'p = {x = 1, y = 2, tag = 3' gdb2.txt; then ok "gdb: struct value"; else bad "gdb: struct value"; fi

@@ -124,9 +124,12 @@
     without a location; IR backend is already off under -g).
   - Typedef names are not kept on variable/member types (they resolve to the
     underlying type); unused tagged types and enums are not emitted.
-  - Frame info: no .debug_frame/.eh_frame CFI; DW_AT_frame_base is rbp (so
-    breakpoints at the very first instruction see wrong locals), unwinding
-    through rcc frames relies on gdb's prologue analyzer.
+  - Frame info: .eh_frame (src/eh_frame.c) exists only for -g builds on ELF
+    x86-64, AST backend only. Without -g, and for the SSA IR backend's
+    functions (which have their own prologues, including shrink-wrapped
+    per-cold-block ones), there is no CFI; extending it needs IR-side events
+    plus a -fasynchronous-unwind-tables default. rcc's own helper routines
+    (alloca helper, ASan ctors) have no FDE. No CFI for AArch64/Mach-O/COFF.
   - Macros: command-line (-D) and builtin macros are not recorded; include
     line numbers are 0.
   - Other targets: AArch64 ELF, Mach-O, COFF/PE (writers need extra-section

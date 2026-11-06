@@ -831,9 +831,31 @@ line-table emitter; the output is equivalent.
   unit, grouped by the file that contains it, so gdb's `info macro NAME` and
   `macro expand` work.
 
-The frame base is `rbp` (`DW_OP_breg6 0`): rcc keeps `rbp` as the frame pointer
-and addresses every local as `rbp - offset`, so no CFI is needed to find
-locals. rcc does not emit `.debug_frame`/`.eh_frame` CFI for `-g`.
+The frame base is the CFA (`DW_OP_call_frame_cfa`) and locals are
+`DW_OP_fbreg` offsets from it; the CFA is described by the `.eh_frame` CFI
+below, so locals resolve correctly at every instruction, including before the
+prologue has run.
+
+### Call-frame information (`.eh_frame`)
+
+Every `-g` level (1, 2 and 3) on ELF x86-64 also emits `.eh_frame`: one CIE and
+one FDE per function compiled by the AST backend (the only backend under `-g`).
+rcc functions keep `rbp` as the frame pointer, so each FDE is a handful of
+rules: `CFA = rsp+8` at entry, `rsp+16` after `push %rbp`, `rbp+16` after
+`mov %rsp,%rbp`, callee-saved registers (`rbx`, `r12`-`r15`) saved at their
+slots below the locals, and `rsp+8` again between the final `pop %rbp` and
+`ret` (or the tail-call `jmp`). This is what makes `backtrace()`, C++
+exceptions, `pthread_exit()`/`pthread_cancel()` forced unwinding, `perf
+--call-graph dwarf` and gdb's `bt`/`finish`/`up` work through rcc frames, even
+from a function's first instruction.
+
+rcc's own linker merges the `.eh_frame` sections of its inputs and also writes
+`.eh_frame_hdr` with a `PT_GNU_EH_FRAME` program header (the lookup table
+libgcc's unwinder finds through `dl_iterate_phdr`) for executables and shared
+objects, provided every CIE uses GCC's standard pc-relative 32-bit pointer
+encoding; otherwise the table is skipped. Without `-g` no `.eh_frame` is
+generated for rcc's own code, as before. `.debug_frame` is not emitted: it
+would only duplicate `.eh_frame`, which gdb and `readelf -wF` read directly.
 
 `-g2` and `-g3` do not change the generated code, but they turn off the SSA IR
 backend (as every `-g` level does): functions are compiled by the AST backend
@@ -869,9 +891,9 @@ the abbreviation offset, `.debug_aranges` to `.debug_info`) and every address
 - A typedef name is not kept on the type of a variable or member (it resolves
   to the underlying type); tagged types and enums that nothing references are
   not emitted.
-- No CFI (`.debug_frame`/`.eh_frame`): a breakpoint at a function's very first
-  instruction (before the prologue) sees wrong locals; gdb's prologue analysis
-  covers the normal case of breaking after it.
+- CFI covers only AST-backend functions, which is every function under `-g`;
+  helper routines rcc generates itself (the `alloca` helper, ASan constructors)
+  have no FDE. No CFI at all on AArch64, Mach-O and Windows targets.
 - Macros given with `-D` or predefined by rcc are not recorded, and the line of
   an `#include` is recorded as 0.
 - No DWARF 5 (`-gdwarf-N` is not a version selector) and no split DWARF.

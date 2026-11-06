@@ -772,6 +772,57 @@ void objfile_debug_scope_end(ObjFile *obj, void *vars_end) {
     sc->vars_end = vars_end;
 }
 #endif // RCC_DWARF3
+// ---------------------------------------------------------------------------
+// -g call-frame information: unwind events of the function being emitted,
+// serialized as .eh_frame by eh_frame.c. Pass 2 only (offsets are real).
+// ---------------------------------------------------------------------------
+#ifdef RCC_CFI
+static int cfi_cur = -1; // index into cg_obj->cfi_fns, -1 = none open
+
+static void cfi_fn_begin(size_t start) {
+    ObjFile *obj = cg_obj;
+    if (cg_dry_run || obj->debug_level < 1) return;
+    if (cfi_cur >= 0) // a function that never reached its epilogue: drop its record
+        obj->cfi_fn_count--;
+    if (obj->cfi_fn_count == obj->cfi_fn_cap) {
+        obj->cfi_fn_cap = obj->cfi_fn_cap ? obj->cfi_fn_cap * 2 : 16;
+        obj->cfi_fns = realloc(obj->cfi_fns, (size_t)obj->cfi_fn_cap * sizeof(CfiFn));
+        if (!obj->cfi_fns) {
+            fprintf(stderr, "objfile: out of memory\n");
+            exit(1);
+        }
+    }
+    cfi_cur = obj->cfi_fn_count++;
+    CfiFn *f = &obj->cfi_fns[cfi_cur];
+    memset(f, 0, sizeof(*f));
+    f->start = start;
+}
+
+static void cfi_op(CfiKind kind, int reg, int val) {
+    if (cfi_cur < 0) return;
+    CfiFn *f = &cg_obj->cfi_fns[cfi_cur];
+    if (f->nops == f->cap) {
+        f->cap = f->cap ? f->cap * 2 : 8;
+        f->ops = realloc(f->ops, (size_t)f->cap * sizeof(CfiOp));
+        if (!f->ops) {
+            fprintf(stderr, "objfile: out of memory\n");
+            exit(1);
+        }
+    }
+    f->ops[f->nops++] = (CfiOp){(uint32_t)cg_sec->len, (uint8_t)kind, (uint8_t)reg, val};
+}
+
+static void cfi_fn_end(void) {
+    if (cfi_cur < 0) return;
+    CfiFn *f = &cg_obj->cfi_fns[cfi_cur];
+    f->size = cg_sec->len - f->start;
+    cfi_cur = -1;
+}
+#else
+#define cfi_fn_begin(start) ((void)(start))
+#define cfi_op(kind, reg, val) ((void)0)
+#define cfi_fn_end() ((void)0)
+#endif
 int fn_struct_ret_off = 0; // next free offset within the struct-ret-buf area
 // Per-function cache of the comparison lhs-protect stack slot (see the
 // ND_EQ/NE/LT/LE cmp path in gen()), indexed by comparison-nesting depth.
@@ -13951,7 +14002,9 @@ VReg gen_inner(Node *node) {
                     }
                 asm_mov_rbp_rsp(cg_sec);
                 asm_pop(cg_sec, X86_RBP);
+                cfi_op(CFI_TEARDOWN, 0, 0);
                 emit_direct_jmp(callee->name, false);
+                cfi_op(CFI_RESTORE, 0, 0);
 #endif
                 return -1;
             }
@@ -21934,6 +21987,7 @@ struct ObjFile *codegen(Program *prog) {
 #ifdef RCC_DWARF3
         objfile_debug_fn_begin(cg_obj, fn_sym_name, fn);
 #endif
+        cfi_fn_begin(fn_sym_start);
 
         // -fstack-protector-strong: canary needed if any local is an
         // array/VLA, any local's address is taken, or the frame is > 8B.
@@ -21951,10 +22005,12 @@ struct ObjFile *codegen(Program *prog) {
         uw_begin(); // .seh_proc
 #endif
         asm_push(cg_sec, X86_RBP); // push rX86_RBP
+        cfi_op(CFI_PUSH_RBP, 0, 0);
 #ifdef _WIN32
         uw_pushreg(X86_RBP); // .seh_pushreg %rbp
 #endif
         asm_mov_rsp_rbp(cg_sec); // movq %rsp, %rbp
+        cfi_op(CFI_SET_FP, 0, 0);
 #ifdef _WIN32
         uw_set_fpreg(X86_RBP); // .seh_setframe %rbp, 0
 #endif
@@ -22006,6 +22062,7 @@ struct ObjFile *codegen(Program *prog) {
             if (callee_mask & (1 << j)) {
                 slot += 8;
                 asm_mov_phyreg_rbp(cg_sec, REG(j + 2), 8, slot); // movq %reg, -slot(%rbp)
+                cfi_op(CFI_SAVE, REG(j + 2), slot); // rbx/r12-r15: DWARF number == x86 number
             }
 
         // GNU nested function: spill the incoming static-chain pointer
@@ -22598,7 +22655,9 @@ struct ObjFile *codegen(Program *prog) {
 
         asm_mov_rbp_rsp(cg_sec); // movq %rbp, %rsp
         asm_pop(cg_sec, X86_RBP); // popq %rbp
+        cfi_op(CFI_TEARDOWN, 0, 0);
         asm_ret(cg_sec); // ret
+        cfi_fn_end();
 #ifdef RCC_DWARF3
         objfile_debug_fn_end(cg_obj);
 #endif
@@ -22867,6 +22926,9 @@ struct ObjFile *codegen(Program *prog) {
                         SEC_TEXT, res_start, res_end - res_start,
                         SB_GLOBAL, ST_GNU_IFUNC);
     }
+#endif
+#ifdef RCC_CFI
+    if (cg_obj->cfi_fn_count) objfile_flush_eh_frame(cg_obj);
 #endif
     // Flush DWARF debug info: -g2/-g3 full info via dwarf_g3.c (with a
     // fallback to the line-table emitter), else the line table.

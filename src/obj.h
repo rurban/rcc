@@ -250,6 +250,34 @@ typedef struct UnwindEntry {
 #endif
 #endif
 
+// Call-frame information (.eh_frame) for -g builds: x86-64 ELF only. Every
+// function rcc compiles with the AST backend keeps rbp as the frame pointer,
+// so its unwind rules are a fixed handful of events at known offsets.
+#if !defined(_WIN32) && !defined(__APPLE__) && defined(__x86_64__) && !defined(ARCH_ARM64)
+#define RCC_CFI 1
+#endif
+
+typedef enum {
+    CFI_PUSH_RBP, // after `push %rbp`: CFA = rsp+16, rbp saved at CFA-16
+    CFI_SET_FP, // after `mov %rsp,%rbp`: CFA = rbp+16
+    CFI_SAVE, // after saving callee-saved reg `reg` at rbp-`val`
+    CFI_TEARDOWN, // after `pop %rbp` (before ret / tail jmp): CFA = rsp+8
+    CFI_RESTORE, // after that ret/jmp: frame as before CFI_TEARDOWN
+} CfiKind;
+
+typedef struct {
+    uint32_t off; // .text offset the rule takes effect at
+    uint8_t kind; // CfiKind
+    uint8_t reg; // DWARF register number (CFI_SAVE)
+    int32_t val; // rbp-relative slot distance (CFI_SAVE)
+} CfiOp;
+
+typedef struct {
+    uint64_t start, size; // .text range of the function
+    CfiOp *ops;
+    int nops, cap;
+} CfiFn;
+
 #define MAX_DEBUG_FILES 128
 typedef struct {
     uint64_t text_offset; // offset in .text section
@@ -363,6 +391,8 @@ struct ObjFile {
     bool debug_has_low_pc; // true if DW_AT_low_pc needs R_X86_64_64 vs .text
     size_t debug_aranges_addr_off; // offset of address in .debug_aranges (needs reloc)
     bool debug_has_aranges_addr; // true if .debug_aranges address needs reloc
+    CfiFn *cfi_fns; // -g: per-function unwind records, code order
+    int cfi_fn_count, cfi_fn_cap;
     DebugFnRec *debug_fns; // -g3: emitted functions, code order
     int debug_fn_count, debug_fn_cap;
     size_t debug_line_addr_off; // offset of DW_LNE_set_address value in .debug_line
@@ -389,6 +419,10 @@ void objfile_flush_debug_line(ObjFile *obj, uint64_t text_end);
 // through libdwarfp. Returns false (obj untouched) on any failure so the
 // caller can fall back to the built-in emitter.
 bool objfile_flush_debug_libdwarf(ObjFile *obj, uint64_t text_end);
+#endif
+#ifdef RCC_CFI
+// src/eh_frame.c: serialize obj->cfi_fns as .eh_frame (after codegen).
+void objfile_flush_eh_frame(ObjFile *obj);
 #endif
 #ifdef RCC_DWARF3
 // src/dwarf_g3.c: full -g3 debug info (subprograms, types, variables,
