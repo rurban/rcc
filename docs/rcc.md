@@ -669,7 +669,6 @@ check. Never runs below `-O3`.
 | `-g`, `-g1`, `-ggdb[1]` | Emit DWARF line-number debug info only (line/function mapping). Plain `-g` means `-g1`.                                          |
 | `-g2`, `-ggdb2`         | Full DWARF 4: functions, parameters, locals/lexical blocks, globals, types (ELF x86-64 with libdwarfp; elsewhere same as `-g1`). |
 | `-g3`, `-ggdb3`         | `-g2` plus macro definitions (`#define`/`#undef`, `.debug_macinfo`).                                                             |
-| `-g0`                   | Disable debug info (default). See [Debug information (`-g`)](#debug-information--g).                                             |
 | `-time`                 | Print per-substage wall-clock timing (preprocess/parse/typecheck/opt/codegen/link) to stderr.                                    |
 | `-save-temps`           | Keep the per-file objects of a compile+link as `<name>.o` in the current directory instead of deleting them.                     |
 | `-v`                    | Be more verbose (echo assembler/linker invocations; with `-W` also enables dead-code notices).                                   |

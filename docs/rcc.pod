@@ -371,10 +371,6 @@ elsewhere it acts as B<-g1>.
 B<-g2> plus macro definitions (C<#define>/C<#undef>) in F<.debug_macinfo>.
 See "Debug information (-g)" in F<docs/rcc.md>.
 
-=item B<-g0>
-
-Disable debug info generation (default).
-
 =item B<-time>
 
 Print wall-clock timing for each compilation substage (preprocess,
