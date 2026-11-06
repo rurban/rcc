@@ -11,6 +11,7 @@ beyond standard C23/C29.
 - [Supported standards and dialects](#supported-standards-and-dialects)
 - [Contracts (`pre`/`post`, `contract_assert`, `contract_assume`)](#contracts-prepost-contract_assert-contract_assume)
 - [Options](#options)
+- [Debug information (`-g`)](#debug-information--g)
 - [Warnings and diagnostics](#warnings-and-diagnostics)
 - [`__attribute__` / `[[...]]` attributes](#attribute--attributes)
 - [`__builtin_*` functions](#builtin_-functions)
@@ -668,7 +669,7 @@ check. Never runs below `-O3`.
 | `-g`, `-g1`, `-ggdb[1]` | Emit DWARF line-number debug info only (line/function mapping). Plain `-g` means `-g1`.                                          |
 | `-g2`, `-ggdb2`         | Full DWARF 4: functions, parameters, locals/lexical blocks, globals, types (ELF x86-64 with libdwarfp; elsewhere same as `-g1`). |
 | `-g3`, `-ggdb3`         | `-g2` plus macro definitions (`#define`/`#undef`, `.debug_macinfo`).                                                             |
-| `-g0`                   | Disable debug info (default).                                                                                                    |
+| `-g0`                   | Disable debug info (default). See [Debug information (`-g`)](#debug-information--g).                                             |
 | `-time`                 | Print per-substage wall-clock timing (preprocess/parse/typecheck/opt/codegen/link) to stderr.                                    |
 | `-save-temps`           | Keep the per-file objects of a compile+link as `<name>.o` in the current directory instead of deleting them.                     |
 | `-v`                    | Be more verbose (echo assembler/linker invocations; with `-W` also enables dead-code notices).                                   |
@@ -782,6 +783,98 @@ emitting gcc's exact libubsan descriptor + handler:
 | `-MP`                           | Add a phony target per prerequisite.                                                                                         |
 | `-MG`                           | No-op (rcc always resolves includes).                                                                                        |
 | `-Wp,-MD,file`, `-Wp,-MMD,file` | Equivalent to `-MD -MF file` / `-MMD -MF file` (Kbuild-style driver spelling).                                               |
+
+## Debug information (`-g`)
+
+rcc emits DWARF 4 for `-g`, in three levels that follow gcc's meaning:
+
+| Option                  | `-g` level | Emitted                                                                                                           |
+| ----------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------- |
+| `-g0`                   | 0          | Nothing (default).                                                                                                |
+| `-g`, `-g1`, `-ggdb[1]` | 1          | Line table only: `.debug_line`, a bare compile-unit DIE in `.debug_info`, `.debug_abbrev`, `.debug_aranges`.      |
+| `-g2`, `-ggdb2`         | 2          | Level 1 plus functions, parameters, local variables in lexical blocks, globals, typedefs and the full type graph. |
+| `-g3`, `-ggdb3`         | 3          | Level 2 plus macro definitions (`#define`/`#undef`) in `.debug_macinfo`.                                          |
+
+Plain `-g` means `-g1`, so existing builds that pass `-g` keep the cheap
+line-table-only output. The last `-g*` option on the command line wins; `-g0`
+turns debug info off again.
+
+### Availability
+
+Levels 2 and 3 are produced through the libdwarf _producer_ library
+(`libdwarfp`), and only for ELF x86-64 targets (Linux/BSD). The Makefile probes
+for libdwarfp at build time (`make HAVE_LIBDWARF=0|1` overrides the probe).
+Where full DWARF is unavailable — rcc built without libdwarfp, or an AArch64,
+Mach-O or Windows target — `-g2` and `-g3` behave like `-g1`, silently. If
+libdwarfp is present but fails while generating a particular object, rcc prints
+one `rcc: libdwarf -g3: ... failed` note to stderr and writes the line table
+instead; the compile itself still succeeds.
+
+Level 1 uses libdwarfp too when available, and otherwise a built-in
+line-table emitter; the output is equivalent.
+
+### What the debugger sees (levels 2 and 3)
+
+- **Functions** (`DW_TAG_subprogram`): name, declaration file/line, `external`
+  and `prototyped` flags, return type, `low_pc`/`high_pc`, formal parameters
+  (and `unspecified_parameters` for variadic functions).
+- **Variables**: parameters and locals with a `DW_OP_fbreg` location,
+  globals with a `DW_OP_addr` location (relocated, so it survives linking).
+  Locals declared in compound statements and `for` initializers are children of
+  a `DW_TAG_lexical_block` with its own PC range, so `info locals` shows only
+  what is in scope.
+- **Types**: base types, pointers, arrays (multi-dimensional), function types,
+  `const`/`volatile`/`restrict`, structs and unions (members, offsets,
+  bit-fields), enums with their enumerators, and typedefs that the program
+  actually uses.
+- **Macros** (`-g3` only): every `#define` and `#undef` in the translation
+  unit, grouped by the file that contains it, so gdb's `info macro NAME` and
+  `macro expand` work.
+
+The frame base is `rbp` (`DW_OP_breg6 0`): rcc keeps `rbp` as the frame pointer
+and addresses every local as `rbp - offset`, so no CFI is needed to find
+locals. rcc does not emit `.debug_frame`/`.eh_frame` CFI for `-g`.
+
+`-g2` and `-g3` do not change the generated code, but they turn off the SSA IR
+backend (as every `-g` level does): functions are compiled by the AST backend
+even at `-O2`, so locals always live in memory slots and are visible to the
+debugger.
+
+### Linking and sections
+
+Every section-relative reference in the debug sections (`DW_AT_stmt_list`,
+the abbreviation offset, `.debug_aranges` to `.debug_info`) and every address
+(function and block ranges, global locations) carries a real relocation. Several
+`-g` objects therefore link into one executable or shared object with GNU `ld`,
+`gcc` or rcc's own linker, which keeps the non-allocated `.debug*` sections and
+`.symtab`/`.strtab`.
+
+### Checking the result
+
+    rcc -g3 -c prog.c -o prog.o
+    readelf --debug-dump=info prog.o       # DIEs
+    readelf --debug-dump=macro prog.o      # .debug_macinfo
+    dwarfdump -i prog.o                    # libdwarf's view
+    rcc -g3 prog.c -o prog
+    gdb -batch -ex 'break main' -ex run -ex 'info locals' -ex 'ptype struct S' \
+        -ex 'macro expand MAX(1,2)' ./prog
+
+### Known gaps
+
+- Only compound statements and `for` initializers open lexical blocks; the
+  scope of `if`/`switch`/`while` init declarations is not recorded.
+- Variables without a plain stack slot get no location: block-scope `static`
+  locals, variable-length arrays, `__thread` variables and register-promoted
+  locals.
+- A typedef name is not kept on the type of a variable or member (it resolves
+  to the underlying type); tagged types and enums that nothing references are
+  not emitted.
+- No CFI (`.debug_frame`/`.eh_frame`): a breakpoint at a function's very first
+  instruction (before the prologue) sees wrong locals; gdb's prologue analysis
+  covers the normal case of breaking after it.
+- Macros given with `-D` or predefined by rcc are not recorded, and the line of
+  an `#include` is recorded as 0.
+- No DWARF 5 (`-gdwarf-N` is not a version selector) and no split DWARF.
 
 ## Warnings and diagnostics
 

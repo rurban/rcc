@@ -318,10 +318,10 @@ SystemV long doubles (internally all using SSE), ARM64 long doubles
 (128-bit quad precision via register pairs in elf, 8 byte on APPLE),
 safe unicode identifiers and strings (unlike C11/C23), `target_clones`
 (FMV with IFUNC resolver, asm .altinstr_replacements), gcc/enum/ms
-bitfields, old K&R function definitions, basic -g DWARF debugging
-support (line numbers only), most GCC extensions and builtins,
-`_FORTIFY_SOURCE`, SIMD/NEON xmmintrin.h support, C29/C2y standard
-(WG14) unconditionally, pass `-std=c2y` (or `-std=c29`).
+bitfields, old K&R function definitions, -g[1-3] DWARF debugging
+support, most GCC extensions and builtins, `_FORTIFY_SOURCE`,
+SIMD/NEON xmmintrin.h support, C29/C2y standard (WG14) unconditionally,
+pass `-std=c2y` (or `-std=c29`).
 
 **C contracts** — `pre(COND)`/`post([NAME:] COND)` declarator
 specifiers and the `contract_assert(COND[,
@@ -447,7 +447,9 @@ every `__attribute__`/`__builtin_*`/`#pragma` extension — in
     -O1                enable CTFE optimizations
     -O2                enable -finline, -funroll optimizations
     -O3                enable the contract range prover (pre/post/contract_assert/contract_assume)
-    -g                 emit DWARF line-number debug info
+    -g | -g1           emit DWARF line-number debug info
+    -g2                emit full DWARF
+    -g3                emit full DWARF + macros
     -std={c2y,c23,c17,c11,c99,c89,...}
                        sets __STDC_VERSION__
     -nostdinc          do not search system include directories

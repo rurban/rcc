@@ -355,11 +355,21 @@ compatibility flag; see F<docs/rcc.md>).
 
 =over 4
 
-=item B<-g>, B<-g1>, B<-g2>, B<-g3>, B<-ggdb>, B<-ggdb1>, B<-ggdb2>,
-B<-ggdb3>
+=item B<-g>, B<-g1>, B<-ggdb>, B<-ggdb1>
 
-Emit DWARF line-number debug information (function/line mapping only;
-no variable-location or type debug info yet).
+Emit DWARF line-number debug information only (function/line mapping).
+Plain B<-g> means B<-g1>.
+
+=item B<-g2>, B<-ggdb2>
+
+Full DWARF 4: functions, parameters, local variables in lexical blocks,
+globals and types. Needs a build with libdwarfp on an ELF x86-64 target;
+elsewhere it acts as B<-g1>.
+
+=item B<-g3>, B<-ggdb3>
+
+B<-g2> plus macro definitions (C<#define>/C<#undef>) in F<.debug_macinfo>.
+See "Debug information (-g)" in F<docs/rcc.md>.
 
 =item B<-g0>
 
