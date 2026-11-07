@@ -133,8 +133,6 @@ test_blake3() {
  github_tar BLAKE3-team BLAKE3 1.8.5
  sed -i 's|C CXX ASM|C ASM|g' c/CMakeLists.txt
  sed -i 's|#undef IS_X86||g' c/blake3_dispatch.c
- sed -i 's|-fstack-protector-strong||g' c/cmake/BLAKE3/ContinuousIntegration.cmake
- sed -i 's|-fsanitize=address,undefined||g' c/cmake/BLAKE3/ContinuousIntegration.cmake
  sed -i 's|--fresh||g' c/cmake/BLAKE3/ContinuousIntegration.cmake
 
  cd c/
@@ -390,8 +388,6 @@ test_cwpack() {
 
 test_darkhttpd() {
  github_tar emikulic darkhttpd v1.17
- sed -i 's|-fsanitize=address | |g' devel/run-tests
- sed -i 's|-fsanitize=undefined | |g' devel/run-tests
  sed -i 's|-fprofile-arcs -ftest-coverage | |g' devel/run-tests
  make CC="$CC" test
 }
@@ -551,7 +547,6 @@ test_gnutls() {
 test_go() {
  # release-branch.go1.4
  git_fetch https://github.com/golang/go 6dea79a07ad81332253a1ea1d52bbdbb50a3ed2f go
- sed -i 's|\"-ggdb\",||g' src/cmd/dist/build.c
  sed -i 's|vadd(&gccargs, \"-fmessage-length=0\");||g' src/cmd/dist/build.c
  ${is_CI+ rm src/runtime/pprof/pprof_test.go } # flaky (cpu load sensitive)
  cd src/
@@ -1302,7 +1297,6 @@ test_pacman() {
 test_parrot() {
  git_fetch https://github.com/parrot/parrot 472c0538637dedfe2fd0f29567d0c26bf9f38edd parrot
  perl Configure.pl --cc="$CC" --ld="$CC" --link="$CC" --linkflags=
- sed -i 's| -fstack-protector-strong||g' Makefile
  make test
 }
 
@@ -1650,7 +1644,6 @@ test_tomlc17() {
  chmod +x test/stdtest/toml-test
  sed -i 's|^go install.*$||g' test/stdtest/run.sh
  sed -i 's|^toml-test|./&|g' test/stdtest/run.sh
- find . -name 'Makefile' -exec sed -i 's|-fsanitize=address,undefined||g' {} +
  make CC="$CC" test
 }
 

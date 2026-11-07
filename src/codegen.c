@@ -19236,14 +19236,31 @@ VReg gen_inner(Node *node) {
                         asm_sub_reg_reg(cg_sec, r_a, r_b, sz);
                     else
                         asm_mul_reg_reg(cg_sec, r_a, r_b, sz);
-                    // Pointer add: overflow means the unsigned sum wrapped
-                    // (carry set) -> pointer overflow; rsi = the base pointer.
                     // Signed: overflow means the signed sum wrapped (OF set)
                     // -> signed overflow; rsi = a, rdx = b.
-                    if (is_ptr)
-                        emit_jcc_fixup(cg_sec, X86_NC, skip); // no carry -> skip
-                    else
+                    // Pointer add: gcc's PointerOverflowData fires only when
+                    // the result actually leaves the address space - for a
+                    // non-negative offset when result <u base (wrapped past
+                    // the top), for a negative offset when result >u base
+                    // (wrapped past zero). The raw carry flag cannot be used:
+                    // base + negative offset always carries while producing a
+                    // perfectly valid address (glibc's isprint() table is
+                    // indexed with ch*2 exactly like this). rsi = the base.
+                    if (is_ptr) {
+                        char *neg = format(".L.ubsan_po_neg.%d", n);
+                        char *fire = format(".L.ubsan_po_fire.%d", n);
+                        x86_test_rr(cg_sec, 8, REG(r_b), REG(r_b)); // offset sign
+                        emit_jcc_fixup(cg_sec, X86_S, neg);
+                        x86_cmp_rr(cg_sec, sz, REG(r_a), REG(r_save)); // flags = result - base
+                        emit_jcc_fixup(cg_sec, X86_AE, skip); // offset >= 0, no top wrap
+                        emit_jmp_fixup(cg_sec, fire);
+                        cg_def_label(neg);
+                        x86_cmp_rr(cg_sec, sz, REG(r_a), REG(r_save)); // flags = result - base
+                        emit_jcc_fixup(cg_sec, X86_BE, skip); // offset < 0, no bottom wrap
+                        cg_def_label(fire);
+                    } else {
                         emit_jcc_fixup(cg_sec, X86_NO, skip); // no overflow -> skip
+                    }
                     // The handler is a raw call (emit_direct_call doesn't tell
                     // the allocator), so it clobbers caller-saved regs. Stash
                     // the value (result for signed, base for pointer) in a temp
@@ -19259,8 +19276,13 @@ VReg gen_inner(Node *node) {
                     if (data_label) asm_lea_rip_reg(cg_sec, d, data_label); // d = &Data (none in Pass 1)
                     x86_mov_rr(cg_sec, 8, X86_RDI, REG(d)); // rdi = &Data
                     free_reg(d);
-                    if (sz == 4) asm_movsx(cg_sec, r_save, r_save, 8, 4); // sign-extend a
-                    x86_mov_rr(cg_sec, 8, X86_RSI, REG(r_save)); // rsi = a (base for ptr)
+                    // __ubsan_handle_pointer_overflow(data, BASE, RESULT):
+                    // 3 args; the handler prints "addition ... to <rsi>
+                    // overflowed to <rdx>", so rsi = base and rdx = result.
+                    if (sz == 4) asm_movsx(cg_sec, r_save, r_save, 8, 4); // sign-extend base
+                    x86_mov_rr(cg_sec, 8, X86_RSI, REG(r_save)); // rsi = base
+                    if (is_ptr)
+                        x86_mov_rr(cg_sec, 8, X86_RDX, REG(r_a)); // rdx = result
                     if (!is_ptr) {
                         if (sz == 4) asm_movsx(cg_sec, r_b, r_b, 8, 4); // sign-extend b
                         x86_mov_rr(cg_sec, 8, X86_RDX, REG(r_b)); // rdx = b
