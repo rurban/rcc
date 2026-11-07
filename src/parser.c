@@ -14474,6 +14474,17 @@ static Node *unary(Token **rest, Token *tok) {
                         continue;
                     } // designated init .member
                     if (equalc(t, ",") || equalc(t, "=") || equalc(t, ";")) continue;
+                    if (equalc(t, ")")) continue; // closes a paren group scanned into below
+                    if (equalc(t, "(") && !(t->next && is_typename(t->next))) {
+                        // A parenthesized EXPRESSION, e.g. bison's
+                        // `.val = (yyvsp[0].val_assign)`: scan its tokens
+                        // instead of skipping it, so a non-constant operand
+                        // is seen and the speculative constant fold below is
+                        // not attempted (it would flat-consume the value as
+                        // the first scalar member and hard-error on the next
+                        // `, .designator`).
+                        continue;
+                    }
                     if (equalc(t, "(")) { // skip to matching ) — handles compound literal types
                         int pd = 1;
                         while (pd > 0 && t->next) {
