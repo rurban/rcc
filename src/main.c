@@ -842,9 +842,20 @@ int main(int argc, char **argv) {
                 return 1;
             }
             xappendf(&libs, &libs_len, &libs_cap, " -Wl,-rpath,%s", argv[i]);
-        } else if (!strcmp(argv[i], "-shared")) {
+        } else if (!strcmp(argv[i], "-shared") ||
+                   !strcmp(argv[i], "-dynamiclib")) {
             opt_shared = true;
             xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
+        } else if (!strcmp(argv[i], "-install_name") ||
+                   !strcmp(argv[i], "-compatibility_version") ||
+                   !strcmp(argv[i], "-current_version")) {
+            char *flag = argv[i];
+            if (++i >= argc) {
+                fprintf(stderr, "error: missing argument for %s\n", flag);
+                return 1;
+            }
+            xappendf(&libs, &libs_len, &libs_cap, " -Wl,%s,%s", flag,
+                     argv[i]);
         } else if (!strcmp(argv[i], "-static")) {
             opt_static = true;
             xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
