@@ -9,10 +9,10 @@
 
 static int dispatch(int i) {
     static const void *const tbl[] = {
+        &&D,
         (&&A),
         __extension__(&&B),
         ((&&C)),
-        &&D,
     };
     goto *tbl[i];
 A: return 10;
@@ -22,7 +22,7 @@ D: return 40;
 }
 
 int main(void) {
-    if (dispatch(0) != 10 || dispatch(1) != 20 || dispatch(2) != 30 || dispatch(3) != 40) {
+    if (dispatch(0) != 40 || dispatch(1) != 10 || dispatch(2) != 20 || dispatch(3) != 30) {
         printf("FAIL\n");
         return 1;
     }
