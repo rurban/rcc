@@ -341,6 +341,43 @@ int macho_write(ObjFile *obj, const char *path) {
             extra_ord[i] = extra_base_ord + i + 1;
     }
 
+    // MH_OBJECT section addresses share one contiguous virtual address space.
+    // Keep zerofill in that layout even though it occupies no file bytes.
+    uint64_t *section_addr = xcalloc((size_t)(SEC_NUM + obj->extra_sec_count),
+                                     sizeof(uint64_t));
+    uint64_t vm_cursor = 0;
+    section_addr[SEC_TEXT] = align(vm_cursor, 16);
+    vm_cursor = section_addr[SEC_TEXT] + obj->text.len;
+    section_addr[SEC_DATA] = align(vm_cursor, 8);
+    vm_cursor = section_addr[SEC_DATA] + obj->data.len;
+    section_addr[SEC_BSS] = align(vm_cursor, 8);
+    vm_cursor = section_addr[SEC_BSS] + obj->bss_size;
+    section_addr[SEC_RODATA] = align(vm_cursor, 8);
+    vm_cursor = section_addr[SEC_RODATA] + obj->rodata.len;
+    section_addr[SEC_INIT_ARRAY] = align(vm_cursor, 8);
+    vm_cursor = section_addr[SEC_INIT_ARRAY] + obj->init_array.len;
+    section_addr[SEC_TDATA] = align(vm_cursor, 8);
+    vm_cursor = section_addr[SEC_TDATA] + obj->data_tls.len;
+    section_addr[SEC_THREAD_VARS] = align(vm_cursor, 8);
+    vm_cursor = section_addr[SEC_THREAD_VARS] + obj->thread_vars.len;
+
+    uint64_t dbg_addr[4] = {0, 0, 0, 0};
+    if (has_debug) {
+        dbg_addr[0] = vm_cursor;
+        vm_cursor += obj->debug_line_section.len;
+        dbg_addr[1] = vm_cursor;
+        vm_cursor += obj->debug_info_section.len;
+        dbg_addr[2] = vm_cursor;
+        vm_cursor += obj->debug_abbrev_section.len;
+        dbg_addr[3] = vm_cursor;
+        vm_cursor += obj->debug_aranges_section.len;
+    }
+    for (int i = 0; i < obj->extra_sec_count; i++) {
+        vm_cursor = align(vm_cursor, 8);
+        section_addr[SEC_NUM + i] = vm_cursor;
+        vm_cursor += obj->extra_secs[i].buf.len;
+    }
+
     // -----------------------------------------------------------------------
     // Build symbol table
     // -----------------------------------------------------------------------
@@ -371,7 +408,7 @@ int macho_write(ObjFile *obj, const char *path) {
         n->type = (os->section == SEC_UNDEF) ? N_UNDF : N_SECT;
         n->sect = obj_section_ord(os->section, extra_ord);
         n->desc = 0;
-        n->value = os->offset;
+        n->value = section_addr[os->section] + os->offset;
     }
     int ilocalsym = 0;
     int nlocalsym = nsyms;
@@ -388,7 +425,7 @@ int macho_write(ObjFile *obj, const char *path) {
         n->sect = obj_section_ord(os->section, extra_ord);
         // A weak (coalesced) definition carries N_WEAK_DEF.
         n->desc = (os->bind == SB_WEAK) ? (uint16_t)N_WEAK_DEF : 0;
-        n->value = os->offset;
+        n->value = section_addr[os->section] + os->offset;
     }
     int nextdefsym = nsyms - iextdefsym;
     int iundefsym = nsyms;
@@ -513,7 +550,7 @@ int macho_write(ObjFile *obj, const char *path) {
     // custom sections included, when present), plus BSS VM allocation
     uint64_t seg_filesize = extra_end - text_off;
 
-    uint64_t seg_vmsize = seg_filesize + obj->bss_size;
+    uint64_t seg_vmsize = vm_cursor;
 
     // -----------------------------------------------------------------------
     // Write file
@@ -525,6 +562,7 @@ int macho_write(ObjFile *obj, const char *path) {
         free(nlist);
         free(mst.data);
         free(extra_ord);
+        free(section_addr);
         free(extra_off);
         free(reloc_extra_off);
         return -1;
@@ -560,7 +598,7 @@ int macho_write(ObjFile *obj, const char *path) {
         const char sg[16] = "__TEXT";
         wbuf(f, sn, 16);
         wbuf(f, sg, 16);
-        w64(f, 0); // addr
+        w64(f, section_addr[SEC_TEXT]);
         w64(f, text_size);
         w32(f, (uint32_t)text_off); // offset
         w32(f, 4); // align (2^4=16)
@@ -577,7 +615,7 @@ int macho_write(ObjFile *obj, const char *path) {
         const char sg[16] = "__DATA";
         wbuf(f, sn, 16);
         wbuf(f, sg, 16);
-        w64(f, 0); // addr
+        w64(f, section_addr[SEC_DATA]);
         w64(f, data_size);
         w32(f, (uint32_t)data_off);
         w32(f, 3); // align (2^3=8)
@@ -594,9 +632,9 @@ int macho_write(ObjFile *obj, const char *path) {
         const char sg[16] = "__DATA";
         wbuf(f, sn, 16);
         wbuf(f, sg, 16);
-        w64(f, 0); // addr
+        w64(f, section_addr[SEC_BSS]);
         w64(f, obj->bss_size);
-        w32(f, (uint32_t)bss_off); // no file content
+        w32(f, 0); // S_ZEROFILL has no file content
         w32(f, 3);
         w32(f, 0);
         w32(f, 0); // no relocs
@@ -611,7 +649,7 @@ int macho_write(ObjFile *obj, const char *path) {
         const char sg[16] = "__TEXT";
         wbuf(f, sn, 16);
         wbuf(f, sg, 16);
-        w64(f, 0); // addr
+        w64(f, section_addr[SEC_RODATA]);
         w64(f, rodata_size);
         w32(f, (uint32_t)rodata_off);
         w32(f, 0);
@@ -629,7 +667,7 @@ int macho_write(ObjFile *obj, const char *path) {
         const char sg[16] = "__DATA";
         wbuf(f, sn, 16);
         wbuf(f, sg, 16);
-        w64(f, 0); // addr
+        w64(f, section_addr[SEC_INIT_ARRAY]);
         w64(f, init_size);
         w32(f, (uint32_t)init_off);
         w32(f, 3); // align (2^3=8)
@@ -647,7 +685,7 @@ int macho_write(ObjFile *obj, const char *path) {
         const char sg[16] = "__DATA";
         wbuf(f, sn, 16);
         wbuf(f, sg, 16);
-        w64(f, 0); // addr
+        w64(f, section_addr[SEC_TDATA]);
         w64(f, obj->data_tls.len);
         w32(f, (uint32_t)tdata_off); // offset
         w32(f, 3); // align (2^3=8)
@@ -664,7 +702,7 @@ int macho_write(ObjFile *obj, const char *path) {
         const char sg[16] = "__DATA";
         wbuf(f, sn, 16);
         wbuf(f, sg, 16);
-        w64(f, 0); // addr
+        w64(f, section_addr[SEC_THREAD_VARS]);
         w64(f, obj->thread_vars.len);
         w32(f, (uint32_t)tvars_off); // offset
         w32(f, 3); // align (2^3=8)
@@ -681,13 +719,14 @@ int macho_write(ObjFile *obj, const char *path) {
     if (has_debug) {
         struct {
             const char *name;
+            uint64_t addr;
             uint64_t size, off, reloff;
             uint32_t nreloc;
         } dbg[4] = {
-            {"__debug_line", dbgline_size, dbgline_off, reloc_dbgline_off, reloc_dbgline_cnt},
-            {"__debug_info", dbginfo_size, dbginfo_off, reloc_dbginfo_off, reloc_dbginfo_cnt},
-            {"__debug_abbrev", dbgabbrev_size, dbgabbrev_off, 0, 0},
-            {"__debug_aranges", dbgaranges_size, dbgaranges_off, reloc_dbgaranges_off, reloc_dbgaranges_cnt},
+            {"__debug_line", dbg_addr[0], dbgline_size, dbgline_off, reloc_dbgline_off, reloc_dbgline_cnt},
+            {"__debug_info", dbg_addr[1], dbginfo_size, dbginfo_off, reloc_dbginfo_off, reloc_dbginfo_cnt},
+            {"__debug_abbrev", dbg_addr[2], dbgabbrev_size, dbgabbrev_off, 0, 0},
+            {"__debug_aranges", dbg_addr[3], dbgaranges_size, dbgaranges_off, reloc_dbgaranges_off, reloc_dbgaranges_cnt},
         };
         for (int i = 0; i < 4; i++) {
             char sn[16] = {0};
@@ -695,7 +734,7 @@ int macho_write(ObjFile *obj, const char *path) {
             memcpy(sn, dbg[i].name, strlen(dbg[i].name));
             wbuf(f, sn, 16);
             wbuf(f, sg, 16);
-            w64(f, 0); // addr (0, like every other rcc section; resolved via relocs)
+            w64(f, dbg[i].addr);
             w64(f, dbg[i].size);
             w32(f, (uint32_t)dbg[i].off);
             w32(f, 0); // align 2^0 = 1
@@ -716,7 +755,7 @@ int macho_write(ObjFile *obj, const char *path) {
         macho_seg_sect_name(segname, sectname, es->name, es->sh_flags);
         wbuf(f, sectname, 16);
         wbuf(f, segname, 16);
-        w64(f, 0); // addr
+        w64(f, section_addr[SEC_NUM + i]);
         w64(f, es->buf.len);
         w32(f, (uint32_t)extra_off[i]);
         w32(f, 3); // align (2^3=8)
@@ -874,6 +913,7 @@ int macho_write(ObjFile *obj, const char *path) {
     free(nlist);
     free(mst.data);
     free(extra_ord);
+    free(section_addr);
     free(extra_off);
     free(reloc_extra_off);
     return 0;
