@@ -2921,7 +2921,7 @@ static void run_one_test(const char *src_path, const char *base,
         if (!getcwd(save_cwd, sizeof(save_cwd)))
             save_cwd[0] = '\0';
         if (chdir(TEST_DIR) != 0) perror("chdir");
-        char *ga[8];
+        char *ga[10]; // up to 6 runner words + exe + 2 args + NULL
         int gai = 0;
         if (has_runner) {
             char *rc = strdup(runner_cmd);
@@ -3303,7 +3303,7 @@ static void compile_and_exec(const char *src_path, const char *base,
     int expected_exit = test_expected_exit(base);
 
     if (streq(base, "46_grep")) {
-        char *ga[8];
+        char *ga[10]; // up to 6 runner words + exe + 2 args + NULL
         int gai = 0;
         if (has_runner) {
             char *rc = strdup(runner_cmd);

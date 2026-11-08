@@ -1086,8 +1086,10 @@ static char *canonical_path(char *path) {
     for (int i = 0; i < len; i++)
         if (buf[i] == '\\') buf[i] = '/';
 #endif
-    char *comps[256];
-    int comp_lens[256], ncomp = 0;
+    // A path of len < 4096 has at most 2048 components ("a/a/a/..."; ".." is one).
+    enum { MAX_COMPS = 4096 / 2 + 1 };
+    char *comps[MAX_COMPS] = {0};
+    int comp_lens[MAX_COMPS] = {0}, ncomp = 0;
     char *p = buf;
 #ifdef _WIN32
     bool absolute = false;
@@ -1700,7 +1702,7 @@ static void splice_va(Token **head, Token **tail, Macro *m, Token **args, int ar
 static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token **raw_args, int argc) {
     Token *rhead = NULL, *rtail = NULL;
     int vs = va_slot(m);
-    bool va_empty = vs >= argc || (vs == argc - 1 && !raw_args[vs]);
+    bool va_empty = vs >= argc || (vs == argc - 1 && (!raw_args || !raw_args[vs]));
     // codeql[cpp/loop-variable-changed]: deliberate b = n/c skip-ahead past the ##/#/__VA_OPT__ operand token(s) just consumed (5 sites below)
     for (Token *b = body; b && b != end && b->kind != TK_EOF; b = b->next) {
         int is_hashhash = b->kind == TK_PUNCT && b->len == 2 && b->ptr[0] == '#' && b->ptr[1] == '#';
