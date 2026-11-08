@@ -49,9 +49,7 @@ void cg_record_branch(size_t off, int type) {
     if (cg_dry_run) return;
     if (cg_branch_sites_n == cg_branch_sites_cap) {
         cg_branch_sites_cap = cg_branch_sites_cap ? cg_branch_sites_cap * 2 : 64;
-        cg_branch_sites = realloc(cg_branch_sites, (size_t)cg_branch_sites_cap * sizeof(*cg_branch_sites));
-        if (!cg_branch_sites)
-            error("out of memory recording branch site");
+        cg_branch_sites = xrealloc(cg_branch_sites, (size_t)cg_branch_sites_cap * sizeof(*cg_branch_sites));
     }
     cg_branch_sites[cg_branch_sites_n].off = off;
     cg_branch_sites[cg_branch_sites_n].type = type;
@@ -705,12 +703,8 @@ void objfile_debug_fn_begin(ObjFile *obj, const char *name, void *fn) {
     if (!cg_dry_run && obj->debug_level >= 2 && !dbg_fn_cur) {
         if (obj->debug_fn_count == obj->debug_fn_cap) {
             obj->debug_fn_cap = obj->debug_fn_cap ? obj->debug_fn_cap * 2 : 16;
-            obj->debug_fns = realloc(obj->debug_fns,
-                                     (size_t)obj->debug_fn_cap * sizeof(DebugFnRec));
-            if (!obj->debug_fns) {
-                fprintf(stderr, "objfile: out of memory\n");
-                exit(1);
-            }
+            obj->debug_fns = xrealloc(obj->debug_fns,
+                                      (size_t)obj->debug_fn_cap * sizeof(DebugFnRec));
         }
         DebugFnRec *r = &obj->debug_fns[obj->debug_fn_count++];
         memset(r, 0, sizeof(*r));
@@ -759,11 +753,7 @@ void objfile_debug_scope_end(ObjFile *obj, void *vars_end) {
     DebugFnRec *r = dbg_fn_cur;
     if (r->scope_count == r->scope_cap) {
         r->scope_cap = r->scope_cap ? r->scope_cap * 2 : 8;
-        r->scopes = realloc(r->scopes, (size_t)r->scope_cap * sizeof(DebugScope));
-        if (!r->scopes) {
-            fprintf(stderr, "objfile: out of memory\n");
-            exit(1);
-        }
+        r->scopes = xrealloc(r->scopes, (size_t)r->scope_cap * sizeof(DebugScope));
     }
     DebugScope *sc = &r->scopes[r->scope_count++];
     sc->start = dbg_scope_stack[dbg_scope_depth].start;
@@ -789,11 +779,7 @@ static void cfi_fn_begin(size_t start) {
         obj->cfi_fn_count--;
     if (obj->cfi_fn_count == obj->cfi_fn_cap) {
         obj->cfi_fn_cap = obj->cfi_fn_cap ? obj->cfi_fn_cap * 2 : 16;
-        obj->cfi_fns = realloc(obj->cfi_fns, (size_t)obj->cfi_fn_cap * sizeof(CfiFn));
-        if (!obj->cfi_fns) {
-            fprintf(stderr, "objfile: out of memory\n");
-            exit(1);
-        }
+        obj->cfi_fns = xrealloc(obj->cfi_fns, (size_t)obj->cfi_fn_cap * sizeof(CfiFn));
     }
     cfi_cur = obj->cfi_fn_count++;
 #ifdef RCC_DWARF3
@@ -809,11 +795,7 @@ static void cfi_op(CfiKind kind, int reg, int val) {
     CfiFn *f = &cg_obj->cfi_fns[cfi_cur];
     if (f->nops == f->cap) {
         f->cap = f->cap ? f->cap * 2 : 8;
-        f->ops = realloc(f->ops, (size_t)f->cap * sizeof(CfiOp));
-        if (!f->ops) {
-            fprintf(stderr, "objfile: out of memory\n");
-            exit(1);
-        }
+        f->ops = xrealloc(f->ops, (size_t)f->cap * sizeof(CfiOp));
     }
     f->ops[f->nops++] = (CfiOp){(uint32_t)cg_sec->len, (uint8_t)kind, (uint8_t)reg, val};
 }
@@ -19981,7 +19963,7 @@ static LVar *vr_touch(LVar *v) {
         v->vr_score = vr_is_cand(v) ? 0 : -1;
         if (vr_nseen == vr_cap) {
             vr_cap = vr_cap ? vr_cap * 2 : 64;
-            vr_seen = realloc(vr_seen, vr_cap * sizeof(LVar *));
+            vr_seen = xrealloc(vr_seen, vr_cap * sizeof(LVar *));
         }
         vr_seen[vr_nseen++] = v;
     }
@@ -20456,12 +20438,7 @@ struct ObjFile *codegen(Program *prog) {
                     continue;
                 }
             }
-            char **new_syms = realloc(emitted_syms, (emitted_count + 1) * sizeof(char *));
-            if (!new_syms) {
-                fprintf(stderr, "realloc failed\n");
-                exit(1);
-            }
-            emitted_syms = new_syms;
+            emitted_syms = xrealloc(emitted_syms, (emitted_count + 1) * sizeof(char *));
             emitted_syms[emitted_count++] = (char *)canon;
             bool reserved = !var->asm_name && is_asm_reserved(var->name);
             char *safe_label = reserved ? format(".L_rcc_%s", var->name) : label;

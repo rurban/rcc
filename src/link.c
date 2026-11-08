@@ -242,7 +242,7 @@ int link_find_or_create_sec(LinkState *s, const char *name, bool alloc,
     }
     if (s->n_secs == s->cap_secs) {
         s->cap_secs = s->cap_secs ? s->cap_secs * 2 : 8;
-        s->secs = realloc(s->secs, (size_t)s->cap_secs * sizeof(LinkSec));
+        s->secs = xrealloc(s->secs, (size_t)s->cap_secs * sizeof(LinkSec));
     }
     LinkSec *sec = &s->secs[s->n_secs];
     memset(sec, 0, sizeof(*sec));
@@ -273,7 +273,7 @@ uint64_t link_sec_append(LinkState *s, int sec_idx, const uint8_t *data,
     if (need > sec->cap) {
         size_t newcap = sec->cap ? sec->cap : 64;
         while (newcap < need) newcap *= 2;
-        sec->data = realloc(sec->data, newcap);
+        sec->data = xrealloc(sec->data, newcap);
         sec->cap = newcap;
     }
     memset(sec->data + sec->len, 0, off - sec->len);
@@ -292,7 +292,7 @@ void link_add_reloc(LinkState *s, int sec_idx, uint64_t offset, uint32_t type,
     LinkSec *sec = &s->secs[sec_idx];
     if (sec->n_relocs == sec->cap_relocs) {
         sec->cap_relocs = sec->cap_relocs ? sec->cap_relocs * 2 : 16;
-        sec->relocs = realloc(sec->relocs, (size_t)sec->cap_relocs * sizeof(LinkReloc));
+        sec->relocs = xrealloc(sec->relocs, (size_t)sec->cap_relocs * sizeof(LinkReloc));
     }
     LinkReloc *r = &sec->relocs[sec->n_relocs++];
     r->offset = offset;
@@ -408,7 +408,7 @@ int link_add_sym(LinkState *s, const char *name, int sec, uint64_t value,
 
     if (s->n_syms == s->cap_syms) {
         s->cap_syms = s->cap_syms ? s->cap_syms * 2 : 64;
-        s->syms = realloc(s->syms, (size_t)s->cap_syms * sizeof(LinkSym));
+        s->syms = xrealloc(s->syms, (size_t)s->cap_syms * sizeof(LinkSym));
     }
     LinkSym *sym = &s->syms[s->n_syms];
     sym->name = strdup(name);

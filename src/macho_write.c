@@ -129,7 +129,7 @@ static uint32_t mstrtab_add(MachoStrtab *t, const char *s) {
     size_t n = strlen(s) + 1;
     if (t->len + n > t->cap) {
         while (t->cap < t->len + n) t->cap *= 2;
-        t->data = realloc(t->data, t->cap);
+        t->data = xrealloc(t->data, t->cap);
     }
     uint32_t idx = (uint32_t)t->len;
     memcpy(t->data + t->len, s, n);

@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "xalloc.h"
 
 // ---------------------------------------------------------------------------
 // Growable byte buffer

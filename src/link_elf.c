@@ -488,13 +488,7 @@ static int elf_load_object(LinkState *s, const char *path) {
             uint64_t sym_size = r64le(sh + 32);
             int nsyms = (int)(sym_size / 24);
             {
-                int *tmp = realloc(sym_map, (size_t)nsyms * sizeof(int));
-                if (!tmp) {
-                    free(sym_map);
-                    fprintf(stderr, "rcc: out of memory\n");
-                    exit(1);
-                }
-                sym_map = tmp;
+                sym_map = xrealloc(sym_map, (size_t)nsyms * sizeof(int));
             }
             for (int k = 0; k < nsyms; k++) {
                 const uint8_t *sym = ef.image + sym_off + (uint64_t)k * 24;
@@ -668,7 +662,7 @@ static int elf_load_object(LinkState *s, const char *path) {
     // Track loaded object.
     if (s->n_objs == s->cap_objs) {
         s->cap_objs = s->cap_objs ? s->cap_objs * 2 : 8;
-        s->objs = realloc(s->objs, (size_t)s->cap_objs * sizeof(LinkObj));
+        s->objs = xrealloc(s->objs, (size_t)s->cap_objs * sizeof(LinkObj));
     }
     LinkObj *obj = &s->objs[s->n_objs++];
     obj->path = strdup(path);
@@ -1882,13 +1876,7 @@ static uint32_t shstr_append(char **buf, size_t *len, size_t *cap, const char *n
     size_t nl = strlen(nm) + 1;
     if (*len + nl > *cap) {
         while (*len + nl > *cap) *cap *= 2;
-        char *tmp = realloc(*buf, *cap);
-        if (!tmp) {
-            free(*buf);
-            fprintf(stderr, "rcc: out of memory\n");
-            exit(1);
-        }
-        *buf = tmp;
+        *buf = xrealloc(*buf, *cap);
     }
     uint32_t off = (uint32_t)*len;
     memcpy(*buf + *len, nm, nl);
@@ -1969,7 +1957,7 @@ static int link_elf_relocatable(LinkState *s) {
         size_t nl = strlen(sym->name) + 1;
         if (strtab_len + nl > strtab_cap) {
             while (strtab_len + nl > strtab_cap) strtab_cap *= 2;
-            strtab = realloc(strtab, strtab_cap);
+            strtab = xrealloc(strtab, strtab_cap);
         }
         name_off[k] = (uint32_t)strtab_len;
         memcpy(strtab + strtab_len, sym->name, nl);
@@ -1996,7 +1984,7 @@ static int link_elf_relocatable(LinkState *s) {
         size_t _nl = strlen(str) + 1; \
         if (shstr_len + _nl > shstr_cap) { \
             while (shstr_len + _nl > shstr_cap) shstr_cap *= 2; \
-            shstr = realloc(shstr, shstr_cap); \
+            shstr = xrealloc(shstr, shstr_cap); \
         } \
         (outoff) = (uint32_t)shstr_len; \
         memcpy(shstr + shstr_len, str, _nl); \
@@ -2336,7 +2324,7 @@ static long eh_frame_scan(const LinkSec *eh, EhEnt *ents) {
             if (p > end || enc != 0x1b) goto bad; // pcrel | sdata4 only
             if (ncie == capcie) {
                 capcie = capcie ? capcie * 2 : 8;
-                cies = realloc(cies, (size_t)capcie * sizeof(CieEnc));
+                cies = xrealloc(cies, (size_t)capcie * sizeof(CieEnc));
             }
             cies[ncie++] = (CieEnc){pos, enc};
         } else { // FDE: id is the distance back from its own id field to the CIE
@@ -2494,13 +2482,7 @@ int link_elf(LinkState *s) {
             if (n_dyn == cap_dyn) {
                 cap_dyn = cap_dyn ? cap_dyn * 2 : 16;
                 {
-                    int *tmp = realloc(dyn_syms, (size_t)cap_dyn * sizeof(int));
-                    if (!tmp) {
-                        free(dyn_syms);
-                        fprintf(stderr, "rcc: out of memory\n");
-                        exit(1);
-                    }
-                    dyn_syms = tmp;
+                    dyn_syms = xrealloc(dyn_syms, (size_t)cap_dyn * sizeof(int));
                 }
             }
             dyn_syms[n_dyn] = i;
@@ -2545,13 +2527,7 @@ int link_elf(LinkState *s) {
             if (!called) continue;
             if (n_dyn == cap_dyn) {
                 cap_dyn = cap_dyn ? cap_dyn * 2 : 16;
-                int *tmp = realloc(dyn_syms, (size_t)cap_dyn * sizeof(int));
-                if (!tmp) {
-                    free(dyn_syms);
-                    fprintf(stderr, "rcc: out of memory\n");
-                    exit(1);
-                }
-                dyn_syms = tmp;
+                dyn_syms = xrealloc(dyn_syms, (size_t)cap_dyn * sizeof(int));
             }
             dyn_syms[n_dyn] = i;
             dyn_idx[i] = n_dyn + 1;
@@ -2602,13 +2578,7 @@ int link_elf(LinkState *s) {
                 if (n_exp == cap_exp) {
                     cap_exp = cap_exp ? cap_exp * 2 : 16;
                     {
-                        int *tmp = realloc(exp_syms, (size_t)cap_exp * sizeof(int));
-                        if (!tmp) {
-                            free(exp_syms);
-                            fprintf(stderr, "rcc: out of memory\n");
-                            exit(1);
-                        }
-                        exp_syms = tmp;
+                        exp_syms = xrealloc(exp_syms, (size_t)cap_exp * sizeof(int));
                     }
                 }
                 exp_syms[n_exp++] = i;
@@ -3048,13 +3018,7 @@ int link_elf(LinkState *s) {
                 if (!referenced) continue;
                 if (n_exp == cap_exp) {
                     cap_exp = cap_exp ? cap_exp * 2 : 16;
-                    int *tmp = realloc(exp_syms, (size_t)cap_exp * sizeof(int));
-                    if (!tmp) {
-                        free(exp_syms);
-                        fprintf(stderr, "rcc: out of memory\n");
-                        exit(1);
-                    }
-                    exp_syms = tmp;
+                    exp_syms = xrealloc(exp_syms, (size_t)cap_exp * sizeof(int));
                 }
                 exp_syms[n_exp++] = i;
             }
@@ -3969,13 +3933,7 @@ int link_elf(LinkState *s) {
             if (shstrtab_len + nl > shstrtab_cap) {
                 while (shstrtab_len + nl > shstrtab_cap) shstrtab_cap *= 2;
                 {
-                    char *tmp = realloc(shstrtab_buf, shstrtab_cap);
-                    if (!tmp) {
-                        free(shstrtab_buf);
-                        fprintf(stderr, "rcc: out of memory\n");
-                        exit(1);
-                    }
-                    shstrtab_buf = tmp;
+                    shstrtab_buf = xrealloc(shstrtab_buf, shstrtab_cap);
                 }
             }
             shdr_name_off[k] = (uint32_t)shstrtab_len;
@@ -4016,7 +3974,7 @@ int link_elf(LinkState *s) {
                 size_t nl = strlen(sym->name) + 1;
                 if (strtab_len + nl > strtab_cap) {
                     while (strtab_len + nl > strtab_cap) strtab_cap *= 2;
-                    strtab_buf = realloc(strtab_buf, strtab_cap);
+                    strtab_buf = xrealloc(strtab_buf, strtab_cap);
                 }
                 uint8_t *e = symtab_buf + nsym * 24;
                 w32le_m(e + 0, (uint32_t)strtab_len);
@@ -4178,13 +4136,7 @@ int link_elf(LinkState *s) {
         LinkSec *sec = &s->secs[i];
         if (!sec->alloc || sec->is_bss || sec->len == 0) continue;
         {
-            WriteSec *tmp = realloc(wsecs, (size_t)(n_wsecs + 1) * sizeof(WriteSec));
-            if (!tmp) {
-                free(wsecs);
-                fprintf(stderr, "rcc: out of memory\n");
-                exit(1);
-            }
-            wsecs = tmp;
+            wsecs = xrealloc(wsecs, (size_t)(n_wsecs + 1) * sizeof(WriteSec));
         }
         wsecs[n_wsecs++].sec = sec;
     }

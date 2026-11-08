@@ -422,7 +422,7 @@ int link_load_object(LinkState *s, const char *path) {
     LinkObj obj = {.path = strdup(path), .image = image, .image_size = (size_t)st.st_size};
     if (s->n_objs == s->cap_objs) {
         s->cap_objs = s->cap_objs ? s->cap_objs * 2 : 4;
-        s->objs = realloc(s->objs, (size_t)s->cap_objs * sizeof(LinkObj));
+        s->objs = xrealloc(s->objs, (size_t)s->cap_objs * sizeof(LinkObj));
     }
     s->objs[s->n_objs++] = obj;
     free(out_sec_map);
@@ -593,13 +593,7 @@ static int build_pe_imports(LinkState *s, int *idata_sec_out,
         if (sym->sec >= 0 || sym->bind == 2 /* weak */ || !sym->name[0]) continue;
         if (n_undef == cap_undef) {
             cap_undef = cap_undef ? cap_undef * 2 : 16;
-            int *tmp = realloc(undef_idx, (size_t)cap_undef * sizeof(int));
-            if (!tmp) {
-                free(undef_idx);
-                fprintf(stderr, "rcc: out of memory\n");
-                exit(1);
-            }
-            undef_idx = tmp;
+            undef_idx = xrealloc(undef_idx, (size_t)cap_undef * sizeof(int));
         }
         undef_idx[n_undef++] = i;
     }
@@ -824,13 +818,7 @@ static int build_pe_exports(LinkState *s, const char *dll_name,
         if (excluded) continue;
         if (n_exp == cap_exp) {
             cap_exp = cap_exp ? cap_exp * 2 : 32;
-            int *tmp = realloc(exp_idx, (size_t)cap_exp * sizeof(int));
-            if (!tmp) {
-                free(exp_idx);
-                fprintf(stderr, "rcc: out of memory\n");
-                exit(1);
-            }
-            exp_idx = tmp;
+            exp_idx = xrealloc(exp_idx, (size_t)cap_exp * sizeof(int));
         }
         exp_idx[n_exp++] = i;
     }
@@ -995,13 +983,7 @@ static int build_pe_reloc(LinkState *s, uint64_t base) {
             if (r->type != RL_ABS64 && r->type != RL_ABS32 && r->type != RL_ABS32U) continue;
             if (n_sites == cap_sites) {
                 cap_sites = cap_sites ? cap_sites * 2 : 16;
-                uint32_t *tmp = realloc(site_rva, (size_t)cap_sites * sizeof(uint32_t));
-                if (!tmp) {
-                    free(site_rva);
-                    fprintf(stderr, "rcc: out of memory\n");
-                    exit(1);
-                }
-                site_rva = tmp;
+                site_rva = xrealloc(site_rva, (size_t)cap_sites * sizeof(uint32_t));
             }
             site_rva[n_sites++] = (uint32_t)(sec->addr + r->offset - base);
         }
@@ -1552,13 +1534,7 @@ int link_pe(LinkState *s) {
     for (int i = 0; i < s->n_secs; i++) {
         LinkSec *sec = &s->secs[i];
         if (!sec->alloc || sec->is_bss || sec->len == 0) continue;
-        Wsec *tmp = realloc(ws, (size_t)(n_ws + 1) * sizeof(Wsec));
-        if (!tmp) {
-            free(ws);
-            fprintf(stderr, "rcc: out of memory\n");
-            exit(1);
-        }
-        ws = tmp;
+        ws = xrealloc(ws, (size_t)(n_ws + 1) * sizeof(Wsec));
         ws[n_ws].sec = sec;
         ws[n_ws].file_off = cur_file_off;
         cur_file_off += (uint32_t)pe_align_up(sec->len, PE_FILE_ALIGN);
@@ -1610,7 +1586,7 @@ static void pe_buf_append_bytes(uint8_t **bufp, size_t *len, size_t *cap,
     if (*len + n > *cap) {
         size_t nc = *cap ? *cap * 2 : 256;
         while (nc < *len + n) nc *= 2;
-        *bufp = realloc(*bufp, nc);
+        *bufp = xrealloc(*bufp, nc);
         *cap = nc;
     }
     memcpy(*bufp + *len, data, n);

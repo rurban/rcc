@@ -1283,7 +1283,7 @@ static int local_opt_find(LocalOptState **states, int *len, int *cap, LVar *var,
     if (!add) return -1;
     if (*len == *cap) {
         *cap = *cap ? *cap * 2 : 8;
-        *states = realloc(*states, (size_t)*cap * sizeof(**states));
+        *states = xrealloc(*states, (size_t)*cap * sizeof(**states));
     }
     (*states)[*len] = (LocalOptState){.var = var};
     return (*len)++;
@@ -2329,7 +2329,7 @@ static void dce_mark(Function *fn, Function ***wl, int *wl_len, int *wl_cap) {
     fn->dce_live = true;
     if (*wl_len == *wl_cap) {
         *wl_cap = *wl_cap ? *wl_cap * 2 : 16;
-        *wl = realloc(*wl, sizeof(Function *) * (size_t)*wl_cap);
+        *wl = xrealloc(*wl, sizeof(Function *) * (size_t)*wl_cap);
     }
     (*wl)[(*wl_len)++] = fn;
 }
@@ -3542,7 +3542,7 @@ static void licm_collect_modified(Node *n, LVar ***out, int *nvars, int *cap) {
         if (!found) {
             if (*nvars >= *cap) {
                 *cap = *cap ? *cap * 2 : 16;
-                *out = realloc(*out, *cap * sizeof(LVar *));
+                *out = xrealloc(*out, *cap * sizeof(LVar *));
             }
             (*out)[(*nvars)++] = n->lhs->var;
         }
@@ -4005,7 +4005,7 @@ static void cp_set(SsaConstCtx *ctx, LVar *var, bool is_float,
         }
         if (ctx->nconsts >= ctx->cap) {
             ctx->cap = ctx->cap ? ctx->cap * 2 : 32;
-            ctx->consts = realloc(ctx->consts, ctx->cap * sizeof(SsaConst));
+            ctx->consts = xrealloc(ctx->consts, ctx->cap * sizeof(SsaConst));
         }
         c = &ctx->consts[ctx->nconsts++];
         c->var = var;
@@ -4028,7 +4028,7 @@ static void cp_set_equiv(SsaConstCtx *ctx, LVar *var, LVar *equiv, Type *ty) {
         }
         if (ctx->nconsts >= ctx->cap) {
             ctx->cap = ctx->cap ? ctx->cap * 2 : 32;
-            ctx->consts = realloc(ctx->consts, ctx->cap * sizeof(SsaConst));
+            ctx->consts = xrealloc(ctx->consts, ctx->cap * sizeof(SsaConst));
         }
         c = &ctx->consts[ctx->nconsts++];
         c->var = var;
@@ -4408,7 +4408,7 @@ static void dce_collect_uses(Node *n, LVar ***used, int *nused, int *cap) {
             return; // limit exceeded, stop collecting
         if (*nused >= *cap) {
             *cap = *cap ? *cap * 2 : 32;
-            *used = realloc(*used, *cap * sizeof(LVar *));
+            *used = xrealloc(*used, *cap * sizeof(LVar *));
         }
         (*used)[*nused++] = n->var;
     }

@@ -81,7 +81,7 @@ static void xappendf(char **buf, size_t *len, size_t *cap, const char *fmt, ...)
         size_t ncap = *cap ? *cap : 256;
         while (*len + n + 1 > ncap)
             ncap *= 2;
-        *buf = realloc(*buf, ncap);
+        *buf = xrealloc(*buf, ncap);
         if (!*buf) {
             fprintf(stderr, "rcc: fatal error: out of memory\n");
             exit(1);
@@ -121,9 +121,7 @@ static char *read_file(char *path) {
     for (;;) {
         if (size + 1 >= filemax) {
             filemax *= 2;
-            char *nb = realloc(buf, filemax);
-            if (!nb)
-                error("out of memory reading %s", path);
+            char *nb = xrealloc(buf, filemax);
             buf = nb;
         }
         size_t n = fread(buf + size, 1, filemax - size - 1, fp);

@@ -1166,12 +1166,7 @@ static char *read_pp_file(char *path) {
     for (;;) {
         if (size + 1 >= cap) {
             cap *= 2;
-            char *nb = realloc(buf, cap);
-            if (!nb) {
-                free(buf);
-                fclose(fp);
-                return NULL;
-            }
+            char *nb = xrealloc(buf, cap);
             buf = nb;
         }
         size_t n = fread(buf + size, 1, cap - size - 1, fp);
@@ -2243,8 +2238,8 @@ static void expand_token(Token *t) {
             argc++;
             if (argc >= args_cap) {
                 int new_cap = args_cap * 2;
-                args = realloc(args, sizeof(Token *) * new_cap);
-                tails = realloc(tails, sizeof(Token *) * new_cap);
+                args = xrealloc(args, sizeof(Token *) * new_cap);
+                tails = xrealloc(tails, sizeof(Token *) * new_cap);
                 memset(args + args_cap, 0, sizeof(Token *) * (new_cap - args_cap));
                 memset(tails + args_cap, 0, sizeof(Token *) * (new_cap - args_cap));
                 args_cap = new_cap;
@@ -2274,7 +2269,7 @@ static void expand_token(Token *t) {
     }
     if (m->param_len > args_cap) {
         int new_cap = m->param_len;
-        args = realloc(args, sizeof(Token *) * new_cap);
+        args = xrealloc(args, sizeof(Token *) * new_cap);
         memset(args + args_cap, 0, sizeof(Token *) * (new_cap - args_cap));
         args_cap = new_cap;
     }
@@ -3602,7 +3597,7 @@ char *pp_tokens_to_text(Token *tok) {
             if (!first_on_line) {
                 if (len + 2 > cap) {
                     cap *= 2;
-                    buf = realloc(buf, cap);
+                    buf = xrealloc(buf, cap);
                 }
                 buf[len++] = '\n';
                 first_on_line = true;
@@ -3614,7 +3609,7 @@ char *pp_tokens_to_text(Token *tok) {
         while (cur_line < ln) {
             if (len + 2 > cap) {
                 cap *= 2;
-                buf = realloc(buf, cap);
+                buf = xrealloc(buf, cap);
             }
             buf[len++] = '\n';
             cur_line++;
@@ -3643,14 +3638,14 @@ char *pp_tokens_to_text(Token *tok) {
         if (!first_on_line && !adjacent) {
             if (len + 2 > cap) {
                 cap *= 2;
-                buf = realloc(buf, cap);
+                buf = xrealloc(buf, cap);
             }
             buf[len++] = ' ';
         }
         if (sp && sl > 0) {
             if (len + (size_t)sl + 2 > cap) {
                 while (len + (size_t)sl + 2 > cap) cap *= 2;
-                buf = realloc(buf, cap);
+                buf = xrealloc(buf, cap);
             }
             memcpy(buf + len, sp, (size_t)sl);
             len += (size_t)sl;
@@ -3662,7 +3657,7 @@ char *pp_tokens_to_text(Token *tok) {
     }
     if (len + 2 > cap) {
         cap *= 2;
-        buf = realloc(buf, cap);
+        buf = xrealloc(buf, cap);
     }
     buf[len++] = '\n';
     buf[len] = '\0';

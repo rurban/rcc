@@ -1046,11 +1046,7 @@ static void add_range(int v, int from, int to) {
     }
     if (x->nrg == x->caprg) {
         x->caprg = x->caprg ? 2 * x->caprg : 4;
-        x->rg = realloc(x->rg, sizeof(Range) * (size_t)x->caprg);
-        if (!x->rg) {
-            fprintf(stderr, "rcc: out of memory\n");
-            exit(1);
-        }
+        x->rg = xrealloc(x->rg, sizeof(Range) * (size_t)x->caprg);
     }
     x->rg[x->nrg++] = (Range){from, to};
 }
@@ -3224,7 +3220,7 @@ void ir_emit_x86(Program *prog, IRFunc *f, bool emitting_local_copy) {
             if (opt_g && be.vi[i->id].ipos >= 0) {
                 if (be.n_ipos_pc == be.cap_ipos_pc) {
                     be.cap_ipos_pc = be.cap_ipos_pc ? be.cap_ipos_pc * 2 : 128;
-                    be.ipos_pc = realloc(be.ipos_pc, (size_t)be.cap_ipos_pc * sizeof *be.ipos_pc);
+                    be.ipos_pc = xrealloc(be.ipos_pc, (size_t)be.cap_ipos_pc * sizeof *be.ipos_pc);
                 }
                 be.ipos_pc[be.n_ipos_pc++] = ((uint32_t)be.vi[i->id].ipos << 1) | (i->type == IRT_VOID ? 0u : 1u);
                 be.ipos_pc[be.n_ipos_pc++] = (uint32_t)rip_start;
@@ -3276,7 +3272,7 @@ void ir_emit_x86(Program *prog, IRFunc *f, bool emitting_local_copy) {
                 dl = &locs[nl++];
                 dl->var = db->var;
             }
-            dl->ranges = realloc(dl->ranges, (size_t)(dl->nranges + 1) * sizeof *dl->ranges);
+            dl->ranges = xrealloc(dl->ranges, (size_t)(dl->nranges + 1) * sizeof *dl->ranges);
             dl->ranges[dl->nranges++] = r;
         }
         cg_ir_set_dbg_locs(locs, nl);

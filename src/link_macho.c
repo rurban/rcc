@@ -195,7 +195,7 @@ static MoTrieNode *mo_trie_build(MoTrieSym *syms, int lo, int hi, int pfx) {
         e.child = mo_trie_build(syms, i, j, pfx + lcp);
         if (node->n_edges >= cap) {
             cap = cap ? cap * 2 : 4;
-            node->edges = realloc(node->edges, (size_t)cap * sizeof(MoTrieEdge));
+            node->edges = xrealloc(node->edges, (size_t)cap * sizeof(MoTrieEdge));
         }
         node->edges[node->n_edges++] = e;
         i = j;
@@ -208,7 +208,7 @@ static void mo_trie_collect(MoTrieNode *root, MoTrieNode ***list, int *n, int *c
     int head = *n;
     if (*n >= *cap) {
         *cap = *cap ? *cap * 2 : 16;
-        *list = realloc(*list, (size_t)*cap * sizeof(MoTrieNode *));
+        *list = xrealloc(*list, (size_t)*cap * sizeof(MoTrieNode *));
     }
     (*list)[(*n)++] = root;
     for (int r = head; r < *n; r++) {
@@ -216,7 +216,7 @@ static void mo_trie_collect(MoTrieNode *root, MoTrieNode ***list, int *n, int *c
         for (int e = 0; e < nd->n_edges; e++) {
             if (*n >= *cap) {
                 *cap *= 2;
-                *list = realloc(*list, (size_t)*cap * sizeof(MoTrieNode *));
+                *list = xrealloc(*list, (size_t)*cap * sizeof(MoTrieNode *));
             }
             (*list)[(*n)++] = nd->edges[e].child;
         }
@@ -635,7 +635,7 @@ int link_load_object(LinkState *s, const char *path) {
     LinkObj obj = {.path = strdup(path), .image = NULL, .image_size = 0};
     if (s->n_objs == s->cap_objs) {
         s->cap_objs = s->cap_objs ? s->cap_objs * 2 : 4;
-        s->objs = realloc(s->objs, (size_t)s->cap_objs * sizeof(LinkObj));
+        s->objs = xrealloc(s->objs, (size_t)s->cap_objs * sizeof(LinkObj));
     }
     s->objs[s->n_objs++] = obj;
 
@@ -783,23 +783,11 @@ int link_load_object(LinkState *s, const char *path) {
                     : link_find_or_create_sec(s, out_name, !is_debug, write, exec, is_bss,
                                               false, sec_align);
                 {
-                    int *tmp = realloc(sec_map, (size_t)(n_sections + 1) * sizeof(int));
-                    if (!tmp) {
-                        free(sec_map);
-                        fprintf(stderr, "rcc: out of memory\n");
-                        exit(1);
-                    }
-                    sec_map = tmp;
+                    sec_map = xrealloc(sec_map, (size_t)(n_sections + 1) * sizeof(int));
                 }
                 sec_map[n_sections] = out_idx;
                 {
-                    uint64_t *tmp = realloc(sec_base_off, (size_t)(n_sections + 1) * sizeof(uint64_t));
-                    if (!tmp) {
-                        free(sec_base_off);
-                        fprintf(stderr, "rcc: out of memory\n");
-                        exit(1);
-                    }
-                    sec_base_off = tmp;
+                    sec_base_off = xrealloc(sec_base_off, (size_t)(n_sections + 1) * sizeof(uint64_t));
                 }
 
                 if (is_linker_meta) {
@@ -1035,7 +1023,7 @@ static void mo_darwin_shim_index_build(void) {
         if (g_mo_darwin_shim_syms.n >= cap) {
             cap = cap ? cap * 2 : 16;
             g_mo_darwin_shim_syms.names =
-                realloc(g_mo_darwin_shim_syms.names, (size_t)cap * sizeof(char *));
+                xrealloc(g_mo_darwin_shim_syms.names, (size_t)cap * sizeof(char *));
         }
         g_mo_darwin_shim_syms.names[g_mo_darwin_shim_syms.n++] = strdup(sp + 1);
     }
@@ -1236,13 +1224,7 @@ int link_macho(LinkState *s) {
         LinkSec *sec = &s->secs[i];
         if (!sec->alloc || sec->len == 0) continue;
         {
-            MOSec *tmp = realloc(mo_secs, (size_t)(n_mo + 1) * sizeof(MOSec));
-            if (!tmp) {
-                free(mo_secs);
-                fprintf(stderr, "rcc: out of memory\n");
-                exit(1);
-            }
-            mo_secs = tmp;
+            mo_secs = xrealloc(mo_secs, (size_t)(n_mo + 1) * sizeof(MOSec));
         }
         if (strcmp(sec->name, ".got") == 0) {
             mo_secs[n_mo].segname = "__DATA";

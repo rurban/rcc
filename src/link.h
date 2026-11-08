@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+#include "xalloc.h"
 
 // ---------------------------------------------------------------------------
 // Public driver API

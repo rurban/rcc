@@ -136,7 +136,7 @@ static uint32_t cstrtab_add(CStrtab *t, const char *s) {
     if (t->len + n > t->cap) {
         while (t->cap < t->len + n)
             t->cap *= 2;
-        t->data = realloc(t->data, t->cap);
+        t->data = xrealloc(t->data, t->cap);
     }
     uint32_t off = (uint32_t)t->len;
     memcpy(t->data + t->len, s, n);
@@ -180,7 +180,7 @@ typedef struct {
 static void symarr_push(SymArr *a, CoffSymRec s) {
     if (a->len == a->cap) {
         a->cap = a->cap ? a->cap * 2 : 16;
-        a->data = realloc(a->data, (size_t)a->cap * sizeof(CoffSymRec));
+        a->data = xrealloc(a->data, (size_t)a->cap * sizeof(CoffSymRec));
     }
     a->data[a->len++] = s;
 }

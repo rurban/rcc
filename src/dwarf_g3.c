@@ -484,7 +484,7 @@ static void emit_function(DebugFnRec *rec) {
     size_t nmark = 0, cap = 16;
     uintptr_t *mark = malloc(cap * sizeof *mark);
     for (LVar *p = fn->params; p; p = p->param_next) {
-        if (nmark == cap) mark = realloc(mark, (cap *= 2) * sizeof *mark);
+        if (nmark == cap) mark = xrealloc(mark, (cap *= 2) * sizeof *mark);
         mark[nmark++] = (uintptr_t)p;
         if (var_ok(p)) emit_local_rec(rec, p, sp, true);
     }
@@ -495,7 +495,7 @@ static void emit_function(DebugFnRec *rec) {
     for (int i = 0; i < rec->scope_count; i++) {
         DebugScope *s = &rec->scopes[i];
         for (LVar *v = s->vars_end; v && v != s->vars; v = v->next) {
-            if (nmark == cap) mark = realloc(mark, (cap *= 2) * sizeof *mark);
+            if (nmark == cap) mark = xrealloc(mark, (cap *= 2) * sizeof *mark);
             mark[nmark++] = (uintptr_t)v;
         }
     }
@@ -566,11 +566,7 @@ static void emit_typedefs(void) {
 static void mac_byte(unsigned v) {
     if (g.maclen == g.maccap) {
         g.maccap = g.maccap ? g.maccap * 2 : 4096;
-        g.mac = realloc(g.mac, g.maccap);
-        if (!g.mac) {
-            fprintf(stderr, "rcc: out of memory\n");
-            exit(1);
-        }
+        g.mac = xrealloc(g.mac, g.maccap);
     }
     g.mac[g.maclen++] = (unsigned char)v;
 }
@@ -676,11 +672,7 @@ static size_t loc_len, loc_cap;
 static void loc_byte(unsigned v) {
     if (loc_len == loc_cap) {
         loc_cap = loc_cap ? loc_cap * 2 : 4096;
-        loc_buf = realloc(loc_buf, loc_cap);
-        if (!loc_buf) {
-            fprintf(stderr, "rcc: out of memory\n");
-            exit(1);
-        }
+        loc_buf = xrealloc(loc_buf, loc_cap);
     }
     loc_buf[loc_len++] = (unsigned char)v;
 }
@@ -958,7 +950,7 @@ walkdone:
         memcpy((void *)(info->bytes + sites[i].valoff), &off32, 4);
         if (*nrel == *caprel) {
             *caprel = *caprel ? *caprel * 2 : 64;
-            *rels = realloc(*rels, *caprel * sizeof **rels);
+            *rels = xrealloc(*rels, *caprel * sizeof **rels);
         }
         (*rels)[(*nrel)++] =
             (PendRel){info->sec, sites[i].valoff, loc_sym, R_X86_64_32, (int64_t)lo[k].off};
@@ -1081,11 +1073,7 @@ bool objfile_flush_debug_g3(ObjFile *obj, uint64_t text_end, void *program) {
             os = &out[nout++];
             *os = (OutSec){objfile_find_or_add_section(obj, sec_name(idx), 0, 0), idx, NULL, 0};
         }
-        unsigned char *nb = realloc((void *)os->bytes, os->len + (size_t)len);
-        if (!nb) {
-            fprintf(stderr, "rcc: out of memory\n");
-            exit(1);
-        }
+        unsigned char *nb = xrealloc((void *)os->bytes, os->len + (size_t)len);
         memcpy(nb + os->len, bytes, (size_t)len);
         os->bytes = nb;
         os->len += (size_t)len;
@@ -1138,7 +1126,7 @@ bool objfile_flush_debug_g3(ObjFile *obj, uint64_t text_end, void *program) {
             memset((void *)(info->bytes + at), 0, 4);
             if (nrel == caprel) {
                 caprel = caprel ? caprel * 2 : 64;
-                rels = realloc(rels, caprel * sizeof *rels);
+                rels = xrealloc(rels, caprel * sizeof *rels);
             }
             rels[nrel++] = (PendRel){info->sec, at, sec_anchor(".debug_macinfo"), R_X86_64_32, 0};
         }
@@ -1183,7 +1171,7 @@ bool objfile_flush_debug_g3(ObjFile *obj, uint64_t text_end, void *program) {
             memcpy(&add, os->bytes + rd[k].drd_offset, w); // little endian host (x86-64)
             if (nrel == caprel) {
                 caprel = caprel ? caprel * 2 : 64;
-                rels = realloc(rels, caprel * sizeof *rels);
+                rels = xrealloc(rels, caprel * sizeof *rels);
             }
             rels[nrel++] = (PendRel){os->sec, rd[k].drd_offset, sym,
                                      sec_ref ? R_X86_64_32 : R_X86_64_64, (int64_t)add};

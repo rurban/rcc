@@ -1,14 +1,6 @@
 // ir_core.c -- IR construction helpers, CFG analyses, dump and verifier.
 #include "ir.h"
 
-static void *xrealloc(void *p, size_t n) {
-    void *q = realloc(p, n);
-    if (!q) {
-        fprintf(stderr, "rcc: out of memory\n");
-        exit(1);
-    }
-    return q;
-}
 #define GROW(arr, n, cap) \
     do { \
         if ((n) >= (cap)) { \
@@ -69,11 +61,7 @@ int ir_dbg_file_idx(const char *filename) {
     if (n_dbg_files >= 2047) return 0; // IR_LOC keeps 11 bits of file index
     if (n_dbg_files == cap_dbg_files) {
         cap_dbg_files = cap_dbg_files ? cap_dbg_files * 2 : 16;
-        dbg_files = realloc(dbg_files, (size_t)cap_dbg_files * sizeof *dbg_files);
-        if (!dbg_files) {
-            fprintf(stderr, "rcc: out of memory\n");
-            exit(1);
-        }
+        dbg_files = xrealloc(dbg_files, (size_t)cap_dbg_files * sizeof *dbg_files);
     }
     dbg_files[n_dbg_files++] = filename;
     return n_dbg_files;

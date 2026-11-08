@@ -958,11 +958,7 @@ static void add_range(int v, int from, int to) {
     }
     if (x->nrg == x->caprg) {
         x->caprg = x->caprg ? 2 * x->caprg : 4;
-        x->rg = realloc(x->rg, sizeof(Range) * (size_t)x->caprg);
-        if (!x->rg) {
-            fprintf(stderr, "rcc: out of memory\n");
-            exit(1);
-        }
+        x->rg = xrealloc(x->rg, sizeof(Range) * (size_t)x->caprg);
     }
     x->rg[x->nrg++] = (Range){from, to};
 }

@@ -32,6 +32,7 @@
 //
 
 #include "keyword_ids.h"
+#include "xalloc.h"
 
 typedef enum {
     TK_IDENT, // Identifiers

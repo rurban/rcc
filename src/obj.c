@@ -34,11 +34,7 @@ void secbuf_reserve(SecBuf *s, size_t extra) {
     if (s->len + extra <= s->cap) return;
     size_t newcap = s->cap ? s->cap * 2 : 256;
     while (newcap < s->len + extra) newcap *= 2;
-    s->data = realloc(s->data, newcap);
-    if (!s->data) {
-        fprintf(stderr, "secbuf: out of memory\n");
-        exit(1);
-    }
+    s->data = xrealloc(s->data, newcap);
     s->cap = newcap;
 }
 
@@ -212,12 +208,7 @@ void objfile_free(ObjFile *obj) {
 UnwindEntry *objfile_add_unwind(ObjFile *obj) {
     if (obj->unwind_count == obj->unwind_cap) {
         obj->unwind_cap = obj->unwind_cap ? obj->unwind_cap * 2 : 16;
-        UnwindEntry *tmp = realloc(obj->unwind, (size_t)obj->unwind_cap * sizeof(UnwindEntry));
-        if (!tmp) {
-            fprintf(stderr, "objfile: out of memory\n");
-            exit(1);
-        }
-        obj->unwind = tmp;
+        obj->unwind = xrealloc(obj->unwind, (size_t)obj->unwind_cap * sizeof(UnwindEntry));
     }
     UnwindEntry *e = &obj->unwind[obj->unwind_count++];
     memset(e, 0, sizeof(*e));
@@ -248,11 +239,7 @@ int objfile_add_sym(ObjFile *obj, const char *name, int section,
     }
     if (obj->sym_count == obj->sym_cap) {
         obj->sym_cap = obj->sym_cap ? obj->sym_cap * 2 : 16;
-        obj->syms = realloc(obj->syms, obj->sym_cap * sizeof(ObjSym));
-        if (!obj->syms) {
-            fprintf(stderr, "objfile: out of memory\n");
-            exit(1);
-        }
+        obj->syms = xrealloc(obj->syms, obj->sym_cap * sizeof(ObjSym));
     }
     int idx = obj->sym_count++;
     obj->syms[idx].name = strdup(name);
@@ -336,12 +323,7 @@ void objfile_add_reloc(ObjFile *obj, int section, uint64_t offset,
     }
     if (*count == *cap) {
         *cap = *cap ? *cap * 2 : 8;
-        ObjReloc *tmp = realloc(*relocs, (size_t)*cap * sizeof(ObjReloc));
-        if (!tmp) {
-            fprintf(stderr, "objfile: out of memory\n");
-            exit(1);
-        }
-        *relocs = tmp;
+        *relocs = xrealloc(*relocs, (size_t)*cap * sizeof(ObjReloc));
     }
     ObjReloc *r = &(*relocs)[(*count)++];
     r->offset = offset;
@@ -416,13 +398,8 @@ int objfile_find_or_add_section(ObjFile *obj, const char *name,
             return SEC_NUM + i;
     if (obj->extra_sec_count == obj->extra_sec_cap) {
         obj->extra_sec_cap = obj->extra_sec_cap ? obj->extra_sec_cap * 2 : 4;
-        ExtraSection *tmp = realloc(obj->extra_secs,
-                                    (size_t)obj->extra_sec_cap * sizeof(ExtraSection));
-        if (!tmp) {
-            fprintf(stderr, "objfile: out of memory\n");
-            exit(1);
-        }
-        obj->extra_secs = tmp;
+        obj->extra_secs = xrealloc(obj->extra_secs,
+                                   (size_t)obj->extra_sec_cap * sizeof(ExtraSection));
     }
     ExtraSection *es = &obj->extra_secs[obj->extra_sec_count++];
     memset(es, 0, sizeof(*es));
@@ -502,13 +479,8 @@ int objfile_add_debug_file(ObjFile *obj, char *filename) {
 void objfile_add_debug_line(ObjFile *obj, uint64_t text_offset, int file_idx, int line) {
     if (obj->debug_line_count == obj->debug_line_cap) {
         obj->debug_line_cap = obj->debug_line_cap ? obj->debug_line_cap * 2 : 256;
-        DebugLineEntry *tmp = realloc(obj->debug_lines,
-                                      (size_t)obj->debug_line_cap * sizeof(DebugLineEntry));
-        if (!tmp) {
-            fprintf(stderr, "objfile: out of memory\n");
-            exit(1);
-        }
-        obj->debug_lines = tmp;
+        obj->debug_lines = xrealloc(obj->debug_lines,
+                                    (size_t)obj->debug_line_cap * sizeof(DebugLineEntry));
     }
     DebugLineEntry *e = &obj->debug_lines[obj->debug_line_count++];
     e->text_offset = text_offset;

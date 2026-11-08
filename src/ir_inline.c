@@ -28,15 +28,6 @@ typedef struct {
     int loop_depth;
 } Site;
 
-static void *xmalloc(size_t n) {
-    void *p = malloc(n ? n : 1);
-    if (!p) {
-        fprintf(stderr, "rcc: out of memory\n");
-        exit(1);
-    }
-    return p;
-}
-
 static int32_t *dup_i32(const int32_t *src, int n) {
     int32_t *p = xmalloc(sizeof(*p) * (size_t)n);
     memcpy(p, src, sizeof(*p) * (size_t)n);

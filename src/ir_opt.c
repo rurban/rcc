@@ -28,15 +28,6 @@
 
 // ------------------------------------------------------------------ utilities
 
-static void *xcalloc(size_t n, size_t sz) {
-    void *p = calloc(n ? n : 1, sz);
-    if (!p) {
-        fprintf(stderr, "rcc: out of memory\n");
-        exit(1);
-    }
-    return p;
-}
-
 #define V(f, id) ((f)->vals[id])
 
 static unsigned width_of(IRType t) { return t == IRT_I32 ? 32 : 64; }
@@ -120,11 +111,7 @@ static int pred_count(const IRBlock *b, const IRBlock *p) {
 }
 
 static void phi_add_arg(IRInstr *p, int v) {
-    int32_t *n = realloc(p->args, sizeof(*n) * (size_t)(p->nargs + 1));
-    if (!n) {
-        fprintf(stderr, "rcc: out of memory\n");
-        exit(1);
-    }
+    int32_t *n = xrealloc(p->args, sizeof(*n) * (size_t)(p->nargs + 1));
     p->args = n;
     p->args[p->nargs++] = v;
 }
@@ -2192,11 +2179,7 @@ typedef struct {
 static void *grow_to(void *p, int n, int *cap, size_t sz) {
     if (n < *cap) return p;
     *cap = *cap ? *cap * 2 : 16;
-    p = realloc(p, sz * (size_t)*cap);
-    if (!p) {
-        fprintf(stderr, "rcc: out of memory\n");
-        exit(1);
-    }
+    p = xrealloc(p, sz * (size_t)*cap);
     return p;
 }
 
@@ -2802,11 +2785,7 @@ static void smap_put(SMap *s, int64_t disp, int val) {
     }
     if (s->n == s->cap) {
         s->cap = s->cap ? s->cap * 2 : 8;
-        s->e = realloc(s->e, sizeof(*s->e) * (size_t)s->cap);
-        if (!s->e) {
-            fprintf(stderr, "rcc: out of memory\n");
-            exit(1);
-        }
+        s->e = xrealloc(s->e, sizeof(*s->e) * (size_t)s->cap);
     }
     s->e[s->n].disp = disp;
     s->e[s->n].val = val;
@@ -2841,11 +2820,7 @@ static bool sroa_slot(IRFunc *f, Mem *m, IRBlock **rpo, const int *pos, int nrpo
                     break;
                 }
                 acccap = acccap ? acccap * 2 : 16;
-                accs = realloc(accs, sizeof(*accs) * (size_t)acccap);
-                if (!accs) {
-                    fprintf(stderr, "rcc: out of memory\n");
-                    exit(1);
-                }
+                accs = xrealloc(accs, sizeof(*accs) * (size_t)acccap);
             }
             accs[nacc].disp = a.disp;
             accs[nacc].width = a.size;
@@ -2935,11 +2910,7 @@ static bool sroa_slot(IRFunc *f, Mem *m, IRBlock **rpo, const int *pos, int nrpo
                     ir_block_add_phi(b, ph);
                     if (nphi == phicap) {
                         phicap = phicap ? phicap * 2 : 8;
-                        newphis = realloc(newphis, sizeof(*newphis) * (size_t)phicap);
-                        if (!newphis) {
-                            fprintf(stderr, "rcc: out of memory\n");
-                            exit(1);
-                        }
+                        newphis = xrealloc(newphis, sizeof(*newphis) * (size_t)phicap);
                     }
                     newphis[nphi++] = ph;
                     smap_put(&in, disp, ph->id);
@@ -2957,11 +2928,7 @@ static bool sroa_slot(IRFunc *f, Mem *m, IRBlock **rpo, const int *pos, int nrpo
                 smap_put(&in, a.disp, i->c);
                 if (nkill == killcap) {
                     killcap = killcap ? killcap * 2 : 16;
-                    kills = realloc(kills, sizeof(*kills) * (size_t)killcap);
-                    if (!kills) {
-                        fprintf(stderr, "rcc: out of memory\n");
-                        exit(1);
-                    }
+                    kills = xrealloc(kills, sizeof(*kills) * (size_t)killcap);
                 }
                 kills[nkill++] = i;
             } else {
@@ -2977,11 +2944,7 @@ static bool sroa_slot(IRFunc *f, Mem *m, IRBlock **rpo, const int *pos, int nrpo
                 }
                 if (nld == ldcap) {
                     ldcap = ldcap ? ldcap * 2 : 16;
-                    lds = realloc(lds, sizeof(*lds) * (size_t)ldcap);
-                    if (!lds) {
-                        fprintf(stderr, "rcc: out of memory\n");
-                        exit(1);
-                    }
+                    lds = xrealloc(lds, sizeof(*lds) * (size_t)ldcap);
                 }
                 lds[nld].i = i;
                 lds[nld].v = in.e[j].val;
@@ -2993,11 +2956,7 @@ static bool sroa_slot(IRFunc *f, Mem *m, IRBlock **rpo, const int *pos, int nrpo
         st[b->id] = in; // exit state for single-pred successors
         if (ndirty == dirtycap) { // remember blocks with recorded rewrites
             dirtycap = dirtycap ? dirtycap * 2 : 8;
-            dirty = realloc(dirty, sizeof(*dirty) * (size_t)dirtycap);
-            if (!dirty) {
-                fprintf(stderr, "rcc: out of memory\n");
-                exit(1);
-            }
+            dirty = xrealloc(dirty, sizeof(*dirty) * (size_t)dirtycap);
         }
         dirty[ndirty++] = b;
     }
@@ -3087,7 +3046,7 @@ static int *use_slot(IRInstr *u, int slot) {
 static void use_add(Use **us, int *n, int *cap, IRInstr *u, int slot) {
     if (*n == *cap) {
         *cap = *cap ? *cap * 2 : 16;
-        *us = realloc(*us, sizeof(**us) * (size_t)*cap);
+        *us = xrealloc(*us, sizeof(**us) * (size_t)*cap);
         if (!*us) {
             fprintf(stderr, "rcc: out of memory\n");
             exit(1);
@@ -3307,7 +3266,7 @@ static int64_t sext_scale(IRFunc *f, const WUse *us, int nus, WUse **mu, int *nm
                 C = oi->imm;
                 if (*nmu == cm) {
                     cm = cm ? cm * 2 : 8;
-                    *mu = realloc(*mu, sizeof(**mu) * (size_t)cm);
+                    *mu = xrealloc(*mu, sizeof(**mu) * (size_t)cm);
                 }
                 (*mu)[(*nmu)++] = (WUse){u, 0, 0, src_of[v], 0, false};
             }
@@ -3384,15 +3343,15 @@ static bool widen_iv(IRFunc *f, const Dom *d, const Loop *L, IRInstr *p, unsigne
                     int64_t c = u->op == IR_ADD ? V(f, u->b)->imm : -V(f, u->b)->imm;
                     Rng r = rng_val(f, d, p->id, u->blk->id, 2);
                     if (r.lo + c >= INT32_MIN && r.hi + c <= INT32_MAX) {
-                        der = realloc(der, sizeof(*der) * (size_t)(nder + 1));
-                        doff = realloc(doff, sizeof(*doff) * (size_t)(nder + 1));
+                        der = xrealloc(der, sizeof(*der) * (size_t)(nder + 1));
+                        doff = xrealloc(doff, sizeof(*doff) * (size_t)(nder + 1));
                         der[nder] = u->id;
                         doff[nder++] = c;
                     }
                 }
                 if (nus == cus) {
                     cus = cus ? cus * 2 : 16;
-                    us = realloc(us, sizeof(*us) * (size_t)cus);
+                    us = xrealloc(us, sizeof(*us) * (size_t)cus);
                 }
                 us[nus++] = w;
                 if (nus > 256) ok = false; // not worth the bookkeeping
@@ -3413,7 +3372,7 @@ static bool widen_iv(IRFunc *f, const Dom *d, const Loop *L, IRInstr *p, unsigne
                     if (u->op == IR_SEXT32) {
                         if (nus == cus) {
                             cus = cus ? cus * 2 : 16;
-                            us = realloc(us, sizeof(*us) * (size_t)cus);
+                            us = xrealloc(us, sizeof(*us) * (size_t)cus);
                         }
                         us[nus++] = (WUse){u, slot, WU_SEXT, der[e], doff[e], true};
                         if (nus > 256) ok = false;
@@ -3519,8 +3478,8 @@ static bool widen_iv(IRFunc *f, const Dom *d, const Loop *L, IRInstr *p, unsigne
                         put_before_term(P, n);
                     }
                 }
-                yv = realloc(yv, sizeof(*yv) * (size_t)(ny + 1));
-                y64 = realloc(y64, sizeof(*y64) * (size_t)(ny + 1));
+                yv = xrealloc(yv, sizeof(*yv) * (size_t)(ny + 1));
+                y64 = xrealloc(y64, sizeof(*y64) * (size_t)(ny + 1));
                 yv[ny] = o;
                 y64[ny++] = m = n->id;
             }
@@ -3957,8 +3916,8 @@ static bool rotate_loop(IRFunc *f, Loop *L) {
         int v = *use_slot(u, us[k].slot), j = 0;
         while (j < nvl && vl[j] != v) j++;
         if (j == nvl) {
-            vl = realloc(vl, sizeof(*vl) * (size_t)(nvl + 1));
-            memo = realloc(memo, sizeof(*memo) * (size_t)(nvl + 1));
+            vl = xrealloc(vl, sizeof(*vl) * (size_t)(nvl + 1));
+            memo = xrealloc(memo, sizeof(*memo) * (size_t)(nvl + 1));
             memo[nvl] = xcalloc((size_t)nb, sizeof(int));
             for (int i = 0; i < nb; i++) memo[nvl][i] = -2;
             vl[nvl++] = v;

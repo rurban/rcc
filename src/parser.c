@@ -3023,11 +3023,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                         }
                         if (pending_target_clones_n + 1 >= cap) {
                             cap *= 2;
-                            char **ntc = realloc(pending_target_clones, (size_t)cap * sizeof(char *));
-                            if (!ntc) {
-                                error("out of memory growing target_clones list");
-                            }
-                            pending_target_clones = ntc;
+                            pending_target_clones = xrealloc(pending_target_clones, (size_t)cap * sizeof(char *));
                         }
                         pending_target_clones[pending_target_clones_n++] = str_intern(s, len);
                         tok = tok->next;

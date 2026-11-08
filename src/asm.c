@@ -405,11 +405,7 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
 static struct Fixup *fixups_next(AsmState *as) {
     if (as->nfixups >= as->fixups_cap) {
         int newcap = as->fixups_cap ? as->fixups_cap * 2 : 64;
-        struct Fixup *tmp = realloc(as->fixups, (size_t)newcap * sizeof(*tmp));
-        if (!tmp) {
-            asm_error(as, "out of memory growing fixups");
-            return NULL;
-        }
+        struct Fixup *tmp = xrealloc(as->fixups, (size_t)newcap * sizeof(*tmp));
         as->fixups = tmp;
         as->fixups_cap = newcap;
     }
@@ -6014,12 +6010,7 @@ static void dynstr_append(DynStr *d, const char *s) {
     if (d->len + n + 2 > d->cap) {
         d->cap = d->cap ? d->cap * 2 : 256;
         while (d->cap < d->len + n + 2) d->cap *= 2;
-        char *tmp = realloc(d->data, d->cap);
-        if (!tmp) {
-            fprintf(stderr, "rcc: out of memory\n");
-            exit(1);
-        }
-        d->data = tmp;
+        d->data = xrealloc(d->data, d->cap);
     }
     memcpy(d->data + d->len, s, n);
     d->len += n;
@@ -7200,12 +7191,7 @@ static int split_into_lines(char *buf, char ***out_lines) {
     while (*line || line == buf) {
         if (n == cap) {
             cap *= 2;
-            char **tmp = realloc(lines, (size_t)cap * sizeof(char *));
-            if (!tmp) {
-                fprintf(stderr, "rcc: out of memory\n");
-                exit(1);
-            }
-            lines = tmp;
+            lines = xrealloc(lines, (size_t)cap * sizeof(char *));
         }
         lines[n++] = line;
         char *nl = strchr(line, '\n');

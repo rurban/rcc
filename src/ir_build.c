@@ -106,23 +106,6 @@ typedef struct {
 
 // ------------------------------------------------------------------ helpers
 
-static void *xcalloc(size_t n, size_t sz) {
-    void *p = calloc(n ? n : 1, sz ? sz : 1);
-    if (!p) {
-        fprintf(stderr, "rcc: out of memory\n");
-        exit(1);
-    }
-    return p;
-}
-static void *xrealloc(void *p, size_t n) {
-    void *q = realloc(p, n);
-    if (!q) {
-        fprintf(stderr, "rcc: out of memory\n");
-        exit(1);
-    }
-    return q;
-}
-
 static int fail(B *b, const char *why) {
     if (!b->fail) {
         b->fail = true;

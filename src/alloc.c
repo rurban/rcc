@@ -3,6 +3,24 @@
 #include "rcc.h"
 #include <stdarg.h>
 
+// Allocation that cannot fail (see xalloc.h).
+static void *oom(void) {
+    fprintf(stderr, "rcc: out of memory\n");
+    exit(1);
+}
+void *xmalloc(size_t n) {
+    void *p = malloc(n ? n : 1);
+    return p ? p : oom();
+}
+void *xcalloc(size_t n, size_t sz) {
+    void *p = calloc(n ? n : 1, sz ? sz : 1);
+    return p ? p : oom();
+}
+void *xrealloc(void *p, size_t n) {
+    void *q = realloc(p, n ? n : 1);
+    return q ? q : oom();
+}
+
 //
 // Arena Allocator
 //
@@ -27,7 +45,7 @@ void *arena_alloc(size_t size) {
         if (aligned > chunk_size) {
             chunk_size = aligned;
         }
-        Chunk *chunk = calloc(1, sizeof(Chunk) + chunk_size);
+        Chunk *chunk = xcalloc(1, sizeof(Chunk) + chunk_size);
         chunk->next = current_chunk;
         chunk->size = chunk_size;
         current_chunk = chunk;
@@ -64,7 +82,7 @@ void *scratch_alloc(size_t size) {
         size_t chunk_size = 4096 * 1024; // 4MB chunks
         if (aligned > chunk_size)
             chunk_size = aligned;
-        Chunk *chunk = calloc(1, sizeof(Chunk) + chunk_size);
+        Chunk *chunk = xcalloc(1, sizeof(Chunk) + chunk_size);
         chunk->size = chunk_size;
         chunk->used = 0;
         chunk->next = NULL;
