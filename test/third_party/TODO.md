@@ -4,6 +4,40 @@ Batch run: 2026-08-14 (full 221/221 targets; supersedes the 2026-08-06
 partial 199/221 run below)
 Binary: rcc HEAD (third_party branch)
 
+## 2026-11-07/08 rerun: 114 -> 128 pass of 221
+
+Fixed: `__builtin_bswapN` tail-jmp'd as a bare symbol (zstd, cgit pass; git
+builds); `-Xlinker ARG` == `-Wl,ARG` (python: 0 -> 482/491 test files run);
+global arrays >= 16 bytes 16-aligned (psABI; `.bss` sh*addralign too);
+struct/union operands of arithmetic/relational ops rejected (ruby
+`mcontext_t` configure probe); `unix`/`linux` not predefined under strict
+`-std=cNN`. Assembler: `sym(%rip)` PC32 reloc for every mnemonic (was
+lea/movaps/movups), `movzbl %ah`, unsuffixed `shr %cl,%r8` size, `pclmul`
+selectors, `movlp/movhp{s,d}` mem, `pshufd $i,mem`, `shld/shrd`, `.quad`
+literals > INT64_MAX. nettle: 54 -> 20 failing tests. Parser/preprocessor:
+`(&&label)` in static initializers (ruby vm.o: the `expected constant
+expression` errors were this, not `VM_CC_ON_STACK`), non-literal array dims in
+`(T[expr]){..}` stop the speculative const fold (cello), `0op` stays one
+pp-number in directives, `##` hide set = intersection, function-like call
+hide set = Prosser's `HS(name) & HS(')') | {name}` (metalang99/datatype99:
+`ML99_EVAL` now matches gcc; `tests.c` compiles).
+Not rcc: openrc (`unix` member, muon passes no -std), camgunz_cmp (new
+cmocka.h `unit_test` macro ends in `;`), libopus (`__malloc_hook` gone),
+busybox (`TCA_CBQ*_` gone), cjson/brieflz/libyaml (cmake policy), mruby/nanopb
+(needed rake/scons, pass now), git (t5559 http2 needs network).
+Open: nettle gcm/poly1305/ecc-_
+(`*.s` now match gas; gcm faults on a 4-aligned `.rodata` `movdqa` because
+configure picks `ALIGN_LOG=yes`, so `ALIGN(16)` becomes `.align 4`, bytes);
+python 5 failing files (test_gdb, test_call, test_ctypes, test_pyexpat,
+test_time). `__builtin_cpu_supports`: all 115 gcc x86 names (checked equal to
+gcc on this CPU) + AArch64 (ACLE names, HWCAP; verified under qemu on 5 CPU
+models); fixed the cpuid-asm-in-call-argument miscompile (clobbered live %rbx,
+pool-full output capture) it exposed. aarch64 cross build: ir_x86.c guarded.
+Next blockers: ruby `coroutine/amd64/Context.S` (`unknown x86 instruction:
+prefixed_symbol(coroutine_transfer)`, a macro-spelled label), metalang99
+tests/util.c:14 (`expected specific operator`). Final rerun (JOBS=6,
+TIMEOUT=600): 128 pass / 93 fail, 21 timeouts (git, python need more time).
+
 ## Summary
 
 | rc  | count | meaning                                                               |

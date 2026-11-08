@@ -569,6 +569,11 @@ write a PE import library for the produced DLL),
 B<-Wl,-undefined,dynamic_lookup> (Darwin), B<-Wl,-E>,
 B<-Wl,-rpath,>I<path> and B<-Wl,-soname,>I<name>.
 
+=item B<-Xlinker> I<opt>
+
+Equivalent to B<-Wl,>I<opt> (one linker option per B<-Xlinker>; CPython's
+B<-Xlinker -export-dynamic> exports all symbols like B<-rdynamic>).
+
 =item B<--as-needed>, B<--no-as-needed>
 
 Accepted as no-ops (rcc's linker does not defer/omit DT_NEEDED entries

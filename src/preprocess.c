@@ -1380,10 +1380,23 @@ static struct Hideset *hs_add(struct Hideset *h, Macro *m) {
 // expansion; rcc maps __builtin_memset back to `memset`, which would
 // otherwise expand the user-visible fortify macro again and nest without
 // end (GCC/clang get this from their context-based macro disabling).
+// Prosser's glue(): HS = HS(l) INTERSECT HS(r), not the union. A union leaks
+// every macro the right operand was produced by into the pasted name:
+// metalang99's `ML99_PRIV_IF_##cond` with cond = 1 coming out of a nested
+// ML99_PRIV_IF expansion would carry ML99_PRIV_IF_1 itself and never expand.
 static void hs_paste_inherit(Token *pt, const Token *l, const Token *r) {
     struct Hideset *h = pt->blue;
-    for (const struct Hideset *x = l ? l->blue : NULL; x; x = x->next) h = hs_add(h, x->name);
-    for (const struct Hideset *x = r ? r->blue : NULL; x; x = x->next) h = hs_add(h, x->name);
+    if (l && r) {
+        for (const struct Hideset *x = l->blue; x; x = x->next) {
+            bool in_r = false;
+            for (const struct Hideset *y = r->blue; y; y = y->next)
+                if (y->name == x->name) in_r = true;
+            if (in_r) h = hs_add(h, x->name);
+        }
+    } else {
+        for (const struct Hideset *x = l ? l->blue : NULL; x; x = x->next) h = hs_add(h, x->name);
+        for (const struct Hideset *x = r ? r->blue : NULL; x; x = x->next) h = hs_add(h, x->name);
+    }
     pt->blue = h;
 }
 // Names present in both sets.
@@ -2287,12 +2300,13 @@ static void expand_token(Token *t) {
     for (int i = 0; i < argc; i++) exp_args[i] = (i < 32 && (m->hh_mask & (1u << i))) ? args_copy[i] : expand_list(args_copy[i]);
     Token *subst = subst_range(m, m->body, NULL, exp_args, args, argc);
     push_expansion(subst, m, t);
-    // A pasted macro name carries the hide sets of its operands (see
-    // hs_paste_inherit), but as for any function-like invocation (Prosser:
-    // HS = HS(name) ∩ HS(')') ∪ {name}) only the part still shared with the
-    // closing parenthesis applies: `CAT(A,B)(x)` ends CAT's expansion before
-    // the `(x)` from the source, so AB(x) may expand CAT again.
-    if (t->no_paint && frames && frames->mac == m)
+    // Prosser: HS = HS(name) INTERSECT HS(')') UNION {name}, for every
+    // function-like invocation: only the part of the name's hide set still
+    // shared with the closing parenthesis applies. `CAT(A,B)(x)` ends CAT's
+    // expansion before the `(x)` from the source, so AB(x) may expand CAT
+    // again; likewise metalang99's `ML99_PRIV_IF(c, APPL_F, ..)(f, ..)`
+    // yields an APPL_F whose own body may call ML99_PRIV_IF again.
+    if (frames && frames->mac == m)
         frames->hide = hs_add(hs_intersect(t->blue, rp ? rp->blue : NULL), m);
     free(args);
     free(tails);
@@ -3789,6 +3803,397 @@ void print_search_dirs(const char *gcc) {
 }
 
 // ============================================================
+// __builtin_cpu_supports("feature") / __builtin_cpu_init()
+// ============================================================
+//
+// Real GCC/clang builtins used for runtime CPU-feature dispatch (blosc2,
+// libucl's mum.h, nettle, ...). GCC compiles them to a libgcc
+// __cpu_indicator_init() bitmask; rcc has no runtime support library, so the
+// macro below queries the CPU at each call site instead (correct, just not
+// cached; __builtin_cpu_init is a no-op). Deliberately a macro, not an
+// injected function: it costs zero bytes unless called, with no DCE
+// dependency on any target (mingw disables the unused-static-inline pass).
+//
+// The name match is a per-character comparison, so no <string.h> is needed.
+// An unknown name yields 0 (GCC rejects it at compile time).
+
+#define CPU_BUF_SIZE (96 * 1024)
+static char cpu_body_buf[CPU_BUF_SIZE];
+static size_t cpu_body_len;
+
+static void cpu_app(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(cpu_body_buf + cpu_body_len, CPU_BUF_SIZE - cpu_body_len, fmt, ap);
+    va_end(ap);
+    if (n < 0 || cpu_body_len + (size_t)n >= CPU_BUF_SIZE) {
+        fprintf(stderr, "rcc: internal error: __builtin_cpu_supports macro too large\n");
+        exit(1);
+    }
+    cpu_body_len += (size_t)n;
+}
+
+// `if ((f)[0]=='a'&&(f)[1]=='b'&&...&&(f)[n]==0)`
+static void cpu_app_name_match(const char *name) {
+    cpu_app("(");
+    size_t len = strlen(name);
+    for (size_t k = 0; k < len; k++) cpu_app("(f)[%zu]=='%c'&&", k, name[k]);
+    cpu_app("(f)[%zu]==0)", len);
+}
+
+// Copy `src` into cpu_body_buf with every `$` replaced by "__rcc_".
+static void cpu_app_expr(const char *src) {
+    for (const char *p = src; *p; p++) {
+        if (*p == '$') cpu_app("__rcc_");
+        else
+            cpu_app("%c", *p);
+    }
+}
+
+#ifndef ARCH_ARM64
+// Feature name -> C expression over the CPUID registers, mirroring GCC's
+// libgcc/common/config/i386/cpuinfo.h get_available_features(): names are the
+// ones i386-isas.h's isa_names_table accepts. `$xx` names a register of a
+// CPUID leaf (a/b/c/d = eax..edx; digits = leaf: 1, 7 = leaf 7.0, 71 = leaf
+// 7.1, d = 0xd.1, 14 = 0x14, 19 = 0x19, 1e = 0x1e.1, 24 = 0x24, 8 = 0x80000001,
+// 88 = 0x80000008); $au/$zu/$tu/$pu = OS has enabled AVX/AVX512/AMX/APX state
+// (XCR0), which GCC requires for the vector-ISA features; $m/$em = max basic /
+// extended leaf. Leaves beyond the CPU's maximum read as 0.
+typedef struct {
+    const char *name;
+    const char *expr;
+} CpuFeat;
+#define CPU_X86_64 "($d8>>29&1)&&($d1>>26&1)"
+#define CPU_X86_V2 CPU_X86_64 "&&($c1>>13&1)&&($c1>>23&1)&&($c8&1)&&($c1>>20&1)"
+#define CPU_X86_V3 CPU_X86_V2 "&&$au&&($b7>>5&1)&&($b7>>3&1)&&($b7>>8&1)&&($c1>>29&1)&&($c1>>12&1)&&($c8>>5&1)&&($c1>>22&1)"
+#define CPU_X86_V4 CPU_X86_V3 "&&$zu&&($b7>>30&1)&&($b7>>28&1)&&($b7>>17&1)&&($b7>>31&1)"
+#define CPU_AVX10 "$zu&&($d71>>19&1)&&$m>=0x24"
+static const CpuFeat cpu_feats_x86[] = {
+    {"cmov", "$d1>>15&1"},
+    {"mmx", "$d1>>23&1"},
+    {"popcnt", "$c1>>23&1"},
+    {"sse", "$d1>>25&1"},
+    {"sse2", "$d1>>26&1"},
+    {"sse3", "$c1&1"},
+    {"ssse3", "$c1>>9&1"},
+    {"sse4.1", "$c1>>19&1"},
+    {"sse4.2", "$c1>>20&1"},
+    {"avx", "$au&&($c1>>28&1)"},
+    {"avx2", "$au&&($b7>>5&1)"},
+    {"sse4a", "$c8>>6&1"},
+    {"fma4", "$au&&($c8>>16&1)"},
+    {"xop", "$au&&($c8>>11&1)"},
+    {"fma", "$au&&($c1>>12&1)"},
+    {"avx512f", "$zu&&($b7>>16&1)"},
+    {"bmi", "$b7>>3&1"},
+    {"bmi2", "$b7>>8&1"},
+    {"aes", "$c1>>25&1"},
+    {"pclmul", "$c1>>1&1"},
+    {"avx512vl", "$zu&&($b7>>31&1)"},
+    {"avx512bw", "$zu&&($b7>>30&1)"},
+    {"avx512dq", "$zu&&($b7>>17&1)"},
+    {"avx512cd", "$zu&&($b7>>28&1)"},
+    {"avx512vbmi", "$zu&&($c7>>1&1)"},
+    {"avx512ifma", "$zu&&($b7>>21&1)"},
+    {"avx512vpopcntdq", "$zu&&($c7>>14&1)"},
+    {"avx512vbmi2", "$zu&&($c7>>6&1)"},
+    {"gfni", "$c7>>8&1"},
+    {"vpclmulqdq", "$au&&($c7>>10&1)"},
+    {"avx512vnni", "$zu&&($c7>>11&1)"},
+    {"avx512bitalg", "$zu&&($c7>>12&1)"},
+    {"avx512bf16", "$zu&&($a71>>5&1)"},
+    {"avx512vp2intersect", "$zu&&($d7>>8&1)"},
+    {"3dnow", "$d8>>31&1"},
+    {"3dnowp", "$d8>>30&1"},
+    {"adx", "$b7>>19&1"},
+    {"abm", "$c8>>5&1"},
+    {"cldemote", "$c7>>25&1"},
+    {"clflushopt", "$b7>>23&1"},
+    {"clwb", "$b7>>24&1"},
+    {"clzero", "$b88&1"},
+    {"cmpxchg16b", "$c1>>13&1"},
+    {"cmpxchg8b", "$d1>>8&1"},
+    {"enqcmd", "$c7>>29&1"},
+    {"f16c", "$au&&($c1>>29&1)"},
+    {"fsgsbase", "$b7&1"},
+    {"fxsave", "$d1>>24&1"},
+    {"hle", "$b7>>4&1"},
+    {"ibt", "$d7>>20&1"},
+    {"lahf_lm", "$c8&1"},
+    {"lm", "$d8>>29&1"},
+    {"lwp", "$c8>>15&1"},
+    {"lzcnt", "$c8>>5&1"},
+    {"movbe", "$c1>>22&1"},
+    {"movdir64b", "$c7>>28&1"},
+    {"movdiri", "$c7>>27&1"},
+    {"mwaitx", "$c8>>29&1"},
+    {"osxsave", "$c1>>27&1"},
+    {"pconfig", "$d7>>18&1"},
+    {"pku", "$c7>>4&1"},
+    {"prfchw", "$c8>>8&1"},
+    {"ptwrite", "$b14>>4&1"},
+    {"rdpid", "$c7>>22&1"},
+    {"rdrnd", "$c1>>30&1"},
+    {"rdseed", "$b7>>18&1"},
+    {"rtm", "$b7>>11&1"},
+    {"serialize", "$d7>>14&1"},
+    {"sgx", "$b7>>2&1"},
+    {"sha", "$b7>>29&1"},
+    {"shstk", "$c7>>7&1"},
+    {"tbm", "$c8>>21&1"},
+    {"tsxldtrk", "$d7>>16&1"},
+    {"vaes", "$au&&($c7>>9&1)"},
+    {"waitpkg", "$c7>>5&1"},
+    {"wbnoinvd", "$b88>>9&1"},
+    {"xsave", "$c1>>26&1"},
+    {"xsavec", "$ad>>1&1"},
+    {"xsaveopt", "$ad&1"},
+    {"xsaves", "$ad>>3&1"},
+    {"amx-tile", "$tu&&($d7>>24&1)"},
+    {"amx-int8", "$tu&&($d7>>25&1)"},
+    {"amx-bf16", "$tu&&($d7>>22&1)"},
+    {"uintr", "$d7>>5&1"},
+    {"hreset", "$a71>>22&1"},
+    {"kl", "($b19&1)&&($c7>>23&1)"},
+    {"aeskle", "$b19&1"},
+    {"widekl", "($b19&1)&&($b19>>2&1)"},
+    {"avxvnni", "$au&&($a71>>4&1)"},
+    {"avx512fp16", "$zu&&($d7>>23&1)"},
+    {"x86-64", CPU_X86_64},
+    {"x86-64-v2", CPU_X86_V2},
+    {"x86-64-v3", CPU_X86_V3},
+    {"x86-64-v4", CPU_X86_V4},
+    {"avxifma", "$au&&($a71>>23&1)"},
+    {"avxvnniint8", "$au&&($d71>>4&1)"},
+    {"avxneconvert", "$au&&($d71>>5&1)"},
+    {"cmpccxadd", "$a71>>7&1"},
+    {"amx-fp16", "$tu&&($a71>>21&1)"},
+    {"prefetchi", "$d71>>14&1"},
+    {"raoint", "$a71>>3&1"},
+    {"amx-complex", "$tu&&($d71>>8&1)"},
+    {"avxvnniint16", "$au&&($d71>>10&1)"},
+    {"sm3", "$au&&($a71>>1&1)"},
+    {"sha512", "$au&&($a71&1)"},
+    {"sm4", "$au&&($a71>>2&1)"},
+    {"apxf", "$pu&&($d71>>21&1)"},
+    {"usermsr", "$d71>>15&1"},
+    {"avx10.1", CPU_AVX10},
+    {"avx10.2", CPU_AVX10 "&&($b24&255)==2"},
+    {"amx-avx512", "$tu&&($a1e>>7&1)"},
+    {"amx-tf32", "$tu&&($a1e>>6&1)"},
+    {"amx-fp8", "$tu&&($a1e>>4&1)"},
+    {"movrs", "$a71>>31&1"},
+    {"amx-movrs", "$tu&&($a1e>>8&1)"},
+};
+
+// CPUID leaf loaders, emitted into each name's block only when its
+// expression references them. Order matters (later ones use earlier vars).
+typedef struct {
+    char id;
+    const char *token; // "$..." register token that pulls this loader in
+    const char *macro; // helper macro name
+    const char *body;
+} CpuLeaf;
+#define CPUID_ASM(L, S, A, B, C, D) \
+    "__asm__ volatile(\"cpuid\":\"=a\"(" A "),\"=b\"(" B "),\"=c\"(" C "),\"=d\"(" D "):\"a\"(" L "),\"c\"(" S "));"
+static const CpuLeaf cpu_leaves[] = {
+    {'M', "$m", "__RCC_CPU_LM",
+     "unsigned __rcc_m,__rcc_em,__rcc_t1,__rcc_t2,__rcc_t3;" CPUID_ASM("0", "0", "__rcc_m", "__rcc_t1", "__rcc_t2", "__rcc_t3")
+         CPUID_ASM("0x80000000u", "0", "__rcc_em", "__rcc_t1", "__rcc_t2", "__rcc_t3")},
+    {'1', "$d1", "__RCC_CPU_L1", "unsigned __rcc_a1,__rcc_b1,__rcc_c1,__rcc_d1;" CPUID_ASM("1", "0", "__rcc_a1", "__rcc_b1", "__rcc_c1", "__rcc_d1")},
+    {'X', "$au", "__RCC_CPU_LX",
+     "unsigned __rcc_au=0,__rcc_zu=0,__rcc_tu=0,__rcc_pu=0;"
+     "if(__rcc_c1>>27&1){unsigned __rcc_xl,__rcc_xh;"
+     "__asm__ volatile(\"xgetbv\":\"=a\"(__rcc_xl),\"=d\"(__rcc_xh):\"c\"(0));"
+     "__rcc_au=(__rcc_xl&6)==6;__rcc_zu=__rcc_au&&(__rcc_xl&0xe6)==0xe6;"
+     "__rcc_tu=(__rcc_xl&0x60000)==0x60000;__rcc_pu=(__rcc_xl&0x80000)==0x80000;}"},
+    {'7', "$b7", "__RCC_CPU_L7",
+     "unsigned __rcc_a7=0,__rcc_b7=0,__rcc_c7=0,__rcc_d7=0;if(__rcc_m>=7)" CPUID_ASM("7", "0", "__rcc_a7", "__rcc_b7", "__rcc_c7", "__rcc_d7")},
+    {'S', "$a71", "__RCC_CPU_L71",
+     "unsigned __rcc_a71=0,__rcc_d71=0,__rcc_t4,__rcc_t5;if(__rcc_m>=7&&__rcc_a7>=1)" CPUID_ASM("7", "1", "__rcc_a71", "__rcc_t4", "__rcc_t5", "__rcc_d71")},
+    {'D', "$ad", "__RCC_CPU_LD",
+     "unsigned __rcc_ad=0,__rcc_t6,__rcc_t7,__rcc_t8;if(__rcc_m>=0xd)" CPUID_ASM("0xd", "1", "__rcc_ad", "__rcc_t6", "__rcc_t7", "__rcc_t8")},
+    {'T', "$b14", "__RCC_CPU_L14",
+     "unsigned __rcc_b14=0,__rcc_t9,__rcc_t10,__rcc_t11;if(__rcc_m>=0x14)" CPUID_ASM("0x14", "0", "__rcc_t9", "__rcc_b14", "__rcc_t10", "__rcc_t11")},
+    {'K', "$b19", "__RCC_CPU_L19",
+     "unsigned __rcc_b19=0,__rcc_t12,__rcc_t13,__rcc_t14;if(__rcc_m>=0x19)" CPUID_ASM("0x19", "0", "__rcc_t12", "__rcc_b19", "__rcc_t13", "__rcc_t14")},
+    {'N', "$a1e", "__RCC_CPU_L1E",
+     "unsigned __rcc_a1e=0,__rcc_t15,__rcc_t16,__rcc_t17;if(__rcc_m>=0x1e)" CPUID_ASM("0x1e", "1", "__rcc_a1e", "__rcc_t15", "__rcc_t16", "__rcc_t17")},
+    {'V', "$b24", "__RCC_CPU_L24",
+     "unsigned __rcc_b24=0,__rcc_t18,__rcc_t19,__rcc_t20;if(__rcc_zu&&(__rcc_d71>>19&1)&&__rcc_m>=0x24)" CPUID_ASM("0x24", "0", "__rcc_t18", "__rcc_b24", "__rcc_t19", "__rcc_t20")},
+    {'E', "$c8", "__RCC_CPU_LE",
+     "unsigned __rcc_c8=0,__rcc_d8=0,__rcc_t21,__rcc_t22;if(__rcc_em>=0x80000001u)" CPUID_ASM("0x80000001u", "0", "__rcc_t21", "__rcc_t22", "__rcc_c8", "__rcc_d8")},
+    {'F', "$b88", "__RCC_CPU_L88",
+     "unsigned __rcc_b88=0,__rcc_t23,__rcc_t24,__rcc_t25;if(__rcc_em>=0x80000008u)" CPUID_ASM("0x80000008u", "0", "__rcc_t23", "__rcc_b88", "__rcc_t24", "__rcc_t25")},
+};
+
+// Which leaf loaders `expr` needs (bitmask over cpu_leaves[] indices),
+// including the loaders those depend on.
+static unsigned cpu_leaf_mask(const char *expr) {
+    enum { NL = sizeof cpu_leaves / sizeof cpu_leaves[0] };
+    unsigned mask = 0;
+    for (int i = 0; i < NL; i++) {
+        // Match the token as a prefix of a `$`-name, so "$d1" is not "$d1e"
+        // and "$a7" (leaf 7.0) is not "$a71"; every register token above is
+        // followed by a non-alphanumeric character in the expressions.
+        size_t tl = strlen(cpu_leaves[i].token);
+        for (const char *p = expr; (p = strchr(p, '$')); p++)
+            if (!strncmp(p, cpu_leaves[i].token, tl) && !isalnum((unsigned char)p[tl])) mask |= 1u << i;
+    }
+    // Direct register tokens that belong to a leaf but are not its `token`
+    // (e.g. $a7, $c7, $d7 -> leaf 7; $b1/$a1 -> leaf 1; $c8/$d8, $d71, $em ...).
+    static const struct {
+        const char *tok;
+        char id;
+    } extra[] = {{"$a1", '1'}, {"$b1", '1'}, {"$c1", '1'}, {"$a7", '7'}, {"$c7", '7'}, {"$d7", '7'}, {"$d71", 'S'}, {"$d8", 'E'}, {"$em", 'M'}, {"$zu", 'X'}, {"$tu", 'X'}, {"$pu", 'X'}, {"$b24", 'V'}};
+    for (size_t e = 0; e < sizeof extra / sizeof extra[0]; e++) {
+        size_t tl = strlen(extra[e].tok);
+        for (const char *p = expr; (p = strchr(p, '$')); p++)
+            if (!strncmp(p, extra[e].tok, tl) && !isalnum((unsigned char)p[tl]))
+                for (int i = 0; i < NL; i++)
+                    if (cpu_leaves[i].id == extra[e].id) mask |= 1u << i;
+    }
+    // Dependencies: everything past leaf 1 needs the max-leaf probe; X needs
+    // leaf 1 (OSXSAVE); 71 needs 7.0 (max subleaf); 24 needs X, 71.
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (int i = 0; i < NL; i++) {
+            if (!(mask & (1u << i))) continue;
+            char id = cpu_leaves[i].id;
+            for (int j = 0; j < NL; j++) {
+                char dj = cpu_leaves[j].id;
+                bool need = false;
+                if (dj == 'M' && id != 'M' && id != '1' && id != 'X') need = true;
+                if (dj == '1' && id == 'X') need = true;
+                if (dj == '7' && (id == 'S' || id == 'V')) need = true;
+                if (dj == 'S' && id == 'V') need = true;
+                if (dj == 'X' && id == 'V') need = true;
+                if (need && !(mask & (1u << j))) {
+                    mask |= 1u << j;
+                    changed = true;
+                }
+            }
+        }
+    }
+    return mask;
+}
+
+static void define_cpu_builtins(void) {
+    enum { NL = sizeof cpu_leaves / sizeof cpu_leaves[0] };
+    for (int i = 0; i < NL; i++) define_macro((char *)cpu_leaves[i].macro, false, NULL, 0, (char *)cpu_leaves[i].body);
+    cpu_body_len = 0;
+    cpu_app("({int __rcc_r=0;");
+    for (size_t i = 0; i < sizeof cpu_feats_x86 / sizeof cpu_feats_x86[0]; i++) {
+        cpu_app(i ? "else if" : "if");
+        cpu_app_name_match(cpu_feats_x86[i].name);
+        cpu_app("{");
+        unsigned mask = cpu_leaf_mask(cpu_feats_x86[i].expr);
+        for (int l = 0; l < NL; l++)
+            if (mask & (1u << l)) cpu_app("%s ", cpu_leaves[l].macro);
+        cpu_app("__rcc_r=(");
+        cpu_app_expr(cpu_feats_x86[i].expr);
+        cpu_app(")?1:0;}");
+    }
+    cpu_app("__rcc_r;})");
+    define_macro("__builtin_cpu_supports", true, (char *[]){"f"}, 1, cpu_body_buf);
+    define_macro("__builtin_cpu_init", true, NULL, 0, "((void)0)");
+}
+#endif // !ARCH_ARM64
+
+#ifdef ARCH_ARM64
+// AArch64 feature names are the ACLE Function-Multi-Versioning set (the names
+// clang's __builtin_cpu_supports accepts; GCC does not implement the builtin
+// for AArch64). Linux: AT_HWCAP/AT_HWCAP2 bits from <asm/hwcap.h>. Apple:
+// sysctlbyname("hw.optional...") names; features Apple does not have read 0.
+typedef struct {
+    const char *name;
+    signed char reg; // 1 = AT_HWCAP, 2 = AT_HWCAP2
+    signed char bit;
+    const char *apple; // sysctl name under "hw.optional.", or NULL
+} CpuFeatArm;
+static const CpuFeatArm cpu_feats_arm[] = {
+    {"fp", 1, 0, "floatingpoint"},
+    {"simd", 1, 1, "AdvSIMD"},
+    {"aes", 1, 3, "arm.FEAT_AES"},
+    {"sha2", 1, 6, "arm.FEAT_SHA256"},
+    {"crc", 1, 7, "armv8_crc32"},
+    {"lse", 1, 8, "arm.FEAT_LSE"},
+    {"fp16", 1, 9, "arm.FEAT_FP16"},
+    {"rdm", 1, 12, "arm.FEAT_RDM"},
+    {"jscvt", 1, 13, "arm.FEAT_JSCVT"},
+    {"fcma", 1, 14, "arm.FEAT_FCMA"},
+    {"rcpc", 1, 15, "arm.FEAT_LRCPC"},
+    {"dpb", 1, 16, "arm.FEAT_DPB"},
+    {"sha3", 1, 17, "arm.FEAT_SHA3"},
+    {"sm4", 1, 19, NULL},
+    {"dotprod", 1, 20, "arm.FEAT_DotProd"},
+    {"sve", 1, 22, NULL},
+    {"fp16fml", 1, 23, "arm.FEAT_FHM"},
+    {"dit", 1, 24, "arm.FEAT_DIT"},
+    {"rcpc2", 1, 26, "arm.FEAT_LRCPC2"},
+    {"flagm", 1, 27, "arm.FEAT_FlagM"},
+    {"ssbs", 1, 28, "arm.FEAT_SSBS"},
+    {"sb", 1, 29, "arm.FEAT_SB"},
+    {"dpb2", 2, 0, "arm.FEAT_DPB2"},
+    {"sve2", 2, 1, NULL},
+    {"sve2-aes", 2, 2, NULL},
+    {"sve2-bitperm", 2, 4, NULL},
+    {"sve2-sha3", 2, 5, NULL},
+    {"sve2-sm4", 2, 6, NULL},
+    {"flagm2", 2, 7, "arm.FEAT_FlagM2"},
+    {"frintts", 2, 8, "arm.FEAT_FRINTTS"},
+    {"f32mm", 2, 10, NULL},
+    {"f64mm", 2, 11, NULL},
+    {"i8mm", 2, 13, "arm.FEAT_I8MM"},
+    {"bf16", 2, 14, "arm.FEAT_BF16"},
+    {"rng", 2, 16, NULL},
+    {"bti", 2, 17, "arm.FEAT_BTI"},
+    {"memtag", 2, 18, NULL},
+    {"sme", 2, 23, "arm.FEAT_SME"},
+    {"sme-i16i64", 2, 24, "arm.FEAT_SME_I16I64"},
+    {"sme-f64f64", 2, 25, "arm.FEAT_SME_F64F64"},
+    {"wfxt", 2, 31, NULL},
+    {"cssc", 2, 34, NULL},
+    {"sme2", 2, 37, "arm.FEAT_SME2"},
+    {"mops", 2, 43, NULL},
+    {"rcpc3", 2, 46, NULL},
+};
+
+static void define_cpu_builtins(void) {
+    cpu_body_len = 0;
+#ifdef __APPLE__
+    cpu_app("({extern int sysctlbyname(const char*,void*,unsigned long*,void*,unsigned long);"
+            "int __rcc_r=0,__rcc_v=0;unsigned long __rcc_l=sizeof(int);const char*__rcc_n=0;");
+#else
+    cpu_app("({extern unsigned long getauxval(unsigned long);"
+            "unsigned long __rcc_h1=getauxval(16),__rcc_h2=getauxval(26);int __rcc_r=0;");
+#endif
+    bool first = true;
+    for (size_t i = 0; i < sizeof cpu_feats_arm / sizeof cpu_feats_arm[0]; i++) {
+        const CpuFeatArm *f = &cpu_feats_arm[i];
+#ifdef __APPLE__
+        if (!f->apple) continue;
+#endif
+        cpu_app(first ? "if" : "else if");
+        first = false;
+        cpu_app_name_match(f->name);
+#ifdef __APPLE__
+        cpu_app("__rcc_n=\"hw.optional.%s\";", f->apple);
+#else
+        cpu_app("__rcc_r=(int)(__rcc_h%d>>%d&1);", f->reg, f->bit);
+#endif
+    }
+#ifdef __APPLE__
+    cpu_app("if(__rcc_n&&sysctlbyname(__rcc_n,&__rcc_v,&__rcc_l,0,0)==0&&__rcc_v)__rcc_r=1;");
+#endif
+    cpu_app("__rcc_r;})");
+    define_macro("__builtin_cpu_supports", true, (char *[]){"f"}, 1, cpu_body_buf);
+    define_macro("__builtin_cpu_init", true, NULL, 0, "((void)0)");
+}
+#endif // ARCH_ARM64
+
+// ============================================================
 // Top-level preprocess()
 // ============================================================
 
@@ -3866,8 +4271,15 @@ Token *preprocess(char *filename, char *p) {
         // `#if !defined(__STRICT_ANSI__)` (e.g. CPython's pymacro.h
         // Py_ARRAY_LENGTH, which otherwise takes a bare-`typeof` branch
         // rcc -- matching real GCC -- rejects under strict -std=c11).
-        if (opt_strict_ansi)
+        if (opt_strict_ansi) {
             define_pre("__STRICT_ANSI__", "1");
+            // GCC's non-reserved-namespace system macros (`unix`, `linux`)
+            // exist only in GNU dialects: under strict -std=cNN they are
+            // absent, and code like `struct sockaddr_un unix;` (OpenRC's
+            // misc.c, built with -std=c99) relies on that.
+            add_undef("unix");
+            add_undef("linux");
+        }
         if (!find_macro("__STDC_FENV_ACCESS__")) define_pre("__STDC_FENV_ACCESS__", "1");
         if (opt_std_version && strcmp(opt_std_version, "202311L") >= 0) {
             if (!find_macro("bool")) define_pre("bool", "_Bool");
@@ -4045,58 +4457,9 @@ Token *preprocess(char *filename, char *p) {
         define_macro("__builtin_ia32_mfence", true, NULL, 0, "__asm__ __volatile__(\"mfence\":::\"memory\")");
         define_macro("__builtin_ia32_lfence", true, NULL, 0, "__asm__ __volatile__(\"lfence\":::\"memory\")");
         define_macro("__builtin_ia32_sfence", true, NULL, 0, "__asm__ __volatile__(\"sfence\":::\"memory\")");
-        // __builtin_cpu_supports("feature")/__builtin_cpu_init(): real
-        // GCC/clang compiler builtins used for runtime CPU-feature dispatch
-        // (e.g. blosc2's blosc_get_cpu_features(), picking an
-        // SSE2/AVX2/AVX512 code path; libucl's bundled mum.h: `if
-        // (!avx2_support) { __builtin_cpu_init(); avx2_support =
-        // __builtin_cpu_supports("avx2") ? 1 : -1; }`). Real GCC compiles
-        // __builtin_cpu_supports to a call into libgcc's
-        // __cpu_indicator_init()-populated __cpu_model bitmask; rcc instead
-        // expands both to statement-expression macros that query CPUID
-        // directly at each call site (correct, just not cached/hoisted;
-        // __builtin_cpu_init is a true no-op).
-        //
-        // Deliberately a macro, not a real function injected into every
-        // parse's synthetic prelude (as an earlier version of this fix
-        // did): a "static inline, never referenced" function body is only
-        // stripped by opt.c's eliminate_unused_static_inline() DCE pass,
-        // and that pass's own header comment documents it as disabled
-        // outright on the mingw/Windows target (a separate, unrelated
-        // object-layout/TLS-corruption risk under investigation there).
-        // Unconditionally injecting a real function would have left two
-        // dead functions bloating every mingw translation unit's .text
-        // and, worse, shifted unrelated code layout enough to break
-        // several raw-inline-asm byte-pattern regression tests
-        // (test_x86_priv_insns et al.) as a pure side effect of the extra,
-        // never-DCE'd function bodies. A macro sidesteps this
-        // categorically: it expands to zero bytes unless a real call site
-        // actually invokes it, on every target uniformly, with no DCE
-        // dependency at all.
-        //
-        // Manual per-character comparison instead of strcmp() avoids any
-        // dependency on <string.h> having been included yet. Covers the
-        // feature names actually probed by this project's third-party
-        // test suite (sse2, avx, avx2, avx512f, avx512bw); add more
-        // leaf-7/leaf-1 bits here if a future project needs a name not
-        // yet covered.
-        define_macro("__builtin_cpu_supports", true, (char *[]){"f"}, 1,
-                     "({"
-                     "  unsigned __rcc_a,__rcc_b,__rcc_c,__rcc_d,__rcc_r=0;"
-                     "  __asm__(\"cpuid\":\"=a\"(__rcc_a),\"=b\"(__rcc_b),\"=c\"(__rcc_c),\"=d\"(__rcc_d):\"a\"(1),\"c\"(0));"
-                     "  if ((f)[0]=='s'&&(f)[1]=='s'&&(f)[2]=='e'&&(f)[3]=='2'&&(f)[4]==0) __rcc_r=(__rcc_d>>26)&1;"
-                     "  else if ((f)[0]=='a'&&(f)[1]=='v'&&(f)[2]=='x'&&(f)[3]==0) __rcc_r=(__rcc_c>>28)&1;"
-                     "  else {"
-                     "    unsigned __rcc_a2,__rcc_b2,__rcc_c2,__rcc_d2;"
-                     "    __asm__(\"cpuid\":\"=a\"(__rcc_a2),\"=b\"(__rcc_b2),\"=c\"(__rcc_c2),\"=d\"(__rcc_d2):\"a\"(7),\"c\"(0));"
-                     "    if ((f)[0]=='a'&&(f)[1]=='v'&&(f)[2]=='x'&&(f)[3]=='2'&&(f)[4]==0) __rcc_r=(__rcc_b2>>5)&1;"
-                     "    else if ((f)[0]=='a'&&(f)[1]=='v'&&(f)[2]=='x'&&(f)[3]=='5'&&(f)[4]=='1'&&(f)[5]=='2'&&(f)[6]=='f'&&(f)[7]==0) __rcc_r=(__rcc_b2>>16)&1;"
-                     "    else if ((f)[0]=='a'&&(f)[1]=='v'&&(f)[2]=='x'&&(f)[3]=='5'&&(f)[4]=='1'&&(f)[5]=='2'&&(f)[6]=='b'&&(f)[7]=='w'&&(f)[8]==0) __rcc_r=(__rcc_b2>>30)&1;"
-                     "  }"
-                     "  __rcc_r;"
-                     "})");
-        define_macro("__builtin_cpu_init", true, NULL, 0, "((void)0)");
 #endif
+        // See define_cpu_builtins() for __builtin_cpu_supports/__builtin_cpu_init.
+        define_cpu_builtins();
 #ifdef _WIN32
         define_pre("isinf", "__builtin_isinf");
         define_pre("isinff", "__builtin_isinff");

@@ -674,7 +674,7 @@ int elf_write(ObjFile *obj, const char *path) {
     write_shdr(f, shn_data, SHT_PROGBITS, SHF_ALLOC | SHF_WRITE,
                data_off, data_size, 0, 0, obj->data.align > 8 ? obj->data.align : 8, 0);
     write_shdr(f, shn_bss, SHT_NOBITS, SHF_ALLOC | SHF_WRITE,
-               data_off + data_size, obj->bss_size, 0, 0, 8, 0);
+               data_off + data_size, obj->bss_size, 0, 0, obj->bss_align > 8 ? obj->bss_align : 8, 0);
     write_shdr(f, shn_rodata, SHT_PROGBITS, SHF_ALLOC,
                rodata_off, rodata_size, 0, 0, obj->rodata.align, 0);
     if (has_tdata)

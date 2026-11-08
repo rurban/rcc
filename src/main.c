@@ -294,6 +294,7 @@ void help(void) {
            "-rpath path         => -Wl,-rpath,path\n"
            "-soname name        => -Wl,-soname,name\n"
            "-Wl,<opt>           pass option to linker\n"
+           "-Xlinker <opt>      => -Wl,<opt>\n"
            "-mms-bitfields      use MSVC bitfield layout by default\n"
            "-mno-ms-bitfields   use GCC bitfield layout by default\n"
            "-pie|-fPIE|-fpie    generate position-independent executable\n"
@@ -886,6 +887,16 @@ int main(int argc, char **argv) {
             // before the link step gets to run.
             if (!strncmp(larg, "-Wl,", 4) || !strncmp(larg, "-l", 2))
                 have_link_inputs = true;
+        } else if (!strcmp(argv[i], "-Xlinker")) {
+            // `-Xlinker ARG` == `-Wl,ARG` (python's LINKFORSHARED).
+            if (++i >= argc) {
+                fprintf(stderr, "error: missing argument for -Xlinker\n");
+                return 1;
+            }
+            if (!strcmp(argv[i], "-E") || !strcmp(argv[i], "--export-dynamic"))
+                opt_export_dynamic = true;
+            xappendf(&libs, &libs_len, &libs_cap, " -Wl,%s", argv[i]);
+            have_link_inputs = true;
         } else if (!strcmp(argv[i], "-soname")) {
             if (++i >= argc) {
                 fprintf(stderr, "error: missing argument for -soname\n");

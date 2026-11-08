@@ -34,6 +34,7 @@
 // (rsp is 8 mod 16 at function entry, so the push aligns it for the call).
 #include "cg_ir.h"
 #include <limits.h>
+#ifndef ARCH_ARM64 // the aarch64 build lists this file too (Makefile SRCS); the AArch64 backend is ir_arm64.c
 
 #define R_S0 X86_RAX
 #define R_S1 X86_R11
@@ -3305,3 +3306,4 @@ void ir_emit_x86(Program *prog, IRFunc *f, bool emitting_local_copy) {
     free(be.paggoff);
     free(be.ctemp);
 }
+#endif /* !ARCH_ARM64 */

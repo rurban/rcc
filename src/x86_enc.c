@@ -350,7 +350,7 @@ void x86_movsx(SecBuf *s, int dst_sz, int src_sz, X86Reg dst, X86Reg src) {
     if (dst_sz == 4 && src_sz == 1) {
         // byte src: RSP..RDI (sil/dil/bpl/spl) need a REX to disambiguate
         // from the legacy high bytes (dh/...); maybe_rex() alone misses it.
-        int r = dst > X86_RDI, b = src > X86_RDI;
+        int r = dst > X86_RDI, b = src > X86_RDI && !x86_is_high8(src);
         if (r || b || (src >= X86_RSP && src <= X86_RDI))
             emit1(s, rex(0, r, 0, b));
         emit3(s, 0x0f, 0xbe, modrm(3, dst, src));
@@ -377,7 +377,7 @@ void x86_movzx(SecBuf *s, int dst_sz, int src_sz, X86Reg dst, X86Reg src) {
     if (dst_sz == 4 && src_sz == 1) {
         // byte src: RSP..RDI (sil/dil/bpl/spl) need a REX to disambiguate
         // from the legacy high bytes (dh/...); maybe_rex() alone misses it.
-        int r = dst > X86_RDI, b = src > X86_RDI;
+        int r = dst > X86_RDI, b = src > X86_RDI && !x86_is_high8(src);
         if (r || b || (src >= X86_RSP && src <= X86_RDI))
             emit1(s, rex(0, r, 0, b));
         emit3(s, 0x0f, 0xb6, modrm(3, dst, src));
@@ -647,6 +647,15 @@ void x86_ror_ri(SecBuf *s, int sz, X86Reg r, uint8_t i) { shift_ri(s, sz, 1, r, 
 void x86_rol_ri(SecBuf *s, int sz, X86Reg r, uint8_t i) { shift_ri(s, sz, 0, r, i); }
 void x86_shl_rcl(SecBuf *s, int sz, X86Reg r) { shift_rcl(s, sz, 4, r); }
 void x86_shr_rcl(SecBuf *s, int sz, X86Reg r) { shift_rcl(s, sz, 5, r); }
+// SHLD/SHRD dst, src, imm8|%cl (register destination): 0F A4/A5 (shld),
+// 0F AC/AD (shrd); imm < 0 selects the %cl count form.
+void x86_shxd_rr(SecBuf *s, int sz, bool right, X86Reg dst, X86Reg src, int imm) {
+    if (sz == 2) emit1(s, 0x66);
+    maybe_rex(s, sz == 8, src, 0, dst);
+    emit2(s, 0x0f, (uint8_t)((right ? 0xac : 0xa4) | (imm < 0 ? 1 : 0)));
+    emit1(s, modrm(3, src, dst));
+    if (imm >= 0) emit1(s, (uint8_t)imm);
+}
 void x86_sar_rcl(SecBuf *s, int sz, X86Reg r) { shift_rcl(s, sz, 7, r); }
 void x86_rcl_ri(SecBuf *s, int sz, X86Reg r, uint8_t i) { shift_ri(s, sz, 2, r, i); }
 void x86_rcr_ri(SecBuf *s, int sz, X86Reg r, uint8_t i) { shift_ri(s, sz, 3, r, i); }
@@ -1522,6 +1531,19 @@ void x86_unpcklps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x14, d, 
 void x86_unpckhps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x15, d, sr); }
 void x86_movhlps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x12, d, sr); }
 void x86_movlhps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x16, d, sr); }
+static void sse_mem_opt_pfx(SecBuf *s, uint8_t pfx, uint8_t op, X86Mem m, X86XmmReg r) {
+    if (pfx) emit1(s, pfx);
+    maybe_rex(s, 0, (int)r > X86_RDI ? (int)r : 0, m.index > X86_RDI ? m.index : 0, X86_EXT(m.base) ? m.base : 0);
+    emit2(s, 0x0f, op);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (X86Reg)r);
+}
+// 0F 12/13 = MOVLP* load/store, 0F 16/17 = MOVHP*; 66 prefix selects the pd form.
+void x86_movlhp_rm(SecBuf *s, bool pd, bool hi, X86XmmReg dst, X86Mem srcm) {
+    sse_mem_opt_pfx(s, pd ? 0x66 : 0, hi ? 0x16 : 0x12, srcm, dst);
+}
+void x86_movlhp_mr(SecBuf *s, bool pd, bool hi, X86Mem dstm, X86XmmReg src) {
+    sse_mem_opt_pfx(s, pd ? 0x66 : 0, hi ? 0x17 : 0x13, dstm, src);
+}
 // cmpps xmm, xmm, imm8: 0F C2 /r ib (imm: 0=eq,1=lt,2=le,4=neq,5=nlt,6=nle)
 void x86_cmpps(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm) {
     maybe_rex2(s, 0, (int)d, (int)sr);
@@ -1618,6 +1640,10 @@ void x86_pshufd(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm) {
     emit1(s, 0x66);
     maybe_rex2(s, 0, (int)d, (int)sr);
     emit3(s, 0x0f, 0x70, modrxmm(3, d, sr));
+    emit1(s, imm);
+}
+void x86_pshufd_rm(SecBuf *s, X86XmmReg d, X86Mem m, uint8_t imm) {
+    sse_rm(s, 0x66, 0x70, d, m);
     emit1(s, imm);
 }
 // "Group 14" (66 0F 73 /ext ib) shift-by-immediate: ModRM.reg is a
@@ -2289,8 +2315,8 @@ void x86_pclmulqdq(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm) {
 }
 // PCLMULQDQ convenience wrappers (GAS aliases for pclmulqdq with fixed imm8).
 void x86_pclmullqlqdq(SecBuf *s, X86XmmReg d, X86XmmReg sr) { x86_pclmulqdq(s, d, sr, 0x00); }
-void x86_pclmullqhqdq(SecBuf *s, X86XmmReg d, X86XmmReg sr) { x86_pclmulqdq(s, d, sr, 0x01); }
-void x86_pclmulhqlqdq(SecBuf *s, X86XmmReg d, X86XmmReg sr) { x86_pclmulqdq(s, d, sr, 0x10); }
+void x86_pclmullqhqdq(SecBuf *s, X86XmmReg d, X86XmmReg sr) { x86_pclmulqdq(s, d, sr, 0x10); }
+void x86_pclmulhqlqdq(SecBuf *s, X86XmmReg d, X86XmmReg sr) { x86_pclmulqdq(s, d, sr, 0x01); }
 void x86_pclmulhqhqdq(SecBuf *s, X86XmmReg d, X86XmmReg sr) { x86_pclmulqdq(s, d, sr, 0x11); }
 void x86_pcmpestrm(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm) {
     emit1(s, 0x66);

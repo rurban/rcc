@@ -187,6 +187,7 @@ void x86_shr_ri(SecBuf *s, int size, X86Reg r, uint8_t imm);
 void x86_sar_ri(SecBuf *s, int size, X86Reg r, uint8_t imm);
 void x86_shl_rcl(SecBuf *s, int size, X86Reg r); // shift by CL
 void x86_shr_rcl(SecBuf *s, int size, X86Reg r);
+void x86_shxd_rr(SecBuf *s, int size, bool right, X86Reg dst, X86Reg src, int imm);
 void x86_sar_rcl(SecBuf *s, int size, X86Reg r);
 void x86_ror_ri(SecBuf *s, int size, X86Reg r, uint8_t imm);
 void x86_rol_ri(SecBuf *s, int size, X86Reg r, uint8_t imm);
@@ -517,6 +518,9 @@ void x86_unpcklps(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_unpckhps(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_movhlps(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_movlhps(SecBuf *s, X86XmmReg dst, X86XmmReg src);
+// MOVLPS/MOVHPS (pd=false) and MOVLPD/MOVHPD (pd=true): xmm <-> m64.
+void x86_movlhp_rm(SecBuf *s, bool pd, bool hi, X86XmmReg dst, X86Mem srcm);
+void x86_movlhp_mr(SecBuf *s, bool pd, bool hi, X86Mem dstm, X86XmmReg src);
 void x86_cmpps(SecBuf *s, X86XmmReg dst, X86XmmReg src, uint8_t imm);
 void x86_shufps(SecBuf *s, X86XmmReg dst, X86XmmReg src, uint8_t imm);
 void x86_shufpd(SecBuf *s, X86XmmReg dst, X86XmmReg src, uint8_t imm);
@@ -578,6 +582,7 @@ void x86_pshufb(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 // reads only from src (dst is write-only), matching real GAS's own
 // "pshufd $imm, src, dst" AT&T operand order.
 void x86_pshufd(SecBuf *s, X86XmmReg dst, X86XmmReg src, uint8_t imm);
+void x86_pshufd_rm(SecBuf *s, X86XmmReg dst, X86Mem srcm, uint8_t imm);
 // "Group 14" shift-by-immediate (SSE2, 66 0F 73 /ext ib): the whole
 // xmm register shifts by imm8, zero-filling; single-operand form (dst
 // is both source and destination). PSLLDQ/PSRLDQ shift by *bytes*

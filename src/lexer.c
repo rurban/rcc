@@ -1003,7 +1003,9 @@ Token *lex_one(char **pp, int *plineno) {
             // macro argument into two tokens ("10", "baseT_Half") before
             // ## pasting ever sees it, corrupting later token-paste-formed
             // identifiers like ETHTOOL_LINK_MODE_10baseT_Half_BIT.
-            if (!base_prefix_empty &&
+            // In a directive, an empty base prefix followed by identifier chars
+            // (`0op`, metalang99's tag) is still one pp-number, not `0o` + `p`.
+            if ((!base_prefix_empty || lex_in_directive) &&
                 (is_ident1(*p) || isdigit((unsigned char)*p)) && *p != '#') {
                 if (!lex_in_directive && (isdigit((unsigned char)*p) || has_base_prefix))
                     lex_error_at(p, "invalid suffix on %s constant",

@@ -6892,6 +6892,33 @@ static bool read_global_label_initializer(Token **rest, Token *tok, char **label
     //   static zend_vm_opcode_handler_t const labels[] = {
     //       (void*)&&ZEND_NOP_SPEC_LABEL, ...
     //   };
+    // Parenthesized `(&&label)` / `__extension__(&&label)`: Ruby's
+    // LABEL_PTR(x) in vmtc.inc's insns_address_table.
+    {
+        Token *t = tok;
+        while (equalc(t, "__extension__")) t = t->next;
+        int np = 0;
+        while (equalc(t, "(") && !is_typename(t->next)) {
+            np++;
+            t = t->next;
+            while (equalc(t, "__extension__")) t = t->next;
+        }
+        if (np && equalc(t, "&&") && t->next && t->next->kind == TK_IDENT) {
+            Token *e = t->next->next;
+            int k = np;
+            while (k && equalc(e, ")")) {
+                e = e->next;
+                k--;
+            }
+            if (!k) {
+                *label = parser_current_fn ? format(".L.label.%s.%s", parser_current_fn, t->next->name)
+                                           : t->next->name;
+                if (addend) *addend = 0;
+                *rest = e;
+                return true;
+            }
+        }
+    }
     if (equalc(tok, "&&") && tok->next && tok->next->kind == TK_IDENT) {
         if (parser_current_fn)
             *label = format(".L.label.%s.%s", parser_current_fn, tok->next->name);
@@ -11831,6 +11858,11 @@ static Node *vec_gather(LVar *var, Type *vt, Node *idx, Token *tok) {
     return new_unary(ND_DEREF, new_binary(ND_ADD, addr, idx, tok), tok);
 }
 
+// Set while to_assign() lowers `a op= b`: the later type-check pass reports
+// invalid struct operands there with every other error (torture c11-atomic-3
+// expects them all in one run), so the early hard error must not preempt it.
+static bool vl_in_compound_assign;
+
 static Node *vector_lower(Node *node) {
     NodeKind k = node->kind;
     bool un = (k == ND_NEG || k == ND_BITNOT);
@@ -11860,6 +11892,17 @@ static Node *vector_lower(Node *node) {
         check_type(node->rhs);
     Type *lt = node->lhs ? node->lhs->ty : NULL;
     Type *rt = (!un && node->rhs) ? node->rhs->ty : NULL;
+    // A non-vector struct/union is never a valid operand of arithmetic,
+    // bitwise, shift or relational operators (GCC: "invalid operands to
+    // binary +"). Silently accepting it made autoconf probes that rely on
+    // the rejection pass: Ruby's "is mcontext_t a pointer" test
+    // (`mcontext_t test(mcontext_t mc){return mc+1;}`) answered yes on
+    // glibc, giving DEFINE_MCONTEXT_PTR the by-value form and breaking
+    // signal.c's `mctx->gregs`.
+    if (!vl_in_compound_assign &&
+        ((lt && (lt->kind == TY_STRUCT || lt->kind == TY_UNION) && !lt->is_vector) ||
+         (rt && (rt->kind == TY_STRUCT || rt->kind == TY_UNION) && !rt->is_vector)))
+        error_tok(node->tok, un ? "wrong type argument to unary expression" : "invalid operands to binary expression");
     // C23: nullptr_t is neither an integer nor a pointer type, so it is
     // never valid in ordered comparisons or arithmetic; == and != accept
     // it only against a pointer, another nullptr_t value, or a null
@@ -14487,11 +14530,22 @@ static Node *unary(Token **rest, Token *tok) {
                     }
                     if (equalc(t, "(")) { // skip to matching ) — handles compound literal types
                         int pd = 1;
+                        bool dim_expr = false;
                         while (pd > 0 && t->next) {
                             t = t->next;
                             if (equalc(t, "(")) pd++;
                             else if (equalc(t, ")"))
                                 pd--;
+                            // `(T[expr]){...}`: an array dimension that is not a
+                            // plain literal may hold runtime operands, e.g. Cello's
+                            // `(var[sizeof((var[]){f(x), y})/sizeof(var) + 1]){0}`.
+                            else if (equalc(t, "[") && t->next && !(t->next->kind == TK_NUM && equalc(t->next->next, "]")) &&
+                                     !equalc(t->next, "]"))
+                                dim_expr = true;
+                        }
+                        if (dim_expr) {
+                            all_const = false;
+                            break;
                         }
                         continue;
                     }
@@ -14840,7 +14894,9 @@ static Node *to_assign(Node *binary) {
     Node *op = commutative
         ? new_binary(binary->kind, binary->rhs, deref_r, tok)
         : new_binary(binary->kind, deref_r, binary->rhs, tok);
+    vl_in_compound_assign = true; // compound-assign struct operands are diagnosed later
     op = vector_lower(op);
+    vl_in_compound_assign = false;
     Node *expr2 = new_binary(ND_ASSIGN, deref_w, op, tok);
     return new_binary(ND_COMMA, expr1, expr2, tok);
 }

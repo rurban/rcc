@@ -37,6 +37,28 @@ complete list of changes see the git log.
   locals resolve from the first instruction (DW_AT_frame_base is the CFA).
   rcc's own linker writes .eh_frame_hdr and PT_GNU_EH_FRAME.
 
+  __builtin_cpu_supports() now accepts every feature name GCC does on x86-64
+  (115 names: pclmul, aes, popcnt, sha, adx, lzcnt, avx512*, amx-*, apxf,
+  x86-64, x86-64-v2/v3/v4, ...) with GCC's semantics (XCR0 OS-support checks
+  for AVX/AVX-512/AMX/APX, CPUID max-leaf guards), and is new on AArch64
+  (Linux: AT_HWCAP/AT_HWCAP2; macOS: sysctlbyname) with the ACLE names clang
+  accepts (fp, simd, aes, sha2, crc, lse, sve, sve2, bf16, i8mm, sme, bti,
+  ...). Unknown names yield 0.
+
+  Third-party build fixes found re-running test/third_party: inline asm with
+  fixed registers (cpuid) no longer corrupts an earlier call argument or its
+  own captured outputs; `return __builtin_bswapN(x)` is no longer tail-jumped
+  to a missing symbol; global arrays of 16 bytes or more are 16-byte aligned
+  (SSE movdqa); -Xlinker ARG is -Wl,ARG; the parenthesized forms `(&&label)`
+  and `__extension__(&&label)` (Ruby's LABEL_PTR) are accepted in static
+  initializers; struct operands of arithmetic operators are diagnosed;
+  `unix`/`linux` are not predefined under strict -std=cNN; the preprocessor
+  follows Prosser's hide-set rules for ## and function-like calls (metalang99,
+  datatype99); and the x86 assembler gained correct handling of sym(%rip)
+  relocations for every mnemonic, %ah..%bh, shld/shrd, movlps/movhps/movlpd/
+  movhpd and pshufd with memory operands, unsuffixed shifts by %cl, pclmul
+  selectors, and .quad literals above INT64_MAX.
+
 * Changes in v1.2.3 (2026-11-06) (Reini Urban)
 
   -O2 SSA IR backend (x86-64 ELF, x86-64 Windows/COFF, AArch64 ELF and Darwin):

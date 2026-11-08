@@ -481,6 +481,7 @@ every `__attribute__`/`__builtin_*`/`#pragma` extension — in
     -MQ target         like -MT, quoting make metacharacters
     -MP                add phony targets for each prerequisite
     -Wl,<opt>          pass option to linker
+    -Xlinker <opt>     => -Wl,<opt>
     -mms-bitfields     use MSVC bitfields (default on Windows)
     -mno-ms-bitfields  use GCC bitfields (default on non-Windows)
     -pie|-fPIE|-fpie   generate position-independent executable

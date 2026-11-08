@@ -1889,7 +1889,8 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
                 secbuf_emit64le(buf, lo);
                 secbuf_emit64le(buf, hi);
             } else if (!is_sym) {
-                int64_t v = strtoll(val, NULL, 0);
+                // strtoll saturates at INT64_MAX: `.quad 0x8000000080008008` needs strtoull.
+                int64_t v = *val == '-' ? strtoll(val, NULL, 0) : (int64_t)strtoull(val, NULL, 0);
                 switch (sz) {
                 case 1: secbuf_emit8(buf, (uint8_t)v); break;
                 case 2: secbuf_emit16le(buf, (uint16_t)v); break;
@@ -3236,7 +3237,31 @@ static X86Cond parse_x86_cc(const char *cc_s) {
     return X86_E;
 }
 
+static bool encode_x86_insn(AsmState *as, const char *mnem, char *ops_str);
+
+// Assemble one x86 instruction. A RIP-relative memory operand naming a SYMBOL
+// ("mask(%rip)", "-512+tbl(%rip)") cannot carry the symbol through
+// X86Mem/parse_x86_mem, so the encoder emits a bare disp32 -- a load relative
+// to itself. Attach the PC32 relocation GAS would here, for every mnemonic,
+// from the disp32 position the encoder recorded (x86_rip_disp_pos); the bytes
+// after it in the instruction (immediates) adjust the addend.
 static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
+    unsigned rip0 = x86_rip_count;
+    g_last_mem_sym[0] = '\0';
+    SecBuf *buf = cur_sec_buf(as);
+    bool ok = encode_x86_insn(as, mnem, ops_str);
+    if (ok && g_last_mem_sym[0] && x86_rip_count == rip0 + 1) {
+        int64_t trail = (int64_t)buf->len - (int64_t)(x86_rip_disp_pos + 4);
+        int64_t disp = (int32_t)(buf->data[x86_rip_disp_pos] | buf->data[x86_rip_disp_pos + 1] << 8 |
+                                 buf->data[x86_rip_disp_pos + 2] << 16 |
+                                 (uint32_t)buf->data[x86_rip_disp_pos + 3] << 24);
+        int sidx = ensure_sym(as, g_last_mem_sym);
+        objfile_add_reloc(as->obj, as->cur_sec, x86_rip_disp_pos, sidx, R_X86_64_PC32, disp - 4 - trail);
+    }
+    return ok;
+}
+
+static bool encode_x86_insn(AsmState *as, const char *mnem, char *ops_str) {
     char ops_buf[512];
     strncpy(ops_buf, ops_str, 511);
     ops_buf[511] = 0;
@@ -3322,7 +3347,13 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     // If no explicit suffix (sz==0), derive size from register operands
     if (sz == 0) {
         sz = 8; // default to 64-bit
-        for (int _i = 0; _i < nops; _i++) {
+        // The %cl count of `shr %cl, %r8` does not size the operation.
+        static const char *const shifts[] = {"shl", "shr", "sal", "sar", "rol", "ror", "rcl", "rcr", NULL};
+        int first = 0;
+        if (nops >= 2)
+            for (int k = 0; shifts[k]; k++)
+                if (!strcmp(mnem, shifts[k])) first = 1;
+        for (int _i = first; _i < nops; _i++) {
             if (X86_ISREG(_i)) {
                 int rsz = reg_size_x86(ops[_i]);
                 if (rsz != 8) {
@@ -3335,6 +3366,17 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         }
     }
 
+    // MOVLPS/MOVHPS/MOVLPD/MOVHPD xmm <-> m64 (the generic "mov" prefix
+    // dispatch below would assemble them as integer moves).
+    if (!strcmp(mnem, "movlps") || !strcmp(mnem, "movhps") || !strcmp(mnem, "movlpd") ||
+        !strcmp(mnem, "movhpd")) {
+        bool pd = mnem[5] == 'd', hi = mnem[3] == 'h';
+        if (is_mem(0) && is_xmm(1))
+            x86_movlhp_rm(buf, pd, hi, parse_x86_xmm(ops[1]), M(0));
+        else if (is_xmm(0) && is_mem(1))
+            x86_movlhp_mr(buf, pd, hi, M(1), parse_x86_xmm(ops[0]));
+        return true;
+    }
     if (!strcmp(mnem, "nop")) {
         x86_nop(buf);
         return true;
@@ -3899,28 +3941,10 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-    // LEA. A RIP-relative memory operand naming a SYMBOL (e.g. GMP's own
-    // mpn/x86_64/invert_limb.asm's "-512+mpn_invert_limb_table(%rip)")
-    // has nowhere to carry that symbol through X86Mem/parse_x86_mem
-    // (see g_last_mem_sym's own comment) -- M(0) alone silently folds
-    // the whole displacement expression down to a bare integer (the
-    // symbol term evaluates to 0 in eval_asm_expr_here's arithmetic),
-    // producing a LEA that's RIP-relative to *itself* instead of the
-    // named symbol, no relocation recorded at all. Detect that case via
-    // g_last_mem_sym right after M(0) and add the real R_X86_64_PC32
-    // relocation GAS would.
+    // LEA (RIP-relative SYMBOL operands: relocation added in encode_x86()).
     if (!strncmp(mnem, "lea", 3)) {
-        if (is_mem(0) && is_reg(1)) {
-            X86Mem m = M(0);
-            if (g_last_mem_sym[0] && m.base == X86_RIP) {
-                x86_lea(buf, sz, R(1), x86_mem(X86_RIP, 0));
-                int sidx = ensure_sym(as, g_last_mem_sym);
-                objfile_add_reloc(as->obj, as->cur_sec, buf->len - 4, sidx,
-                                  R_X86_64_PC32, m.disp - 4);
-            } else {
-                x86_lea(buf, sz, R(1), m);
-            }
-        }
+        if (is_mem(0) && is_reg(1))
+            x86_lea(buf, sz, R(1), M(0));
         return true;
     }
 
@@ -4067,6 +4091,14 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
             x86_dec_m(buf, sz, M(0));
         else
             x86_dec_r(buf, sz, R(0));
+        return true;
+    }
+
+    // SHLD/SHRD double-precision shifts: `shrd $imm|%cl, %src, %dst`. Must
+    // precede the shl/shr block below, whose 3-character prefix match would
+    // swallow them as a plain `shr $imm, %src`.
+    if ((!strcmp(mnem, "shld") || !strcmp(mnem, "shrd")) && nops == 3 && is_reg(1) && is_reg(2)) {
+        x86_shxd_rr(buf, reg_size_x86(ops[2]), mnem[2] == 'r', R(2), R(1), is_imm(0) ? (int)(IMM(0) & 0xff) : -1);
         return true;
     }
 
@@ -4522,7 +4554,7 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         }
         for (char *c = m2; *c; c++) *c = (char)tolower((unsigned char)*c);
         if (!*m2) return true;
-        return encode_x86(as, m2, o2);
+        return encode_x86_insn(as, m2, o2);
     }
     if (!strcmp(mnem, "lock") || !strcmp(mnem, "rep") ||
         !strcmp(mnem, "repe") || !strcmp(mnem, "repz") ||
@@ -4542,7 +4574,7 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         }
         for (char *c = m2; *c; c++) *c = (char)tolower((unsigned char)*c);
         if (!*m2) return true;
-        return encode_x86(as, m2, o2);
+        return encode_x86_insn(as, m2, o2);
     }
     if (!strcmp(mnem, "int")) {
         if (is_imm(0))
@@ -4649,28 +4681,11 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         x86_xorps(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
-    // movaps/movups load direction: a RIP-relative memory operand naming
-    // a SYMBOL (e.g. this file's own hash_sha1_hwaccel_x86-64.S "mova128
-    // PSHUFFLE_BYTE_FLIP_MASK(%rip), %xmm7") has nowhere to carry that
-    // symbol through X86Mem/parse_x86_mem -- same gap the LEA fix above
-    // documents. Without this, M(0) alone silently folds the whole
-    // displacement down to a bare integer (0, since the symbol term
-    // isn't resolvable at parse time), producing a load RIP-relative to
-    // *itself* with no relocation recorded -- rcc-built busybox's own
-    // SHA1-NI codepath (test_busybox's sha1sum) read that self-relative
-    // garbage as its byte-flip mask and segfaulted a few instructions
-    // later dereferencing it as a pointer.
+    // RIP-relative SYMBOL operands get their PC32 relocation centrally in
+    // encode_x86() (see g_last_mem_sym), not per mnemonic.
     if (!strcmp(mnem, "movaps")) {
         if (is_mem(0)) {
-            X86Mem m = M(0);
-            if (g_last_mem_sym[0] && m.base == X86_RIP) {
-                x86_movaps_rm(buf, parse_x86_xmm(ops[1]), x86_mem(X86_RIP, 0));
-                int sidx = ensure_sym(as, g_last_mem_sym);
-                objfile_add_reloc(as->obj, as->cur_sec, buf->len - 4, sidx,
-                                  R_X86_64_PC32, m.disp - 4);
-            } else {
-                x86_movaps_rm(buf, parse_x86_xmm(ops[1]), m);
-            }
+            x86_movaps_rm(buf, parse_x86_xmm(ops[1]), M(0));
         } else if (is_mem(1))
             x86_movaps_mr(buf, M(1), parse_x86_xmm(ops[0]));
         else
@@ -4679,15 +4694,7 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     }
     if (!strcmp(mnem, "movups")) {
         if (is_mem(0)) {
-            X86Mem m = M(0);
-            if (g_last_mem_sym[0] && m.base == X86_RIP) {
-                x86_movups_rm(buf, parse_x86_xmm(ops[1]), x86_mem(X86_RIP, 0));
-                int sidx = ensure_sym(as, g_last_mem_sym);
-                objfile_add_reloc(as->obj, as->cur_sec, buf->len - 4, sidx,
-                                  R_X86_64_PC32, m.disp - 4);
-            } else {
-                x86_movups_rm(buf, parse_x86_xmm(ops[1]), m);
-            }
+            x86_movups_rm(buf, parse_x86_xmm(ops[1]), M(0));
         } else if (is_mem(1))
             x86_movups_mr(buf, M(1), parse_x86_xmm(ops[0]));
         else
@@ -4867,7 +4874,10 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
     if (!strcmp(mnem, "pshufd")) {
-        x86_pshufd(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        if (is_mem(1))
+            x86_pshufd_rm(buf, parse_x86_xmm(ops[2]), M(1), (uint8_t)IMM(0));
+        else
+            x86_pshufd(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
         return true;
     }
     if (!strcmp(mnem, "pshuflw")) {
@@ -6160,7 +6170,7 @@ static int64_t expr_primary(ExprCtx *c) {
     }
     if (isdigit((unsigned char)*c->p)) {
         char *end;
-        int64_t v = strtoll(c->p, &end, 0);
+        int64_t v = (int64_t)strtoull(c->p, &end, 0); // not strtoll: it saturates above INT64_MAX
         // GAS numeric local-label reference ("0b"/"1f", not part of a
         // longer identifier) — e.g. idtentry.h's ".fill 0b + ...".
         // "Nb" (backward) resolves via the most-recently-defined

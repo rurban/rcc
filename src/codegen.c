@@ -13957,7 +13957,10 @@ VReg gen_inner(Node *node) {
             // as "undefined reference to `__builtin_bswap64'" once this
             // fast path skipped cg_builtins.c's expansion and tail-jmp'd
             // to the bare name instead).
-            bool is_builtin_name = call->funcname && !strncmp(call->funcname, "__builtin_", 10);
+            const char *callee_name = call->funcname;
+            if (!callee_name && call->lhs && call->lhs->kind == ND_LVAR && call->lhs->var)
+                callee_name = call->lhs->var->name;
+            bool is_builtin_name = callee_name && !strncmp(callee_name, "__builtin_", 10);
             LVar *callee = (!is_builtin_name && call->lhs && call->lhs->kind == ND_LVAR)
                 ? call->lhs->var
                 : NULL;
@@ -16044,6 +16047,21 @@ VReg gen_inner(Node *node) {
         }
         unsigned x86_already_reserved = used_regs & x86_reserved_mask;
         used_regs |= x86_reserved_mask;
+        // A pool register (only %rbx/%rsi can be: see x86_reg_vbit) already
+        // holding a live outer VReg -- e.g. an earlier call argument in
+        // `f(g(), ({ cpuid... }))` -- is overwritten by a fixed "b"/"S"
+        // operand or by cpuid itself, with nothing to save it. Push it now,
+        // ahead of any operand setup that loads the fixed register, and pop
+        // it back at the end (after capturing the asm's own outputs).
+        X86Reg preserved_regs[2] = {X86_NOREG, X86_NOREG};
+        {
+            const X86Reg cand[2] = {X86_RBX, X86_RSI};
+            for (int ci = 0; ci < 2; ci++)
+                if (x86_reg_vbit(cand[ci]) & x86_already_reserved) {
+                    asm_push(cg_sec, cand[ci]);
+                    preserved_regs[ci] = cand[ci];
+                }
+        }
 
         // First pass: allocate registers for outputs and memory operands.
         // Defer matching input constraints (digit) to second pass.
@@ -16617,6 +16635,21 @@ VReg gen_inner(Node *node) {
             assemble_inline(cg_obj, out, cg_inline_fixup_cb, NULL);
         }
 
+        // Every x86-reg output's address was pushed to the real stack before
+        // the asm (see "Save address registers" above), so its register is
+        // dead now. Release it and let the drain loop below pop the address
+        // back: otherwise, with the pool already full (an outer call's
+        // earlier arguments), the capture below spills one of these still-
+        // held registers, and popping that address back into it afterwards
+        // clobbers the value just captured there (`f(g(), cpu("a"), cpu("b"))`).
+        for (int i = 0; i < node->asm_noperands; i++) {
+            if (op_addr[i] >= 0 && ASM_IS_X86_REG(op_regs[i])) {
+                free_reg(op_addr[i]);
+                op_addr[i] = -1;
+                addr_pushed[i] = true;
+            }
+        }
+
         // Capture x86-physical-register outputs (eax/ebx/ecx/edx/...) into
         // scratch vregs *before* restoring any address registers below.
         // Bug this guards against: op_addr[j] (the address of some OTHER
@@ -16750,6 +16783,11 @@ VReg gen_inner(Node *node) {
             if (addr_vreg >= 0) free_reg(addr_vreg);
         }
 
+
+        // Give back the outer values saved above (LIFO: after every operand
+        // address pop/store-back, which sit above them on the stack).
+        for (int i = 1; i >= 0; i--)
+            if (preserved_regs[i] != X86_NOREG) asm_pop(cg_sec, preserved_regs[i]);
 
         // Free registers (skip x86 physical reg sentinels)
         for (int i = 0; i < node->asm_noperands; i++)
@@ -20283,6 +20321,15 @@ bool cg_ir_try_function(Program *prog, Function *fn, bool emitting_local_copy) {
 #endif
 }
 
+// x86-64 psABI 3.1.2: a global array of at least 16 bytes is aligned to at
+// least 16, so SSE code may movdqa from it (nettle's sha_ni reads its
+// `static const uint32_t K[64]` that way).
+static size_t global_var_align(LVar *var) {
+    size_t a = var->ty->align > 1 ? var->ty->align : 1;
+    if (var->ty->kind == TY_ARRAY && var->ty->size >= 16 && a < 16) a = 16;
+    return a;
+}
+
 struct ObjFile *codegen(Program *prog) {
     init_local_builtins();
     // Reset label and fixup hashtables for new compilation unit
@@ -20444,13 +20491,14 @@ struct ObjFile *codegen(Program *prog) {
             }
             const char *sym_name_str = asm_sym_name(sym_name(safe_label)); // .balign %d
             if (is_bss) {
-                size_t align = var->ty->align > 1 ? var->ty->align : 1;
+                size_t align = global_var_align(var);
                 // ASan assumes globals are 8-byte aligned (shadow math on
                 // x86-64); libasan's ODR/alignment check aborts otherwise
                 // ("global variable is not properly aligned").
                 if (opt_asan && align < 8) align = 8;
                 size_t rem = cg_obj->bss_size % align;
                 if (rem) cg_obj->bss_size += align - rem;
+                if (align > cg_obj->bss_align) cg_obj->bss_align = align;
                 size_t off = cg_obj->bss_size;
                 // A tentative (no-initializer) global whose declaration
                 // carries __attribute__((weak)) needs STB_WEAK, not
@@ -20485,7 +20533,7 @@ struct ObjFile *codegen(Program *prog) {
             } else {
                 cg_set_section(data_sec);
                 {
-                    size_t dalign = var->ty->align > 1 ? var->ty->align : 1;
+                    size_t dalign = global_var_align(var);
                     // ASan requires 8-byte-aligned globals, see bss path.
                     if (opt_asan && dalign < 8) dalign = 8;
                     secbuf_align(cg_sec, dalign);

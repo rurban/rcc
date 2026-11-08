@@ -335,6 +335,7 @@ struct ObjFile {
     SecBuf fini_array;
     SecBuf data_tls; // .tdata — initialized TLS data
     size_t bss_size; // .bss is zero-initialized; just track its size
+    size_t bss_align; // max alignment placed into .bss (0 = default 8)
     SecBuf thread_vars; // __thread_vars — TLV descriptors
 
     // Dynamically-registered sections (GAS .section/.pushsection with a
