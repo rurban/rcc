@@ -26,9 +26,9 @@ static char *run_pp(const char *rcc, const char *flags, const char *srcf, int pi
     return buf;
 }
 
-#ifdef _WIN32 /* GCC/mingw predefines neither `unix` nor `linux` at all */
+#ifndef __linux__ /* GCC predefines `linux` only on Linux (mingw, BSD and macOS: neither or just `unix`) */
 int main(void) {
-    printf("OK (windows)\n");
+    printf("OK (not linux)\n");
     return 0;
 }
 #else

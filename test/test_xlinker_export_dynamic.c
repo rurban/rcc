@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include "test_common.h"
 
-#ifdef _WIN32
+#ifndef __linux__ /* -export-dynamic + dlsym(RTLD_DEFAULT) is the ELF/glibc idiom */
 int main(void) { printf("OK (skipped)\n"); return 0; }
 #else
 #include <unistd.h>

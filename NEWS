@@ -52,9 +52,8 @@ complete list of changes see the git log.
   (SSE movdqa); -Xlinker ARG is -Wl,ARG; the parenthesized forms `(&&label)`
   and `__extension__(&&label)` (Ruby's LABEL_PTR) are accepted in static
   initializers; struct operands of arithmetic operators are diagnosed;
-  `unix`/`linux` are not predefined under strict -std=cNN; the preprocessor
-  follows Prosser's hide-set rules for ## and function-like calls (metalang99,
-  datatype99); and the x86 assembler gained correct handling of sym(%rip)
+  `unix`/`linux` are not predefined under strict -std=cNN; and the x86
+  assembler gained correct handling of sym(%rip)
   relocations for every mnemonic, %ah..%bh, shld/shrd, movlps/movhps/movlpd/
   movhpd and pshufd with memory operands, unsuffixed shifts by %cl, pclmul
   selectors, and .quad literals above INT64_MAX.

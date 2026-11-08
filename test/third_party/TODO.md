@@ -18,9 +18,9 @@ literals > INT64_MAX. nettle: 54 -> 20 failing tests. Parser/preprocessor:
 `(&&label)` in static initializers (ruby vm.o: the `expected constant
 expression` errors were this, not `VM_CC_ON_STACK`), non-literal array dims in
 `(T[expr]){..}` stop the speculative const fold (cello), `0op` stays one
-pp-number in directives, `##` hide set = intersection, function-like call
-hide set = Prosser's `HS(name) & HS(')') | {name}` (metalang99/datatype99:
-`ML99_EVAL` now matches gcc; `tests.c` compiles).
+pp-number in directives. Tried and reverted (breaks NetBSD/OpenBSD ssp
+fortify, see test_pp_paste_hideset_ssp): Prosser intersection for `##`
+results, which metalang99/datatype99's `ML99_EVAL(ML99_appl(..))` needs.
 Not rcc: openrc (`unix` member, muon passes no -std), camgunz_cmp (new
 cmocka.h `unit_test` macro ends in `;`), libopus (`__malloc_hook` gone),
 busybox (`TCA_CBQ*_` gone), cjson/brieflz/libyaml (cmake policy), mruby/nanopb
@@ -35,8 +35,8 @@ models); fixed the cpuid-asm-in-call-argument miscompile (clobbered live %rbx,
 pool-full output capture) it exposed. aarch64 cross build: ir_x86.c guarded.
 Next blockers: ruby `coroutine/amd64/Context.S` (`unknown x86 instruction:
 prefixed_symbol(coroutine_transfer)`, a macro-spelled label), metalang99
-tests/util.c:14 (`expected specific operator`). Final rerun (JOBS=6,
-TIMEOUT=600): 128 pass / 93 fail, 21 timeouts (git, python need more time).
+tests.c:8 (`ML99_EVAL`, the reverted `##` hide-set change above). Rerun
+(JOBS=6, TIMEOUT=600) before that revert: 128 pass / 93 fail, 21 timeouts.
 
 ## Summary
 

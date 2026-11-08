@@ -2,12 +2,12 @@
 
 **Platform**: FreeBSD
 
-Generated: November 07 2026 12:25
+Generated: November 08 2026 12:42
 
 ## Overall Summary
 
-- **Total**: 765
-- **Passed**: 544
+- **Total**: 784
+- **Passed**: 563
 - **Failed**: 0
 - **Overall Pass Rate**: 71%
 
@@ -20,8 +20,8 @@ Generated: November 07 2026 12:25
 
 ## RCC Unit Tests
 
-- **Total**: 427
-- **Passed**: 427
+- **Total**: 446
+- **Passed**: 446
 - **Failed**: 0
 - **Pass Rate**: 100%
 

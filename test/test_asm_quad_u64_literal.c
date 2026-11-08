@@ -4,6 +4,7 @@
  */
 #include <stdio.h>
 #include <stdint.h>
+#ifndef __APPLE__ /* Mach-O: no .rodata section name, underscored symbols */
 
 extern const uint64_t quad_u64_tab[4];
 __asm__(".section .rodata\n"
@@ -27,3 +28,9 @@ int main(void) {
     printf("OK\n");
     return 0;
 }
+#else
+int main(void) {
+    printf("OK (not ELF/COFF)\n");
+    return 0;
+}
+#endif
