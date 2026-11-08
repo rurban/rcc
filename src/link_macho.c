@@ -819,6 +819,9 @@ int link_load_object(LinkState *s, const char *path) {
                 } else {
                     sec_base_off[n_sections] = out_idx >= 0 ? s->secs[out_idx].len : 0;
                 }
+                // An MH_OBJECT nlist value is an address in the object's own
+                // address space, not an offset: rebase it from section addr.
+                sec_base_off[n_sections] -= mo_r64(sc + 32);
                 n_sections++;
                 sc += 80;
             }
