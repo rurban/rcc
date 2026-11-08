@@ -20437,7 +20437,7 @@ struct ObjFile *codegen(Program *prog) {
             // non-static .bss tentative definition of the register's name.
             if (var->is_global_reg)
                 continue;
-            if (var->is_extern && !var->alias_target && !var->asm_name)
+            if (var->is_extern && !var->alias_target)
                 continue;
             char *label = var->asm_name ? var->asm_name : var->name;
             if (var->is_function && !var->alias_target && !var->asm_name)
