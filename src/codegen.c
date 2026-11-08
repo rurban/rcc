@@ -11417,13 +11417,17 @@ static void cg_asan_check_mem(VReg addr, int sz, bool is_write) {
     else if (sz > 8)
         sz = 8;
     if (cg_dry_run) {
-        // Pass 1 emits nothing, but must replay the two temp allocations
+        // Pass 1 emits nothing, but must replay the temp allocations
         // below: the prologue's callee-saved save set is computed from
         // ever_used_regs discovered here, and the shadow check clobbers a
         // register (possibly rbx/r12-r15) in Pass 2 that the prologue must
         // save or it corrupts the caller's value across the call.
         VReg t1 = alloc_reg_avoid2(addr, -1);
         VReg t2 = alloc_reg_avoid2(addr, t1);
+#ifdef ARCH_ARM64
+        VReg t3 = alloc_reg_avoid2(addr, t1);
+        free_reg(t3);
+#endif
         free_reg(t1);
         free_reg(t2);
         return;
@@ -11462,7 +11466,8 @@ static void cg_asan_check_mem(VReg addr, int sz, bool is_write) {
     // t1 = addr >> 3
     arm64_lsr_imm(cg_sec, 1, REG(t1), REG(addr), 3); // t1 = addr >> 3
     // load the shadow offset from the __asan_shadow_memory_dynamic_address global
-    VReg t3 = alloc_reg_avoid2(addr, -1);
+    // t1 already holds addr >> 3: under register pressure t3 must not take it
+    VReg t3 = alloc_reg_avoid2(addr, t1);
 #ifdef __APPLE__
     emit_adrp_add(t3, "___asan_shadow_memory_dynamic_address"); // t3 = &shadow_offset (mangled)
 #else
