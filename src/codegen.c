@@ -19164,8 +19164,20 @@ VReg gen_inner(Node *node) {
                                                  : "__ubsan_handle_mul_overflow";
                     char *skip = format(".L.ubsan_of.%d", n);
                     int sf = (sz == 8) ? 1 : 0;
-                    VReg r_a = r_lhs;
-                    VReg r_b = r_rhs;
+                    bool lhs_spilled = (r_lhs == r_rhs) && (spilled_regs & (1 << r_lhs));
+                    VReg r_a; // holds lhs (a) before the op; the result after
+                    VReg r_b; // holds rhs (b)
+                    if (lhs_spilled) {
+                        // lhs in the spill slot, rhs in r_lhs. Load lhs to a temp.
+                        r_a = alloc_reg_avoid2(r_lhs, -1);
+                        asm_ldur_fp(cg_sec, r_a, spill_offset(r_lhs)); // ldr x{r_a}, [x29, #-off]
+                        spilled_regs &= ~(1 << r_lhs);
+                        pop_spill_slot(r_lhs); // consumed by this op; pop the slot
+                        r_b = r_lhs; // r_lhs holds the rhs
+                    } else {
+                        r_a = r_lhs; // r_lhs holds the lhs
+                        r_b = r_rhs; // r_rhs holds the rhs
+                    }
                     VReg r_save = alloc_reg_avoid2(r_a, r_b);
                     arm64_orr_reg(cg_sec, sf, REG(r_save), ARM64_XZR, REG(r_a), ARM64_LSL, 0); // r_save = a
                     if (!strcmp(inst, "mul")) {
@@ -19213,7 +19225,12 @@ VReg gen_inner(Node *node) {
                     asm_ldur_fp(cg_sec, is_ptr ? r_save : r_a, a_slot); // restore
                     cg_def_label(skip);
                     free_reg(r_save);
-                    return r_a;
+                    if (lhs_spilled) {
+                        r_lhs = r_a; // result in the new temp
+                        free_reg(r_b); // free the original reg that held the rhs
+                    } else if (r_rhs != r_lhs)
+                        free_reg(r_rhs); // r_lhs holds the result
+                    return r_lhs;
                 }
             }
             if (!strcmp(inst, "cmp")) {
