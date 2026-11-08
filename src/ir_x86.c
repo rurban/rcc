@@ -158,11 +158,7 @@ static SecBuf *sec(void) { return cg_sec; }
 #define S sec()
 
 static void *xalloc(size_t n) {
-    void *p = calloc(1, n ? n : 1);
-    if (!p) {
-        fprintf(stderr, "rcc: out of memory\n");
-        exit(1);
-    }
+    void *p = xcalloc(1, n ? n : 1);
     return p;
 }
 #define NEW(T, n) ((T *)xalloc(sizeof(T) * (size_t)(n)))
@@ -3232,7 +3228,7 @@ void ir_emit_x86(Program *prog, IRFunc *f, bool emitting_local_copy) {
     }
     // Resolve debug bindings to location lists while regalloc results are alive.
     if (be.ndbgv) {
-        DbgLoc *locs = calloc((size_t)be.ndbgv, sizeof *locs);
+        DbgLoc *locs = xcalloc((size_t)be.ndbgv, sizeof *locs);
         int nl = 0;
         for (int i = 0; i < be.ndbgv; i++) {
             DbgBind *db = &be.dbgv[i];

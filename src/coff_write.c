@@ -126,7 +126,7 @@ typedef struct {
 
 static void cstrtab_init(CStrtab *t) {
     t->cap = 256;
-    t->data = malloc(t->cap);
+    t->data = xmalloc(t->cap);
     t->len = 4; // reserve 4 bytes for the length prefix
     memset(t->data, 0, 4);
 }
@@ -394,7 +394,7 @@ int coff_write(ObjFile *obj, const char *path) {
     // base 6 (.text/.data/.rdata/.bss/.ctors/.dtors) + 2 unwind + 4 DWARF debug
     // + one slot per dynamic `.section`/`.pushsection`-created section.
     int sections_cap = 12 + obj->extra_sec_count;
-    CoffSec *sections = malloc((size_t)sections_cap * sizeof(CoffSec));
+    CoffSec *sections = xmalloc((size_t)sections_cap * sizeof(CoffSec));
     int num_sec = 0;
 
     // String table is built up-front: DWARF debug section names exceed the
@@ -510,7 +510,7 @@ int coff_write(ObjFile *obj, const char *path) {
     int xdata_pos = -1;
     if (machine == IMAGE_FILE_MACHINE_AMD64 && obj->unwind_count > 0) {
         int n = obj->unwind_count;
-        uint32_t *xoff = malloc((size_t)n * sizeof(uint32_t));
+        uint32_t *xoff = xmalloc((size_t)n * sizeof(uint32_t));
 
         // First pass: per-entry size and running .xdata offset.
         size_t total = 0;
@@ -524,7 +524,7 @@ int coff_write(ObjFile *obj, const char *path) {
             total += 4 + (size_t)padded * 2;
         }
         xdata_len = total;
-        xdata_buf = malloc(xdata_len ? xdata_len : 1);
+        xdata_buf = xmalloc(xdata_len ? xdata_len : 1);
 
         size_t p = 0;
         for (int i = 0; i < n; i++) {
@@ -554,7 +554,7 @@ int coff_write(ObjFile *obj, const char *path) {
 
         // .pdata: RUNTIME_FUNCTION[n] = { BeginAddress, EndAddress, UnwindData }
         pdata_len = (size_t)n * 12;
-        pdata_buf = malloc(pdata_len);
+        pdata_buf = xmalloc(pdata_len);
         for (int i = 0; i < n; i++) {
             UnwindEntry *e = &obj->unwind[i];
             uint8_t *b = pdata_buf + (size_t)i * 12;
@@ -637,7 +637,7 @@ int coff_write(ObjFile *obj, const char *path) {
     // -------------------------------------------------------------------
     int *coff_extra_idx = NULL;
     if (obj->extra_sec_count > 0)
-        coff_extra_idx = calloc((size_t)obj->extra_sec_count, sizeof(int));
+        coff_extra_idx = xcalloc((size_t)obj->extra_sec_count, sizeof(int));
     for (int i = 0; i < obj->extra_sec_count; i++) {
         ExtraSection *es = &obj->extra_secs[i];
         CoffSec *s = &sections[num_sec];
@@ -672,7 +672,7 @@ int coff_write(ObjFile *obj, const char *path) {
     // Build symbol table (string table already initialized above)
     // -------------------------------------------------------------------
     SymArr syms = {NULL, 0, 0};
-    int *sym_map = calloc((size_t)(obj->sym_count + 1), sizeof(int));
+    int *sym_map = xcalloc((size_t)(obj->sym_count + 1), sizeof(int));
 
     // Section symbols (each with 1 aux entry)
     for (int i = 0; i < num_sec; i++) {
@@ -731,11 +731,7 @@ int coff_write(ObjFile *obj, const char *path) {
             // default resolution symbol. Emit .weak.<name> as that default.
             CoffSymRec def = {0};
             size_t dn_len = strlen(os->name) + 7; // ".weak." + '\0'
-            char *defname = malloc(dn_len);
-            if (!defname) {
-                fprintf(stderr, "coff_write: out of memory\n");
-                exit(1);
-            }
+            char *defname = xmalloc(dn_len);
             snprintf(defname, dn_len, ".weak.%s", os->name);
             fill_short_name(def.short_name, defname, &strtab,
                             &def.long_name, &def.strtab_off);
@@ -757,7 +753,7 @@ int coff_write(ObjFile *obj, const char *path) {
     }
 
     // Build coff_sym_idx: syms.data index → COFF symbol table index (counting aux)
-    int *coff_sym_idx = calloc((size_t)syms.len, sizeof(int));
+    int *coff_sym_idx = xcalloc((size_t)syms.len, sizeof(int));
     int ci = 0;
     for (int j = 0; j < syms.len; j++) {
         coff_sym_idx[j] = ci;
@@ -815,42 +811,42 @@ int coff_write(ObjFile *obj, const char *path) {
     }
 
     if (text_idx >= 0 && sections[text_idx].raw_size > 0) {
-        text_copy = malloc(sections[text_idx].raw_size);
+        text_copy = xmalloc(sections[text_idx].raw_size);
         memcpy(text_copy, obj->text.data, sections[text_idx].raw_size);
         patch_addends(text_copy, sections[text_idx].raw_size,
                       sections[text_idx].relocs, sections[text_idx].reloc_count);
     }
     if (data_idx >= 0 && sections[data_idx].raw_size > 0) {
-        data_copy = malloc(sections[data_idx].raw_size);
+        data_copy = xmalloc(sections[data_idx].raw_size);
         memcpy(data_copy, obj->data.data, sections[data_idx].raw_size);
         patch_addends(data_copy, sections[data_idx].raw_size,
                       sections[data_idx].relocs, sections[data_idx].reloc_count);
     }
     if (rodata_idx >= 0 && sections[rodata_idx].raw_size > 0) {
-        rodata_copy = malloc(sections[rodata_idx].raw_size);
+        rodata_copy = xmalloc(sections[rodata_idx].raw_size);
         memcpy(rodata_copy, obj->rodata.data, sections[rodata_idx].raw_size);
         patch_addends(rodata_copy, sections[rodata_idx].raw_size,
                       sections[rodata_idx].relocs, sections[rodata_idx].reloc_count);
     }
     if (obj->init_array.len > 0) {
-        init_array_copy = malloc(obj->init_array.len);
+        init_array_copy = xmalloc(obj->init_array.len);
         memcpy(init_array_copy, obj->init_array.data, obj->init_array.len);
         patch_addends(init_array_copy, obj->init_array.len, obj->init_array_relocs,
                       obj->init_array_reloc_count);
     }
     if (obj->fini_array.len > 0) {
-        fini_array_copy = malloc(obj->fini_array.len);
+        fini_array_copy = xmalloc(obj->fini_array.len);
         memcpy(fini_array_copy, obj->fini_array.data, obj->fini_array.len);
         patch_addends(fini_array_copy, obj->fini_array.len, obj->fini_array_relocs,
                       obj->fini_array_reloc_count);
     }
     uint8_t **extra_copy = NULL;
     if (obj->extra_sec_count > 0) {
-        extra_copy = calloc((size_t)obj->extra_sec_count, sizeof(uint8_t *));
+        extra_copy = xcalloc((size_t)obj->extra_sec_count, sizeof(uint8_t *));
         for (int i = 0; i < obj->extra_sec_count; i++) {
             ExtraSection *es = &obj->extra_secs[i];
             if (es->buf.len == 0) continue;
-            extra_copy[i] = malloc(es->buf.len);
+            extra_copy[i] = xmalloc(es->buf.len);
             memcpy(extra_copy[i], es->buf.data, es->buf.len);
             patch_addends(extra_copy[i], es->buf.len, es->relocs, es->reloc_count);
         }

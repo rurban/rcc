@@ -118,7 +118,7 @@ typedef struct {
 
 static void mstrtab_init(MachoStrtab *t) {
     t->cap = 256;
-    t->data = malloc(t->cap);
+    t->data = xmalloc(t->cap);
     t->len = 0;
     // Mach-O string table starts with a space (index 0 = " ")
     t->data[t->len++] = ' ';
@@ -336,7 +336,7 @@ int macho_write(ObjFile *obj, const char *path) {
     int extra_base_ord = 7 + (has_debug ? 4 : 0);
     int *extra_ord = NULL;
     if (obj->extra_sec_count > 0) {
-        extra_ord = malloc((size_t)obj->extra_sec_count * sizeof(int));
+        extra_ord = xmalloc((size_t)obj->extra_sec_count * sizeof(int));
         for (int i = 0; i < obj->extra_sec_count; i++)
             extra_ord[i] = extra_base_ord + i + 1;
     }
@@ -348,7 +348,7 @@ int macho_write(ObjFile *obj, const char *path) {
     mstrtab_init(&mst);
 
     // Map obj symbol index → nlist index
-    int *sym_map = calloc((size_t)(obj->sym_count + 1), sizeof(int));
+    int *sym_map = xcalloc((size_t)(obj->sym_count + 1), sizeof(int));
     int nsyms = 0;
 
     // Symbol storage: (stridx, type, sect, desc, value)
@@ -358,7 +358,7 @@ int macho_write(ObjFile *obj, const char *path) {
         uint16_t desc;
         uint64_t value;
     } Nlist;
-    Nlist *nlist = calloc((size_t)(obj->sym_count + 1), sizeof(Nlist));
+    Nlist *nlist = xcalloc((size_t)(obj->sym_count + 1), sizeof(Nlist));
 
     // Locals first (Mach-O requires locals before globals)
     for (int i = 0; i < obj->sym_count; i++) {
@@ -465,7 +465,7 @@ int macho_write(ObjFile *obj, const char *path) {
     // the built-in/DWARF sections.
     uint64_t *extra_off = NULL;
     if (obj->extra_sec_count > 0)
-        extra_off = malloc((size_t)obj->extra_sec_count * sizeof(uint64_t));
+        extra_off = xmalloc((size_t)obj->extra_sec_count * sizeof(uint64_t));
     uint64_t extra_end = sections_end;
     for (int i = 0; i < obj->extra_sec_count; i++) {
         extra_end = align(extra_end, 8);
@@ -497,7 +497,7 @@ int macho_write(ObjFile *obj, const char *path) {
     // Custom sections' own relocations, one contiguous block per section.
     uint64_t *reloc_extra_off = NULL;
     if (obj->extra_sec_count > 0)
-        reloc_extra_off = malloc((size_t)obj->extra_sec_count * sizeof(uint64_t));
+        reloc_extra_off = xmalloc((size_t)obj->extra_sec_count * sizeof(uint64_t));
     uint64_t reloc_extra_end = reloc_dbgaranges_off + reloc_dbgaranges_cnt * 8;
     for (int i = 0; i < obj->extra_sec_count; i++) {
         reloc_extra_off[i] = reloc_extra_end;

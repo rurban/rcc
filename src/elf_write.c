@@ -59,7 +59,7 @@ typedef struct {
 
 static void strtab_init(Strtab *t) {
     t->cap = 256;
-    t->data = malloc(t->cap);
+    t->data = xmalloc(t->cap);
     t->len = 0;
     t->data[t->len++] = '\0';
 }
@@ -214,15 +214,15 @@ int elf_write(ObjFile *obj, const char *path) {
     // PROGBITS section header, plus a .rela.<name> header if it has relocs.
     // -----------------------------------------------------------------------
     int nextra = obj->extra_sec_count;
-    uint32_t *shn_extra = nextra ? calloc((size_t)nextra, sizeof(uint32_t)) : NULL;
-    uint32_t *shn_extra_rela = nextra ? calloc((size_t)nextra, sizeof(uint32_t)) : NULL;
-    int *sh_extra_idx = nextra ? calloc((size_t)nextra, sizeof(int)) : NULL;
-    int *sh_extra_rela_idx = nextra ? calloc((size_t)nextra, sizeof(int)) : NULL;
-    bool *extra_has_relocs = nextra ? calloc((size_t)nextra, sizeof(bool)) : NULL;
-    uint64_t *extra_off = nextra ? calloc((size_t)nextra, sizeof(uint64_t)) : NULL;
-    uint64_t *extra_size = nextra ? calloc((size_t)nextra, sizeof(uint64_t)) : NULL;
-    uint64_t *extra_rela_off = nextra ? calloc((size_t)nextra, sizeof(uint64_t)) : NULL;
-    uint64_t *extra_rela_size = nextra ? calloc((size_t)nextra, sizeof(uint64_t)) : NULL;
+    uint32_t *shn_extra = nextra ? xcalloc((size_t)nextra, sizeof(uint32_t)) : NULL;
+    uint32_t *shn_extra_rela = nextra ? xcalloc((size_t)nextra, sizeof(uint32_t)) : NULL;
+    int *sh_extra_idx = nextra ? xcalloc((size_t)nextra, sizeof(int)) : NULL;
+    int *sh_extra_rela_idx = nextra ? xcalloc((size_t)nextra, sizeof(int)) : NULL;
+    bool *extra_has_relocs = nextra ? xcalloc((size_t)nextra, sizeof(bool)) : NULL;
+    uint64_t *extra_off = nextra ? xcalloc((size_t)nextra, sizeof(uint64_t)) : NULL;
+    uint64_t *extra_size = nextra ? xcalloc((size_t)nextra, sizeof(uint64_t)) : NULL;
+    uint64_t *extra_rela_off = nextra ? xcalloc((size_t)nextra, sizeof(uint64_t)) : NULL;
+    uint64_t *extra_rela_size = nextra ? xcalloc((size_t)nextra, sizeof(uint64_t)) : NULL;
     for (int i = 0; i < nextra; i++)
         extra_has_relocs[i] = obj->extra_secs[i].reloc_count > 0;
 
@@ -315,7 +315,7 @@ int elf_write(ObjFile *obj, const char *path) {
     // -----------------------------------------------------------------------
     // Build ELF symbol table (locals first, then globals)
     // -----------------------------------------------------------------------
-    int *sym_map = calloc((size_t)(obj->sym_count + 1), sizeof(int));
+    int *sym_map = xcalloc((size_t)(obj->sym_count + 1), sizeof(int));
     ESymArr ea = {NULL, 0, 0};
 
     // Index 0: null symbol

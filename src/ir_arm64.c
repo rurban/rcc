@@ -130,11 +130,7 @@ static SecBuf *sec(void) { return cg_sec; }
 #define S sec()
 
 static void *xalloc(size_t n) {
-    void *p = calloc(1, n ? n : 1);
-    if (!p) {
-        fprintf(stderr, "rcc: out of memory\n");
-        exit(1);
-    }
+    void *p = xcalloc(1, n ? n : 1);
     return p;
 }
 #define NEW(T, n) ((T *)xalloc(sizeof(T) * (size_t)(n)))

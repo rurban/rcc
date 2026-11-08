@@ -139,7 +139,7 @@ static char *pe_xfmt(const char *fmt, ...) {
     va_copy(ap2, ap);
     int n = vsnprintf(NULL, 0, fmt, ap);
     va_end(ap);
-    char *out = malloc((size_t)n + 1);
+    char *out = xmalloc((size_t)n + 1);
     vsnprintf(out, (size_t)n + 1, fmt, ap2);
     va_end(ap2);
     return out;
@@ -220,11 +220,7 @@ int link_load_object(LinkState *s, const char *path) {
     }
     uint8_t *image;
 #ifdef _WIN32
-    image = malloc((size_t)st.st_size);
-    if (!image) {
-        close(fd);
-        return -1;
-    }
+    image = xmalloc((size_t)st.st_size);
     if (read(fd, image, (size_t)st.st_size) != (ssize_t)st.st_size) {
         free(image);
         close(fd);
@@ -264,7 +260,7 @@ int link_load_object(LinkState *s, const char *path) {
 
     // Section headers (40 bytes each, after 20-byte header + optional header)
     uint32_t sec_hdr_off = 20 + opthdr_size;
-    int *out_sec_map = calloc((size_t)n_secs, sizeof(int));
+    int *out_sec_map = xcalloc((size_t)n_secs, sizeof(int));
     // Byte offset within the (possibly already non-empty, shared-by-name)
     // output section where THIS object's own section data begins -- a
     // later-loaded object's bytes are appended AFTER an earlier object's,
@@ -274,7 +270,7 @@ int link_load_object(LinkState *s, const char *path) {
     // get this treatment via `off` below; symbol values did not, which
     // silently pointed every symbol DEFINED in any object after the
     // first at the wrong (first object's) address.
-    uint64_t *out_sec_off = calloc((size_t)n_secs, sizeof(uint64_t));
+    uint64_t *out_sec_off = xcalloc((size_t)n_secs, sizeof(uint64_t));
 
     // Snapshot every output section's pre-existing reloc count before
     // this object contributes any of its own: output sections merge by
@@ -283,7 +279,7 @@ int link_load_object(LinkState *s, const char *path) {
     // shared, accumulating array. The symbol remap below must touch only
     // the relocations THIS object just added -- see there for why.
     int old_n_secs = s->n_secs;
-    int *reloc_base = calloc((size_t)old_n_secs, sizeof(int));
+    int *reloc_base = xcalloc((size_t)old_n_secs, sizeof(int));
     for (int i = 0; i < old_n_secs; i++) reloc_base[i] = s->secs[i].n_relocs;
 
     for (uint16_t i = 0; i < n_secs; i++) {
@@ -344,7 +340,7 @@ int link_load_object(LinkState *s, const char *path) {
     // Symbol table (18 bytes per entry)
     const uint8_t *symtab = image + symtab_off;
     const uint8_t *strtab_base = symtab + (uint32_t)n_syms * 18;
-    int *sym_map = calloc((size_t)n_syms, sizeof(int));
+    int *sym_map = xcalloc((size_t)n_syms, sizeof(int));
 
     for (uint32_t i = 0; i < n_syms;) {
         const uint8_t *se = symtab + (uint32_t)i * 18;
@@ -419,7 +415,7 @@ int link_load_object(LinkState *s, const char *path) {
     free(reloc_base);
 
     // Track object for cleanup
-    LinkObj obj = {.path = strdup(path), .image = image, .image_size = (size_t)st.st_size};
+    LinkObj obj = {.path = xstrdup(path), .image = image, .image_size = (size_t)st.st_size};
     if (s->n_objs == s->cap_objs) {
         s->cap_objs = s->cap_objs ? s->cap_objs * 2 : 4;
         s->objs = xrealloc(s->objs, (size_t)s->cap_objs * sizeof(LinkObj));
@@ -495,11 +491,7 @@ static int pe_dll_check_exports(const char *path, const char **names, bool *out,
         fclose(f);
         return -1;
     }
-    uint8_t *img = malloc((size_t)sz);
-    if (!img) {
-        fclose(f);
-        return -1;
-    }
+    uint8_t *img = xmalloc((size_t)sz);
     if (fread(img, 1, (size_t)sz, f) != (size_t)sz) {
         free(img);
         fclose(f);
@@ -602,14 +594,14 @@ static int build_pe_imports(LinkState *s, int *idata_sec_out,
         return 0;
     }
 
-    const char **names = malloc((size_t)n_undef * sizeof(char *));
+    const char **names = xmalloc((size_t)n_undef * sizeof(char *));
     for (int i = 0; i < n_undef; i++) names[i] = s->syms[undef_idx[i]].name;
 
     // For each undefined symbol, which pe_default_dlls[] index resolves it
     // (-1 = unresolved).
-    int *owner_dll = malloc((size_t)n_undef * sizeof(int));
+    int *owner_dll = xmalloc((size_t)n_undef * sizeof(int));
     for (int i = 0; i < n_undef; i++) owner_dll[i] = -1;
-    bool *found_this_dll = malloc((size_t)n_undef * sizeof(bool));
+    bool *found_this_dll = xmalloc((size_t)n_undef * sizeof(bool));
 
     bool any_dll_used[16] = {false};
     for (int d = 0; pe_default_dlls[d]; d++) {
@@ -647,17 +639,17 @@ static int build_pe_imports(LinkState *s, int *idata_sec_out,
     for (int d = 0; d < 16; d++)
         if (any_dll_used[d]) n_dlls++;
 
-    PePatch *patches = malloc((size_t)(n_dlls * 3 + n_undef * 2) * sizeof(PePatch));
+    PePatch *patches = xmalloc((size_t)(n_dlls * 3 + n_undef * 2) * sizeof(PePatch));
     int n_patches = 0;
 
     // Import Directory Table: (n_dlls + 1) * 20 bytes, zero-filled.
     size_t descriptors_off = link_sec_append(s, idata_sec, (const uint8_t *)"", 0, 8);
-    uint8_t *zero20 = calloc((size_t)(n_dlls + 1) * 20, 1);
+    uint8_t *zero20 = xcalloc((size_t)(n_dlls + 1) * 20, 1);
     link_sec_append(s, idata_sec, zero20, (size_t)(n_dlls + 1) * 20, 8);
     free(zero20);
 
     // DLL name strings.
-    size_t *dll_name_off = calloc((size_t)16, sizeof(size_t));
+    size_t *dll_name_off = xcalloc((size_t)16, sizeof(size_t));
     for (int d = 0; d < 16; d++) {
         if (!any_dll_used[d]) continue;
         dll_name_off[d] = link_sec_append(s, idata_sec,
@@ -666,16 +658,12 @@ static int build_pe_imports(LinkState *s, int *idata_sec_out,
 
     // Hint/name entries: one per import, 2-byte hint(0) + name + NUL,
     // padded to even length.
-    size_t *hintname_off = malloc((size_t)n_undef * sizeof(size_t));
+    size_t *hintname_off = xmalloc((size_t)n_undef * sizeof(size_t));
     for (int i = 0; i < n_undef; i++) {
         size_t namelen = strlen(names[i]);
         size_t entlen = 2 + namelen + 1;
         if (entlen & 1) entlen++;
-        uint8_t *ent = calloc(entlen, 1);
-        if (!ent) {
-            fprintf(stderr, "rcc: out of memory\n");
-            exit(1);
-        }
+        uint8_t *ent = xcalloc(entlen, 1);
         memcpy(ent + 2, names[i], namelen);
         hintname_off[i] = link_sec_append(s, idata_sec, ent, entlen, 2);
         free(ent);
@@ -685,9 +673,9 @@ static int build_pe_imports(LinkState *s, int *idata_sec_out,
     // entry. iat_slot_off[i] is where this import's IAT pointer lives --
     // that is the address the loader overwrites with the real DLL function
     // pointer, and what our trampoline's indirect jump targets.
-    size_t *ilt_start_off = calloc((size_t)16, sizeof(size_t));
-    size_t *iat_start_off = calloc((size_t)16, sizeof(size_t));
-    size_t *iat_slot_off = malloc((size_t)n_undef * sizeof(size_t));
+    size_t *ilt_start_off = xcalloc((size_t)16, sizeof(size_t));
+    size_t *iat_start_off = xcalloc((size_t)16, sizeof(size_t));
+    size_t *iat_slot_off = xmalloc((size_t)n_undef * sizeof(size_t));
     for (int d = 0; d < 16; d++) {
         if (!any_dll_used[d]) continue;
         ilt_start_off[d] = link_sec_append(s, idata_sec, (const uint8_t *)"", 0, 8);
@@ -852,7 +840,7 @@ static int build_pe_exports(LinkState *s, const char *dll_name,
     size_t dllname_off = link_sec_append(s, edata_sec, (const uint8_t *)dll_name,
                                          strlen(dll_name) + 1, 1);
 
-    PePatch *patches = malloc((size_t)(4 + n_exp) * sizeof(PePatch));
+    PePatch *patches = xmalloc((size_t)(4 + n_exp) * sizeof(PePatch));
     int n_patches = 0;
 
     // Export Address Table: one RVA per export. Unlike the fields above,
@@ -862,7 +850,7 @@ static int build_pe_exports(LinkState *s, const char *dll_name,
     // exported symbol instead, the same mechanism normal code/data
     // references use (see link_apply_relocs()'s later pass).
     size_t eat_off = link_sec_append(s, edata_sec, (const uint8_t *)"", 0, 4);
-    uint8_t *zero_eat = calloc((size_t)n_exp, 4);
+    uint8_t *zero_eat = xcalloc((size_t)n_exp, 4);
     link_sec_append(s, edata_sec, zero_eat, (size_t)n_exp * 4, 4);
     free(zero_eat);
     for (int i = 0; i < n_exp; i++)
@@ -872,7 +860,7 @@ static int build_pe_exports(LinkState *s, const char *dll_name,
     // table and its parallel ordinal-index table (index into the EAT
     // above -- names and functions share the same sorted order here, so
     // ordinal[i] == i).
-    size_t *name_str_off = malloc((size_t)n_exp * sizeof(size_t));
+    size_t *name_str_off = xmalloc((size_t)n_exp * sizeof(size_t));
     for (int i = 0; i < n_exp; i++)
         name_str_off[i] = link_sec_append(s, edata_sec,
                                           (const uint8_t *)s->syms[exp_idx[i]].name,
@@ -1010,11 +998,7 @@ static int build_pe_reloc(LinkState *s, uint64_t base) {
         int n_entries = j - i;
         bool pad = (n_entries & 1) != 0;
         uint32_t block_size = 8 + (uint32_t)(n_entries + (pad ? 1 : 0)) * 2;
-        uint8_t *block = calloc(block_size, 1);
-        if (!block) {
-            fprintf(stderr, "rcc: out of memory\n");
-            exit(1);
-        }
+        uint8_t *block = xcalloc(block_size, 1);
         pe_w32le_m(block, page);
         pe_w32le_m(block + 4, block_size);
         for (int k = 0; k < n_entries; k++) {
@@ -1472,7 +1456,7 @@ int link_pe(LinkState *s) {
     // otherwise this pass reserves phantom file space for bss that the
     // write pass never actually consumes, desyncing every later section's
     // real file position from what its own header claims.
-    uint32_t *sec_file_offs = calloc((size_t)s->n_secs, sizeof(uint32_t));
+    uint32_t *sec_file_offs = xcalloc((size_t)s->n_secs, sizeof(uint32_t));
     uint32_t cur_file_off = hdr_file_size;
     for (int i = 0; i < s->n_secs; i++) {
         LinkSec *sec = &s->secs[i];
@@ -1690,7 +1674,7 @@ static uint8_t *build_coff_obj(CoffMiniSec *secs, int n_secs, CoffMiniSym *syms,
     pe_w16le_buf(hdr + 18, 0x0004); // IMAGE_FILE_LINE_NUMS_STRIPPED (matches dlltool)
     pe_buf_append_bytes(&out, &len, &cap, hdr, sizeof(hdr));
 
-    size_t *sechdr_off = malloc((size_t)n_secs * sizeof(size_t));
+    size_t *sechdr_off = xmalloc((size_t)n_secs * sizeof(size_t));
     for (int i = 0; i < n_secs; i++) {
         sechdr_off[i] = len;
         uint8_t sh[40] = {0};
@@ -1709,7 +1693,7 @@ static uint8_t *build_coff_obj(CoffMiniSec *secs, int n_secs, CoffMiniSym *syms,
             if (secs[i].data) {
                 pe_buf_append_bytes(&out, &len, &cap, secs[i].data, secs[i].size);
             } else {
-                uint8_t *z = calloc(secs[i].size, 1);
+                uint8_t *z = xcalloc(secs[i].size, 1);
                 pe_buf_append_bytes(&out, &len, &cap, z, secs[i].size);
                 free(z);
             }
@@ -1735,10 +1719,10 @@ static uint8_t *build_coff_obj(CoffMiniSec *secs, int n_secs, CoffMiniSym *syms,
     // String table for symbol names > 8 bytes: build its content first
     // (in a scratch buffer, independent of `out`) so every symbol record
     // below can embed its final strtab offset directly.
-    uint8_t *strtab = malloc(4);
+    uint8_t *strtab = xmalloc(4);
     size_t strtab_len = 4; // reserve the 4-byte size prefix
     size_t strtab_cap = 4;
-    uint32_t *name_stroff = malloc((size_t)n_syms * sizeof(uint32_t));
+    uint32_t *name_stroff = xmalloc((size_t)n_syms * sizeof(uint32_t));
     for (int i = 0; i < n_syms; i++) {
         size_t nl = strlen(syms[i].name);
         if (nl <= 8) {
@@ -1849,11 +1833,7 @@ static uint8_t *build_import_symbol_obj(const char *dllid, const char *sym_name,
     size_t symlen = strlen(sym_name);
     size_t hintname_len = 2 + symlen + 1;
     size_t hintname_padded = (hintname_len + 3) & ~(size_t)3; // 4-byte aligned, matches reference
-    uint8_t *hintname = calloc(hintname_padded, 1);
-    if (!hintname) {
-        fprintf(stderr, "rcc: out of memory\n");
-        exit(1);
-    }
+    uint8_t *hintname = xcalloc(hintname_padded, 1);
     hintname[0] = (uint8_t)hint;
     hintname[1] = (uint8_t)(hint >> 8);
     memcpy(hintname + 2, sym_name, symlen + 1);
@@ -1905,11 +1885,7 @@ static uint8_t *build_import_data_obj(const char *dllid, const char *sym_name,
     size_t symlen = strlen(sym_name);
     size_t hintname_len = 2 + symlen + 1;
     size_t hintname_padded = (hintname_len + 3) & ~(size_t)3;
-    uint8_t *hintname = calloc(hintname_padded, 1);
-    if (!hintname) {
-        fprintf(stderr, "rcc: out of memory\n");
-        exit(1);
-    }
+    uint8_t *hintname = xcalloc(hintname_padded, 1);
     hintname[0] = (uint8_t)hint;
     hintname[1] = (uint8_t)(hint >> 8);
     memcpy(hintname + 2, sym_name, symlen + 1);
@@ -1961,11 +1937,7 @@ int pe_write_out_implib(const char *dll_path, const char *implib_path) {
         fclose(f);
         return -1;
     }
-    uint8_t *img = malloc((size_t)sz);
-    if (!img) {
-        fclose(f);
-        return -1;
-    }
+    uint8_t *img = xmalloc((size_t)sz);
     if (fread(img, 1, (size_t)sz, f) != (size_t)sz) {
         free(img);
         fclose(f);
@@ -2044,13 +2016,13 @@ int pe_write_out_implib(const char *dll_path, const char *implib_path) {
     // (build_pe_exports() built ordinal[i] == i), so is_data[k] can be
     // read straight off the matching EAT entry.
     int n_syms_exported = 0;
-    char **exported = malloc((size_t)n_names * sizeof(char *));
-    bool *is_data = malloc((size_t)n_names * sizeof(bool));
+    char **exported = xmalloc((size_t)n_names * sizeof(char *));
+    bool *is_data = xmalloc((size_t)n_names * sizeof(bool));
     for (uint32_t k = 0; k < n_names; k++) {
         uint32_t nrva = pe_r32le(img + names_off + k * 4);
         uint32_t noff = pe_rva_to_off(img, sec_hdr_off, n_secs, nrva);
         if (!noff || noff >= (uint32_t)sz) continue;
-        exported[n_syms_exported] = strdup((const char *)(img + noff));
+        exported[n_syms_exported] = xstrdup((const char *)(img + noff));
         uint32_t fn_rva = eat_off ? pe_r32le(img + eat_off + k * 4) : 0;
         is_data[n_syms_exported] = eat_off && !pe_rva_is_exec(img, sec_hdr_off, n_secs, fn_rva);
         n_syms_exported++;
@@ -2064,9 +2036,9 @@ int pe_write_out_implib(const char *dll_path, const char *implib_path) {
     }
 
     int n_members = n_syms_exported + 2; // head + N symbols + tail
-    uint8_t **member_data = malloc((size_t)n_members * sizeof(uint8_t *));
-    size_t *member_len = malloc((size_t)n_members * sizeof(size_t));
-    char **member_name = malloc((size_t)n_members * sizeof(char *));
+    uint8_t **member_data = xmalloc((size_t)n_members * sizeof(uint8_t *));
+    size_t *member_len = xmalloc((size_t)n_members * sizeof(size_t));
+    char **member_name = xmalloc((size_t)n_members * sizeof(char *));
     // Symbols this archive's own symbol table must expose so the linker
     // can (a) pull in the right member for `<sym>`/`__imp_<sym>` when the
     // main program references them, and (b) resolve the forcing/DLL-name
@@ -2074,8 +2046,8 @@ int pe_write_out_implib(const char *dll_path, const char *implib_path) {
     // A data export's member never defines the plain `<sym>` name (see
     // build_import_data_obj()), so its own archive_sym entries omit it.
     int n_archive_syms = 2 * n_syms_exported + 2;
-    char **archive_sym = malloc((size_t)n_archive_syms * sizeof(char *));
-    int *archive_sym_member = malloc((size_t)n_archive_syms * sizeof(int));
+    char **archive_sym = xmalloc((size_t)n_archive_syms * sizeof(char *));
+    int *archive_sym_member = xmalloc((size_t)n_archive_syms * sizeof(int));
     int n_as = 0;
 
     member_data[0] = build_import_head_obj(dllid, machine, &member_len[0]);
@@ -2092,7 +2064,7 @@ int pe_write_out_implib(const char *dll_path, const char *implib_path) {
                                                          machine, &member_len[1 + i]);
         member_name[1 + i] = pe_xfmt("%s_d%06d.o", dllid, i + 1);
         if (!is_data[i]) {
-            archive_sym[n_as] = strdup(exported[i]);
+            archive_sym[n_as] = xstrdup(exported[i]);
             archive_sym_member[n_as++] = 1 + i;
         }
         archive_sym[n_as] = pe_xfmt("__imp_%s", exported[i]);
@@ -2114,7 +2086,7 @@ int pe_write_out_implib(const char *dll_path, const char *implib_path) {
     // exceeds the ar header's 16-byte inline limit.
     uint8_t *longnames = NULL;
     size_t longnames_len = 0, longnames_cap = 0;
-    long *member_longoff = malloc((size_t)n_members * sizeof(long));
+    long *member_longoff = xmalloc((size_t)n_members * sizeof(long));
     for (int i = 0; i < n_members; i++) {
         member_longoff[i] = (long)longnames_len;
         pe_buf_append_bytes(&longnames, &longnames_len, &longnames_cap, member_name[i],
@@ -2130,7 +2102,7 @@ int pe_write_out_implib(const char *dll_path, const char *implib_path) {
     size_t symtab_content_len = 4 + (size_t)n_as * 4 + symtab_names_len;
     size_t symtab_padded = symtab_content_len + (symtab_content_len & 1);
 
-    uint32_t *member_off = malloc((size_t)n_members * sizeof(uint32_t));
+    uint32_t *member_off = xmalloc((size_t)n_members * sizeof(uint32_t));
     uint32_t cur = 8 + 60 + (uint32_t)symtab_padded + 60 + (uint32_t)longnames_padded;
     for (int i = 0; i < n_members; i++) {
         member_off[i] = cur;

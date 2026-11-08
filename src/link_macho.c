@@ -168,7 +168,7 @@ static int mo_uleb_len(uint64_t v) {
 // Build a trie node covering sorted syms[lo,hi), all sharing the first `pfx`
 // characters.  Recurses, grouping the remainder by next character.
 static MoTrieNode *mo_trie_build(MoTrieSym *syms, int lo, int hi, int pfx) {
-    MoTrieNode *node = calloc(1, sizeof(MoTrieNode));
+    MoTrieNode *node = xcalloc(1, sizeof(MoTrieNode));
     int i = lo;
     if (syms[lo].len == pfx) { // exact match consumes the whole name here
         node->terminal = 1;
@@ -189,7 +189,7 @@ static MoTrieNode *mo_trie_build(MoTrieSym *syms, int lo, int hi, int pfx) {
             lcp++;
         if (lcp == 0) lcp = 1; // grouped by shared char -> at least 1
         MoTrieEdge e;
-        e.label = malloc((size_t)lcp + 1);
+        e.label = xmalloc((size_t)lcp + 1);
         memcpy(e.label, syms[i].name + pfx, (size_t)lcp);
         e.label[lcp] = '\0';
         e.child = mo_trie_build(syms, i, j, pfx + lcp);
@@ -632,7 +632,7 @@ int link_load_object(LinkState *s, const char *path) {
     // in free() on the next allocation, since every byte of this object's
     // data has already been copied out via link_sec_append()/link_add_sym()
     // by the time this function returns -- the mapping is not needed after).
-    LinkObj obj = {.path = strdup(path), .image = NULL, .image_size = 0};
+    LinkObj obj = {.path = xstrdup(path), .image = NULL, .image_size = 0};
     if (s->n_objs == s->cap_objs) {
         s->cap_objs = s->cap_objs ? s->cap_objs * 2 : 4;
         s->objs = xrealloc(s->objs, (size_t)s->cap_objs * sizeof(LinkObj));
@@ -663,7 +663,7 @@ int link_load_object(LinkState *s, const char *path) {
     // symbol indices as raw indices into this object's unrelated
     // symbol table.
     int old_n_secs = s->n_secs;
-    int *reloc_base = calloc((size_t)old_n_secs, sizeof(int));
+    int *reloc_base = xcalloc((size_t)old_n_secs, sizeof(int));
     for (int i = 0; i < old_n_secs; i++) reloc_base[i] = s->secs[i].n_relocs;
 
     for (uint32_t i = 0; i < ncmds; i++) {
@@ -827,7 +827,7 @@ int link_load_object(LinkState *s, const char *path) {
             uint32_t nsyms = mo_r32(lc + 12);
             uint32_t stroff = mo_r32(lc + 16);
 
-            sym_map = calloc((size_t)nsyms, sizeof(int));
+            sym_map = xcalloc((size_t)nsyms, sizeof(int));
             n_syms = (int)nsyms;
             const uint8_t *symbase = image + symoff;
             const char *strbase = (const char *)(image + stroff);
@@ -1025,7 +1025,7 @@ static void mo_darwin_shim_index_build(void) {
             g_mo_darwin_shim_syms.names =
                 xrealloc(g_mo_darwin_shim_syms.names, (size_t)cap * sizeof(char *));
         }
-        g_mo_darwin_shim_syms.names[g_mo_darwin_shim_syms.n++] = strdup(sp + 1);
+        g_mo_darwin_shim_syms.names[g_mo_darwin_shim_syms.n++] = xstrdup(sp + 1);
     }
     pclose(fp);
 }
@@ -1151,8 +1151,8 @@ int link_macho(LinkState *s) {
     int got_sec = link_find_or_create_sec(s, ".got", true, true, false, false, false, 8);
     int stubs_sec = link_find_or_create_sec(s, ".stubs", true, false, true, false, false, 16);
     // got_off[sym_idx] = offset in .got, or -1. stub_off[sym_idx] = offset in .stubs.
-    int *got_off = calloc((size_t)s->n_syms, sizeof(int));
-    int *stub_off = calloc((size_t)s->n_syms, sizeof(int));
+    int *got_off = xcalloc((size_t)s->n_syms, sizeof(int));
+    int *stub_off = xcalloc((size_t)s->n_syms, sizeof(int));
     for (int i = 0; i < s->n_syms; i++) got_off[i] = -1;
     for (int i = 0; i < s->n_syms; i++) stub_off[i] = -1;
     int n_got = 0, n_stubs = 0;
@@ -1255,9 +1255,9 @@ int link_macho(LinkState *s) {
             // above) bracket only this section's own contribution.
             const char *comma = strchr(sec->name, ',');
             size_t seglen = (size_t)(comma - sec->name);
-            char *sg = calloc(1, 17);
+            char *sg = xcalloc(1, 17);
             memcpy(sg, sec->name, seglen > 16 ? 16 : seglen);
-            char *sn = calloc(1, 17);
+            char *sn = xcalloc(1, 17);
             size_t sectlen = strlen(comma + 1);
             memcpy(sn, comma + 1, sectlen > 16 ? 16 : sectlen);
             mo_secs[n_mo].segname = sg;
@@ -1282,7 +1282,7 @@ int link_macho(LinkState *s) {
     //    filesize); a __bss before a real __DATA section (e.g. __got) desyncs
     //    following file offsets from vmaddrs.
     if (n_mo > 1) {
-        MOSec *ord = malloc((size_t)n_mo * sizeof(MOSec));
+        MOSec *ord = xmalloc((size_t)n_mo * sizeof(MOSec));
         int w = 0;
         for (int i = 0; i < n_mo; i++)
             if (strcmp(mo_secs[i].segname, "__TEXT") == 0) ord[w++] = mo_secs[i];
@@ -1438,7 +1438,7 @@ int link_macho(LinkState *s) {
             }
         }
         if (n_reb > 0) {
-            uint64_t *offs = malloc((size_t)n_reb * sizeof(uint64_t));
+            uint64_t *offs = xmalloc((size_t)n_reb * sizeof(uint64_t));
             int k = 0;
             for (int si = 0; si < s->n_secs; si++) {
                 LinkSec *sec = &s->secs[si];
@@ -1462,7 +1462,7 @@ int link_macho(LinkState *s) {
                 offs[j + 1] = v;
             }
             // Worst case: 1 type + n*(1 seg op + 5 ULEB + 1 do) + 1 done.
-            rebase_data = malloc(2 + (size_t)n_reb * 7);
+            rebase_data = xmalloc(2 + (size_t)n_reb * 7);
             uint8_t *w = rebase_data;
             *w++ = 0x11; // REBASE_OPCODE_SET_TYPE_IMM | REBASE_TYPE_POINTER
             uint8_t seg = (uint8_t)(is_dylib ? 1 : 2); // TEXT(,PAGEZERO),DATA
@@ -1506,7 +1506,7 @@ int link_macho(LinkState *s) {
                 if (got_off[i] < 0 || s->syms[i].sec >= 0) continue;
                 cap += 6 + strlen(s->syms[i].name) + 1 + 5; // opcodes + name + ULEB
             }
-            bind_data = malloc(cap);
+            bind_data = xmalloc(cap);
             uint8_t *w = bind_data;
             for (int i = 0; i < s->n_syms; i++) {
                 if (got_off[i] < 0 || s->syms[i].sec >= 0) continue;
@@ -1713,7 +1713,7 @@ int link_macho(LinkState *s) {
         // exports (e.g. sqlite, hundreds of symbols) don't overflow a node's
         // one-byte childCount.  Symbols use their full mangled name (incl the
         // leading '_'); addresses are image-relative (dylib base is 0).
-        MoTrieSym *syms = malloc((size_t)n_defsym * sizeof(MoTrieSym));
+        MoTrieSym *syms = xmalloc((size_t)n_defsym * sizeof(MoTrieSym));
         int nx = 0;
         for (int i = 0; i < s->n_syms; i++) {
             LinkSym *sym = &s->syms[i];
@@ -1753,7 +1753,7 @@ int link_macho(LinkState *s) {
         }
         size_t total = 0;
         for (int k = 0; k < nn; k++) total += mo_trie_node_size(list[k]);
-        export_data = malloc(total ? total : 1);
+        export_data = xmalloc(total ? total : 1);
         size_t len = 0;
 #define TW(b) do { export_data[len++] = (uint8_t)(b); } while (0)
 #define TWU(v) do { uint64_t _v = (v); do { uint8_t _b = (uint8_t)(_v & 0x7f); _v >>= 7; if (_v) _b |= 0x80; export_data[len++] = _b; } while (_v); } while (0)
@@ -2260,7 +2260,7 @@ int link_macho(LinkState *s) {
     // the kernel's AMFI policy SIGKILLs the binary before main() ever runs
     // on Apple Silicon, even though nothing else about the file is wrong.
     fflush(f);
-    uint8_t *sig = malloc(codesig_size);
+    uint8_t *sig = xmalloc(codesig_size);
     mo_codesign_sign(f, sig, codesig_off, "a.out", text_fileoff, text_vmsize, true);
     fseek(f, (long)codesig_off, SEEK_SET);
     mo_wbuf(f, sig, codesig_size);

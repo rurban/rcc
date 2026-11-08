@@ -420,9 +420,9 @@ static int elf_load_object(LinkState *s, const char *path) {
     const uint8_t *shstr_sh = ef.image + e_shoff + (uint64_t)e_shstrndx * 64;
     uint64_t shstroff = r64le(shstr_sh + 24);
 
-    int *sec_map = calloc((size_t)e_shnum, sizeof(int));
-    int *sym_map = calloc((size_t)e_shnum, sizeof(int));
-    uint64_t *sec_base_off = calloc((size_t)e_shnum, sizeof(uint64_t));
+    int *sec_map = xcalloc((size_t)e_shnum, sizeof(int));
+    int *sym_map = xcalloc((size_t)e_shnum, sizeof(int));
+    uint64_t *sec_base_off = xcalloc((size_t)e_shnum, sizeof(uint64_t));
     for (int i = 0; i < e_shnum; i++) sec_map[i] = -1;
 
     // First pass: create output sections for allocatable input sections.
@@ -665,7 +665,7 @@ static int elf_load_object(LinkState *s, const char *path) {
         s->objs = xrealloc(s->objs, (size_t)s->cap_objs * sizeof(LinkObj));
     }
     LinkObj *obj = &s->objs[s->n_objs++];
-    obj->path = strdup(path);
+    obj->path = xstrdup(path);
     obj->image = NULL;
     obj->image_size = 0;
     free(sec_map);
@@ -733,8 +733,8 @@ static int load_archive(LinkState *s, const char *path) {
     uint32_t nsym = r32be(data + symtab_off);
     const uint8_t *nametab = data + symtab_off + 4 + (size_t)nsym * 4;
     const uint8_t *nametab_end = data + symtab_off + symtab_size;
-    const char **symnames = calloc(nsym, sizeof(char *));
-    uint32_t *symoffs = calloc(nsym, sizeof(uint32_t));
+    const char **symnames = xcalloc(nsym, sizeof(char *));
+    uint32_t *symoffs = xcalloc(nsym, sizeof(uint32_t));
     const uint8_t *cur = nametab;
     for (uint32_t i = 0; i < nsym && cur < nametab_end; i++) {
         symoffs[i] = r32be(data + symtab_off + 4 + i * 4);
@@ -743,7 +743,7 @@ static int load_archive(LinkState *s, const char *path) {
         if (cur < nametab_end) cur++; // skip the NUL
     }
 
-    uint8_t *used = calloc(nsym, 1);
+    uint8_t *used = xcalloc(nsym, 1);
     int changed = 1, round = 0;
     while (changed && round < 32) {
         changed = 0;
@@ -1393,7 +1393,7 @@ static void lookup_lib_symbol_versions(const char *path, const char **names,
             if (vd_ndx == vidx && vd_cnt > 0) {
                 const uint8_t *vda = vd + vd_aux;
                 uint32_t vda_name = r32le(vda);
-                out[match] = strdup((const char *)(ef.image + verdefstr_off + vda_name));
+                out[match] = xstrdup((const char *)(ef.image + verdefstr_off + vda_name));
                 break;
             }
             if (vd_next == 0) break;
@@ -1663,11 +1663,7 @@ static void so_symset_build(const char *path, SoSymSet *set) {
     }
     uint32_t cap = 16;
     while (cap < count * 2) cap *= 2;
-    set->names = calloc(cap, sizeof(char *));
-    if (!set->names) {
-        elf_close(ef);
-        return;
-    }
+    set->names = xcalloc(cap, sizeof(char *));
     set->cap = cap;
     for (uint64_t off = sym_off; off + 24 <= ef->size; off += 24) {
         const uint8_t *se = ef->image + off;
@@ -1926,8 +1922,8 @@ static int link_elf_relocatable(LinkState *s) {
     if (resolve_archives(s) != 0) return -1;
 
     int n = s->n_syms;
-    int *order = malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
-    int *new_idx = malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
+    int *order = xmalloc((size_t)(n > 0 ? n : 1) * sizeof(int));
+    int *new_idx = xmalloc((size_t)(n > 0 ? n : 1) * sizeof(int));
     // ELF requires every STB_LOCAL symtab entry to precede every non-local
     // one (sh_info on .symtab records the boundary) -- s->syms[] itself
     // interleaves them in load order, so build a locals-first permutation
@@ -1945,9 +1941,9 @@ static int link_elf_relocatable(LinkState *s) {
     // .strtab: index 0 is the shared empty string every unnamed local
     // (elf_load_object()'s per-input STT_SECTION placeholder symbols) uses.
     size_t strtab_cap = 256, strtab_len = 1;
-    char *strtab = malloc(strtab_cap);
+    char *strtab = xmalloc(strtab_cap);
     strtab[0] = '\0';
-    uint32_t *name_off = malloc((size_t)(n > 0 ? n : 1) * sizeof(uint32_t));
+    uint32_t *name_off = xmalloc((size_t)(n > 0 ? n : 1) * sizeof(uint32_t));
     for (int k = 0; k < n; k++) {
         LinkSym *sym = &s->syms[order[k]];
         if (!sym->name || !sym->name[0]) {
@@ -1976,10 +1972,10 @@ static int link_elf_relocatable(LinkState *s) {
     uint16_t shnum = (uint16_t)(1 /* NULL */ + n_in_secs + n_rela + 3 /* symtab,strtab,shstrtab */);
 
     size_t shstr_cap = 256, shstr_len = 1;
-    char *shstr = malloc(shstr_cap);
+    char *shstr = xmalloc(shstr_cap);
     shstr[0] = '\0';
-    uint32_t *sec_name_off = malloc((size_t)(n_in_secs > 0 ? n_in_secs : 1) * sizeof(uint32_t));
-    uint32_t *rela_name_off = malloc((size_t)(n_rela > 0 ? n_rela : 1) * sizeof(uint32_t));
+    uint32_t *sec_name_off = xmalloc((size_t)(n_in_secs > 0 ? n_in_secs : 1) * sizeof(uint32_t));
+    uint32_t *rela_name_off = xmalloc((size_t)(n_rela > 0 ? n_rela : 1) * sizeof(uint32_t));
 #define SHSTR_APPEND(str, outoff) do { \
         size_t _nl = strlen(str) + 1; \
         if (shstr_len + _nl > shstr_cap) { \
@@ -2015,7 +2011,7 @@ static int link_elf_relocatable(LinkState *s) {
     // order. section indices are 1-based header indices (SHN_UNDEF for
     // an unresolved reference); values are already section-relative.
     size_t symtab_sz = (size_t)(n + 1) * 24;
-    uint8_t *symtab_buf = calloc(1, symtab_sz);
+    uint8_t *symtab_buf = xcalloc(1, symtab_sz);
     for (int k = 0; k < n; k++) {
         LinkSym *sym = &s->syms[order[k]];
         uint8_t *e = symtab_buf + (size_t)(k + 1) * 24;
@@ -2041,16 +2037,16 @@ static int link_elf_relocatable(LinkState *s) {
 
     // .relaX content: entries in original order, symbol index remapped
     // via new_idx[], r_type copied through verbatim.
-    uint8_t **rela_bufs = calloc((size_t)(n_rela > 0 ? n_rela : 1), sizeof(uint8_t *));
-    size_t *rela_szs = calloc((size_t)(n_rela > 0 ? n_rela : 1), sizeof(size_t));
-    int *rela_target = calloc((size_t)(n_rela > 0 ? n_rela : 1), sizeof(int));
+    uint8_t **rela_bufs = xcalloc((size_t)(n_rela > 0 ? n_rela : 1), sizeof(uint8_t *));
+    size_t *rela_szs = xcalloc((size_t)(n_rela > 0 ? n_rela : 1), sizeof(size_t));
+    int *rela_target = xcalloc((size_t)(n_rela > 0 ? n_rela : 1), sizeof(int));
     {
         int r = 0;
         for (int i = 0; i < n_in_secs; i++) {
             LinkSec *sec = &s->secs[i];
             if (sec->n_relocs == 0) continue;
             size_t sz = (size_t)sec->n_relocs * 24;
-            uint8_t *buf = malloc(sz);
+            uint8_t *buf = xmalloc(sz);
             for (int j = 0; j < sec->n_relocs; j++) {
                 LinkReloc *rl = &sec->relocs[j];
                 uint8_t *e = buf + (size_t)j * 24;
@@ -2070,7 +2066,7 @@ static int link_elf_relocatable(LinkState *s) {
     // then the header table (8-aligned). No program headers -- an
     // ET_REL object is never loaded/executed directly.
     uint64_t off = 64;
-    uint64_t *sec_off = malloc((size_t)(n_in_secs > 0 ? n_in_secs : 1) * sizeof(uint64_t));
+    uint64_t *sec_off = xmalloc((size_t)(n_in_secs > 0 ? n_in_secs : 1) * sizeof(uint64_t));
     for (int i = 0; i < n_in_secs; i++) {
         LinkSec *sec = &s->secs[i];
         if (sec->is_bss || sec->len == 0) {
@@ -2086,7 +2082,7 @@ static int link_elf_relocatable(LinkState *s) {
     off += symtab_sz;
     uint64_t strtab_off = off;
     off += strtab_len;
-    uint64_t *rela_off = malloc((size_t)(n_rela > 0 ? n_rela : 1) * sizeof(uint64_t));
+    uint64_t *rela_off = xmalloc((size_t)(n_rela > 0 ? n_rela : 1) * sizeof(uint64_t));
     for (int r = 0; r < n_rela; r++) {
         off = align_up(off, 8);
         rela_off[r] = off;
@@ -2359,7 +2355,7 @@ static void eh_hdr_fill(LinkState *s, int eh_idx, int hdr_idx) {
     LinkSec *eh = &s->secs[eh_idx], *hdr = &s->secs[hdr_idx];
     long n = eh_frame_scan(eh, NULL);
     if (n < 0 || hdr->len != 12 + 8 * (size_t)n) return;
-    EhEnt *ents = malloc((size_t)(n ? n : 1) * sizeof *ents);
+    EhEnt *ents = xmalloc((size_t)(n ? n : 1) * sizeof *ents);
     if (eh_frame_scan(eh, ents) != n) {
         free(ents);
         return;
@@ -2474,8 +2470,7 @@ int link_elf(LinkState *s) {
     int n_dyn = 0;
     int cap_dyn = 0;
     int *dyn_syms = NULL;
-    int *dyn_idx = calloc((size_t)s->n_syms, sizeof(int));
-    if (!dyn_idx) return -1;
+    int *dyn_idx = xcalloc((size_t)s->n_syms, sizeof(int));
     for (int i = 0; i < s->n_syms; i++) {
         LinkSym *sym = &s->syms[i];
         if (sym->sec < 0 && sym->bind != 2 && sym->name && sym->name[0]) {
@@ -2741,7 +2736,7 @@ int link_elf(LinkState *s) {
                     const char *dend = dp;
                     while (*dend && *dend != ' ') dend++;
                     if (n_user_dirs < 16) {
-                        char *d = malloc((size_t)(dend - dp) + 1);
+                        char *d = xmalloc((size_t)(dend - dp) + 1);
                         memcpy(d, dp, (size_t)(dend - dp));
                         d[dend - dp] = '\0';
                         user_dirs[n_user_dirs++] = d;
@@ -2873,8 +2868,8 @@ int link_elf(LinkState *s) {
                         // Unscannable -> conservative, keep it.
                         bool any = false;
                         if (n_dyn > 0) {
-                            const char **dnames = malloc((size_t)n_dyn * sizeof(char *));
-                            bool *dfound = calloc((size_t)n_dyn, sizeof(bool));
+                            const char **dnames = xmalloc((size_t)n_dyn * sizeof(char *));
+                            bool *dfound = xcalloc((size_t)n_dyn, sizeof(bool));
                             for (int k = 0; k < n_dyn; k++) dnames[k] = s->syms[dyn_syms[k]].name;
                             bool scanned = so_mark_defined(found_path, dnames, dfound, n_dyn);
                             if (scanned) {
@@ -3054,8 +3049,8 @@ int link_elf(LinkState *s) {
         // process -- unless -Wl,--no-undefined / -Wl,-z,defs asked for
         // the stricter, executable-style check anyway.
         if ((!s->opt_shared || lopts.no_undefined) && n_dyn > 0) {
-            const char **names = malloc((size_t)n_dyn * sizeof(char *));
-            bool *found = calloc((size_t)n_dyn, sizeof(bool));
+            const char **names = xmalloc((size_t)n_dyn * sizeof(char *));
+            bool *found = xcalloc((size_t)n_dyn, sizeof(bool));
             if (names && found) {
                 for (int k = 0; k < n_dyn; k++)
                     names[k] = s->syms[dyn_syms[k]].name;
@@ -3100,7 +3095,7 @@ int link_elf(LinkState *s) {
         // .dynsym: null entry first.
         uint8_t zero24[24] = {0};
         link_sec_append(s, dynsym_sec, zero24, 24, 8);
-        dynstr_off = malloc((size_t)n_dyn * sizeof(int));
+        dynstr_off = xmalloc((size_t)n_dyn * sizeof(int));
         for (int k = 0; k < n_dyn; k++) {
             LinkSym *sym = &s->syms[dyn_syms[k]];
             int off = (int)link_sec_append(s, dynstr_sec, (const uint8_t *)sym->name,
@@ -3151,9 +3146,9 @@ int link_elf(LinkState *s) {
         // resolve to an old ABI-incompatible compat symbol (e.g.
         // pthread_cond_init@GLIBC_2.2.5 instead of @GLIBC_2.3.2) --
         // functions succeed individually but disagree on internal layout.
-        char **dyn_versions = calloc((size_t)(n_dyn > 0 ? n_dyn : 1), sizeof(char *));
+        char **dyn_versions = xcalloc((size_t)(n_dyn > 0 ? n_dyn : 1), sizeof(char *));
         if (n_dyn > 0) {
-            const char **names = malloc((size_t)n_dyn * sizeof(char *));
+            const char **names = xmalloc((size_t)n_dyn * sizeof(char *));
             for (int k = 0; k < n_dyn; k++)
                 names[k] = s->syms[dyn_syms[k]].name;
             char libc_path[512];
@@ -3171,7 +3166,7 @@ int link_elf(LinkState *s) {
         // in first-seen order, and record them for the Verneed/Vernaux
         // section. dyn_verndx[k] mirrors dyn_versions[k] as an index.
         char *verneed_names[64];
-        int *dyn_verndx = calloc((size_t)n_dyn, sizeof(int));
+        int *dyn_verndx = xcalloc((size_t)n_dyn, sizeof(int));
         for (int k = 0; k < n_dyn; k++) {
             if (!dyn_versions[k]) continue;
             int found = -1;
@@ -3255,8 +3250,8 @@ int link_elf(LinkState *s) {
         uint32_t nchain = (uint32_t)(n_dyn + n_exp + 1);
         uint32_t nbucket = 1;
         while (nbucket < nchain) nbucket <<= 1;
-        uint32_t *buckets = calloc(nbucket, sizeof(uint32_t));
-        uint32_t *chain = calloc(nchain, sizeof(uint32_t));
+        uint32_t *buckets = xcalloc(nbucket, sizeof(uint32_t));
+        uint32_t *chain = xcalloc(nchain, sizeof(uint32_t));
         for (int k = 1; k <= n_dyn; k++) {
             const char *name = s->syms[dyn_syms[k - 1]].name;
             uint32_t h = elf_hash(name) % nbucket;
@@ -3287,9 +3282,9 @@ int link_elf(LinkState *s) {
         free(chain);
 
         // Determine dynamic symbol use (function vs data) and GOT/PLT needs.
-        dyn_kind = calloc((size_t)s->n_syms, sizeof(int));
-        plt_idx = malloc((size_t)s->n_syms * sizeof(int));
-        got_map = malloc((size_t)s->n_syms * sizeof(int));
+        dyn_kind = xcalloc((size_t)s->n_syms, sizeof(int));
+        plt_idx = xmalloc((size_t)s->n_syms * sizeof(int));
+        got_map = xmalloc((size_t)s->n_syms * sizeof(int));
         for (int i = 0; i < s->n_syms; i++) {
             plt_idx[i] = -1;
             got_map[i] = -1;
@@ -3431,31 +3426,31 @@ int link_elf(LinkState *s) {
         // Allocate .got.plt, .plt, .rela.plt, .rela.dyn.
         int total_got_slots = 3 + n_dyn + n_extra_got;
         size_t got_size = (size_t)total_got_slots * 8;
-        uint8_t *got_init = calloc(got_size, 1);
+        uint8_t *got_init = xcalloc(got_size, 1);
         link_sec_append(s, gotplt_sec, got_init, got_size, 8);
         free(got_init);
 
         size_t plt_size = 16 + (size_t)n_func_dyn * 16;
-        uint8_t *plt_init = calloc(plt_size, 1);
+        uint8_t *plt_init = xcalloc(plt_size, 1);
         link_sec_append(s, plt_sec, plt_init, plt_size, 16);
         free(plt_init);
 
         if (n_func_dyn > 0) {
             size_t relaplt_size = (size_t)n_func_dyn * 24;
-            uint8_t *relaplt_init = calloc(relaplt_size, 1);
+            uint8_t *relaplt_init = xcalloc(relaplt_size, 1);
             link_sec_append(s, relaplt_sec, relaplt_init, relaplt_size, 8);
             free(relaplt_init);
         }
         if (n_reladyn > 0) {
             size_t reladyn_size = (size_t)n_reladyn * 24;
-            uint8_t *reladyn_init = calloc(reladyn_size, 1);
+            uint8_t *reladyn_init = xcalloc(reladyn_size, 1);
             link_sec_append(s, reladyn_sec, reladyn_init, reladyn_size, 8);
             free(reladyn_init);
         }
 
         // Pre-allocate .dynamic entries so layout reserves the correct size.
         int n_dynent = 5 + (n_reladyn > 0 ? 3 : 0) + (n_func_dyn > 0 ? 3 : 0) + n_needed + 3 + 4 + 3 + (s->opt_shared ? 1 : 0) + (lopts.have_rpath ? 1 : 0);
-        uint8_t *dyn_placeholder = calloc((size_t)n_dynent * 16, 1);
+        uint8_t *dyn_placeholder = xcalloc((size_t)n_dynent * 16, 1);
         link_sec_append(s, dynamic_sec, dyn_placeholder, (size_t)n_dynent * 16, 8);
         free(dyn_placeholder);
     }
@@ -3502,7 +3497,7 @@ int link_elf(LinkState *s) {
         long nfde = eh_frame_scan(&s->secs[ehframe_sec], NULL);
         if (nfde > 0) {
             size_t sz = 12 + 8 * (size_t)nfde;
-            uint8_t *zero = calloc(sz, 1);
+            uint8_t *zero = xcalloc(sz, 1);
             ehhdr_sec = link_find_or_create_sec(s, ".eh_frame_hdr", true, false, false, false, false, 4);
             link_sec_append(s, ehhdr_sec, zero, sz, 4);
             free(zero);
@@ -3917,12 +3912,12 @@ int link_elf(LinkState *s) {
     uint16_t shnum = (uint16_t)(1 + n_shdr_secs + (want_symtab ? 2 : 0) + 1); // NULL + real secs + [.symtab, .strtab] + .shstrtab
     uint16_t shstrndx = (uint16_t)(shnum - 1);
 
-    int *sec_to_shidx = malloc((size_t)s->n_secs * sizeof(int));
+    int *sec_to_shidx = xmalloc((size_t)s->n_secs * sizeof(int));
     for (int i = 0; i < s->n_secs; i++) sec_to_shidx[i] = 0;
     size_t shstrtab_cap = 64, shstrtab_len = 1;
-    char *shstrtab_buf = malloc(shstrtab_cap);
+    char *shstrtab_buf = xmalloc(shstrtab_cap);
     shstrtab_buf[0] = '\0'; // index 0: the NULL section's empty name
-    uint32_t *shdr_name_off = malloc((size_t)(n_shdr_secs > 0 ? n_shdr_secs : 1) * sizeof(uint32_t));
+    uint32_t *shdr_name_off = xmalloc((size_t)(n_shdr_secs > 0 ? n_shdr_secs : 1) * sizeof(uint32_t));
     {
         int k = 0;
         for (int i = 0; i < s->n_secs; i++) {
@@ -3958,9 +3953,9 @@ int link_elf(LinkState *s) {
     uint32_t symtab_first_global = 1;
     if (want_symtab) {
         size_t strtab_cap = 256;
-        strtab_buf = malloc(strtab_cap);
+        strtab_buf = xmalloc(strtab_cap);
         strtab_buf[0] = '\0';
-        symtab_buf = calloc((size_t)(s->n_syms + 1), 24);
+        symtab_buf = xcalloc((size_t)(s->n_syms + 1), 24);
         size_t nsym = 1; // null entry
         for (int pass = 0; pass < 2; pass++) {
             for (int i = 0; i < s->n_syms; i++) {

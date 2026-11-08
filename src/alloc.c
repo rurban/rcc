@@ -20,6 +20,10 @@ void *xrealloc(void *p, size_t n) {
     void *q = realloc(p, n ? n : 1);
     return q ? q : oom();
 }
+char *xstrdup(const char *s) {
+    size_t n = strlen(s) + 1;
+    return memcpy(xmalloc(n), s, n);
+}
 
 //
 // Arena Allocator
@@ -155,7 +159,7 @@ static void ensure_str_intern_init(void) {
         return;
     // Small default for early calls (keywords, -D defines) before read_file().
     hash_size = 256;
-    strings = calloc(hash_size, sizeof(InternedStr *));
+    strings = xcalloc(hash_size, sizeof(InternedStr *));
 }
 
 // Call after read_file() with strlen(source) before preprocess().
@@ -171,14 +175,14 @@ void str_intern_resize(size_t src_bytes) {
 
     if (!strings) {
         hash_size = new_size;
-        strings = calloc(hash_size, sizeof(InternedStr *));
+        strings = xcalloc(hash_size, sizeof(InternedStr *));
         return;
     }
     if (new_size <= hash_size)
         return; // already big enough (e.g. second file in multi-file build)
 
     // Rehash the small initial table into the larger one.
-    InternedStr **ns = calloc(new_size, sizeof(InternedStr *));
+    InternedStr **ns = xcalloc(new_size, sizeof(InternedStr *));
     for (uint32_t i = 0; i < hash_size; i++) {
         for (InternedStr *s = strings[i]; s;) {
             InternedStr *next = s->next;

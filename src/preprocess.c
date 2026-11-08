@@ -1158,11 +1158,7 @@ static char *read_pp_file(char *path) {
     // bogus "expected specific operator" at end of input. Real compilers
     // handle arbitrarily large translation units; so do we now.
     size_t cap = 1 << 20, size = 0;
-    char *buf = malloc(cap);
-    if (!buf) {
-        fclose(fp);
-        return NULL;
-    }
+    char *buf = xmalloc(cap);
     for (;;) {
         if (size + 1 >= cap) {
             cap *= 2;
@@ -2169,7 +2165,7 @@ static void expand_token(Token *t) {
         return;
     }
     int args_cap = INITIAL_CALL_ARGS;
-    Token **args = calloc(args_cap, sizeof(Token *)), **tails = calloc(args_cap, sizeof(Token *));
+    Token **args = xcalloc(args_cap, sizeof(Token *)), **tails = xcalloc(args_cap, sizeof(Token *));
     int argc = 0, depth = 1;
     bool any = false;
     Token *rp = NULL;
@@ -2275,7 +2271,7 @@ static void expand_token(Token *t) {
     }
     while (argc < m->param_len) args[argc++] = NULL;
     int nargs = argc > 0 ? argc : 1;
-    Token **exp_args = calloc(nargs, sizeof(Token *)), **args_copy = calloc(nargs, sizeof(Token *));
+    Token **exp_args = xcalloc(nargs, sizeof(Token *)), **args_copy = xcalloc(nargs, sizeof(Token *));
     for (int i = 0; i < argc; i++) {
         Token *h = NULL, *t_ = NULL;
         splice_tokens(&h, &t_, args[i]);
@@ -3569,7 +3565,7 @@ static Token *concat_strings(Token *tok) {
 // only ever consumes plain assembly text.
 char *pp_tokens_to_text(Token *tok) {
     size_t cap = 4096, len = 0;
-    char *buf = malloc(cap);
+    char *buf = xmalloc(cap);
     int cur_line = 1;
     const char *cur_file = NULL;
     bool first_on_line = true;

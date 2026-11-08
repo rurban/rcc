@@ -2967,7 +2967,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                         int len = tok->len;
                         if (len >= 2 && (tok->str[0] == '"' || tok->str[0] == '\''))
                             len -= 2;
-                        char *target = malloc(len + 1);
+                        char *target = xmalloc(len + 1);
                         if (len >= 2 && (tok->str[0] == '"' || tok->str[0] == '\''))
                             memcpy(target, tok->str + 1, len);
                         else
@@ -2990,7 +2990,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                         int len = tok->len;
                         if (len >= 2 && (tok->str[0] == '"' || tok->str[0] == '\''))
                             len -= 2;
-                        char *name = malloc(len + 1);
+                        char *name = xmalloc(len + 1);
                         if (len >= 2 && (tok->str[0] == '"' || tok->str[0] == '\''))
                             memcpy(name, tok->str + 1, len);
                         else
@@ -3011,7 +3011,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     tok = skip(tok, "(");
                     // Parse comma-separated string list: "default","avx2",...
                     int cap = 4;
-                    pending_target_clones = calloc((size_t)cap, sizeof(char *));
+                    pending_target_clones = xcalloc((size_t)cap, sizeof(char *));
                     pending_target_clones_n = 0;
                     while (tok->kind == TK_STR) {
                         char *s = tok->str;

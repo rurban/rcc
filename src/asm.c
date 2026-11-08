@@ -2024,7 +2024,7 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
         long fsize = ftell(bf);
         fseek(bf, 0, SEEK_SET);
         if (fsize > 0) {
-            uint8_t *data = malloc((size_t)fsize);
+            uint8_t *data = xmalloc((size_t)fsize);
             size_t nread = fread(data, 1, (size_t)fsize, bf);
             secbuf_emitbuf(cur_sec_buf(as), data, nread);
             free(data);
@@ -6909,9 +6909,9 @@ static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
                 }
                 mac->nbody = end - (i + 1);
                 if (mac->nbody > 0) {
-                    mac->body = calloc((size_t)mac->nbody, sizeof(char *));
+                    mac->body = xcalloc((size_t)mac->nbody, sizeof(char *));
                     for (int b = 0; b < mac->nbody; b++)
-                        mac->body[b] = strdup(lines[i + 1 + b]);
+                        mac->body[b] = xstrdup(lines[i + 1 + b]);
                 }
             } else {
                 // Silently dropping this definition (leaving every
@@ -7186,7 +7186,7 @@ static void split_semicolons(char *buf) {
 // array of line pointers. Returns the count; `*out_lines` is malloc'd.
 static int split_into_lines(char *buf, char ***out_lines) {
     int cap = 64, n = 0;
-    char **lines = malloc((size_t)cap * sizeof(char *));
+    char **lines = xmalloc((size_t)cap * sizeof(char *));
     char *line = buf;
     while (*line || line == buf) {
         if (n == cap) {
@@ -7208,7 +7208,7 @@ static int split_into_lines(char *buf, char ***out_lines) {
 // assembler. Always returns a fresh malloc'd buffer (a plain copy when
 // there's nothing to expand).
 static char *asm_macro_pass(AsmState *as, const char *text) {
-    char *scratch = strdup(text);
+    char *scratch = xstrdup(text);
     split_semicolons(scratch);
     char **lines;
     int n = split_into_lines(scratch, &lines);
@@ -7217,7 +7217,7 @@ static char *asm_macro_pass(AsmState *as, const char *text) {
     free(lines);
     free(scratch);
     if (!out.data) {
-        out.data = strdup("\n");
+        out.data = xstrdup("\n");
     }
     return out.data;
 }
@@ -7249,8 +7249,7 @@ static char *asm_macro_pass(AsmState *as, const char *text) {
 // the instruction(s) immediately following it.
 static char *strip_block_comments(const char *text) {
     size_t n = strlen(text);
-    char *out = malloc(n + 1);
-    if (!out) return NULL;
+    char *out = xmalloc(n + 1);
     memcpy(out, text, n + 1);
     bool in_string = false;
     for (size_t i = 0; i < n; i++) {

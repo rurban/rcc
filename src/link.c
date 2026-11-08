@@ -246,14 +246,14 @@ int link_find_or_create_sec(LinkState *s, const char *name, bool alloc,
     }
     LinkSec *sec = &s->secs[s->n_secs];
     memset(sec, 0, sizeof(*sec));
-    sec->name = strdup(name);
+    sec->name = xstrdup(name);
     sec->alloc = alloc;
     sec->write = write;
     sec->exec = exec;
     sec->is_bss = is_bss;
     sec->is_tls = is_tls;
     sec->align = align < 1 ? 1 : align;
-    sec->data = is_bss ? NULL : malloc(64);
+    sec->data = is_bss ? NULL : xmalloc(64);
     sec->cap = is_bss ? 0 : 64;
     sec->cap_relocs = 0;
     sec->relocs = NULL;
@@ -315,7 +315,7 @@ static void sym_hash_grow(LinkState *s) {
     int oldcap = s->sym_hash_cap;
     int *old = s->sym_hash;
     s->sym_hash_cap = oldcap ? oldcap * 2 : 256;
-    s->sym_hash = calloc((size_t)s->sym_hash_cap, sizeof(int));
+    s->sym_hash = xcalloc((size_t)s->sym_hash_cap, sizeof(int));
     for (int i = 0; i < s->n_syms; i++) s->syms[i].hash_next = 0;
     for (int i = 0; i < s->n_syms; i++) {
         if (s->syms[i].bind == STB_LOCAL) continue; // never searchable by name
@@ -411,7 +411,7 @@ int link_add_sym(LinkState *s, const char *name, int sec, uint64_t value,
         s->syms = xrealloc(s->syms, (size_t)s->cap_syms * sizeof(LinkSym));
     }
     LinkSym *sym = &s->syms[s->n_syms];
-    sym->name = strdup(name);
+    sym->name = xstrdup(name);
     sym->sec = sec;
     sym->value = value;
     sym->size = size;

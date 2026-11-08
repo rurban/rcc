@@ -179,11 +179,7 @@ static void tgrow(void) {
     TEnt *old = g.tt;
     size_t ocap = g.tcap;
     g.tcap = ocap ? ocap * 2 : 256;
-    g.tt = calloc(g.tcap, sizeof(TEnt));
-    if (!g.tt) {
-        fprintf(stderr, "rcc: out of memory\n");
-        exit(1);
-    }
+    g.tt = xcalloc(g.tcap, sizeof(TEnt));
     g.tcnt = 0;
     for (size_t i = 0; i < ocap; i++)
         if (old[i].key) tput(old[i].key, old[i].q, old[i].die);
@@ -436,7 +432,7 @@ static void emit_slice_rec(DebugFnRec *rec, Dwarf_P_Die parent, LVar *stop, LVar
     int n = 0;
     for (LVar *v = newest; v && v != stop; v = v->next)
         n++;
-    LVar **a = malloc((size_t)(n ? n : 1) * sizeof *a);
+    LVar **a = xmalloc((size_t)(n ? n : 1) * sizeof *a);
     int i = n;
     for (LVar *v = newest; v && v != stop; v = v->next)
         a[--i] = v;
@@ -482,7 +478,7 @@ static void emit_function(DebugFnRec *rec) {
 
     // Parameters.
     size_t nmark = 0, cap = 16;
-    uintptr_t *mark = malloc(cap * sizeof *mark);
+    uintptr_t *mark = xmalloc(cap * sizeof *mark);
     for (LVar *p = fn->params; p; p = p->param_next) {
         if (nmark == cap) mark = xrealloc(mark, (cap *= 2) * sizeof *mark);
         mark[nmark++] = (uintptr_t)p;
@@ -505,7 +501,7 @@ static void emit_function(DebugFnRec *rec) {
     int nloc = 0;
     for (LVar *v = fn->locals; v; v = v->next)
         nloc++;
-    LVar **top = malloc((size_t)(nloc ? nloc : 1) * sizeof *top);
+    LVar **top = xmalloc((size_t)(nloc ? nloc : 1) * sizeof *top);
     int ntop = 0;
     for (LVar *v = fn->locals; v; v = v->next) {
         uintptr_t k = (uintptr_t)v;
@@ -533,7 +529,7 @@ static void emit_function(DebugFnRec *rec) {
 
 static void emit_globals(void) {
     ObjFile *obj = g.obj;
-    char *seen = calloc((size_t)obj->sym_count + 1, 1);
+    char *seen = xcalloc((size_t)obj->sym_count + 1, 1);
     for (LVar *v = g.prog->globals; v && !g.failed; v = v->next) {
         if (!var_ok(v) || v->is_local) continue;
         int si = cg_obj_var_sym_idx(v);
@@ -707,7 +703,7 @@ static bool build_loclists(ObjFile *obj, OutSec *out, int nout, PendRel **rels, 
     static LocOut lo[MAX_LOCREF];
     for (int i = 0; i < g.nlocref; i++) {
         DbgLoc *dl = g.locref[i].loc;
-        DbgRange *rs = malloc((size_t)dl->nranges * sizeof *rs);
+        DbgRange *rs = xmalloc((size_t)dl->nranges * sizeof *rs);
         memcpy(rs, dl->ranges, (size_t)dl->nranges * sizeof *rs);
         qsort(rs, (size_t)dl->nranges, sizeof *rs, cmp_range);
         lo[i] = (LocOut){loc_sec, loc_len, g.locref[i].sentinel};

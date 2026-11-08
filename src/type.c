@@ -74,7 +74,7 @@ bool is_complex(Type *ty) {
 }
 
 Type *complex_type(Type *base) {
-    Type *ty = calloc(1, sizeof(Type));
+    Type *ty = xcalloc(1, sizeof(Type));
     ty->kind = TY_COMPLEX;
     ty->base = base;
     ty->size = base->size * 2;
@@ -129,7 +129,7 @@ Type *bitint_type(int width, bool is_unsigned) {
         parser_used_wide_bitint = true;
     Type **slot = (width <= BITINT_MAXWIDTH) ? &cache[is_unsigned ? 1 : 0][width] : NULL;
     if (slot && *slot) return *slot;
-    Type *ty = calloc(1, sizeof(Type));
+    Type *ty = xcalloc(1, sizeof(Type));
     ty->kind = TY_BITINT;
     ty->is_unsigned = is_unsigned;
     ty->bitint_width = width;

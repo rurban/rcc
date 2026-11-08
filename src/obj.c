@@ -123,9 +123,7 @@ static uint32_t sym_hash_len(const char *name, uint32_t *out_len) {
 // Nodes carry their hash, so this never re-reads a symbol name.
 static void sym_htab_grow(ObjFile *obj) {
     uint32_t new_size = obj->sym_htab_size * 2;
-    struct SymHashNode **nt = calloc(new_size, sizeof(*nt));
-    if (!nt)
-        return; // keep the smaller table; correctness does not depend on size
+    struct SymHashNode **nt = xcalloc(new_size, sizeof(*nt));
     for (uint32_t i = 0; i < obj->sym_htab_size; i++) {
         struct SymHashNode *n = obj->sym_htab[i];
         while (n) {
@@ -145,11 +143,7 @@ void objfile_init(ObjFile *obj) {
     // wrong -Wstringop-overflow= warning. known gcc bug
     memset(obj, 0, sizeof(ObjFile));
     obj->sym_htab_size = SYM_HT_INIT;
-    obj->sym_htab = calloc(obj->sym_htab_size, sizeof(*obj->sym_htab));
-    if (!obj->sym_htab) {
-        fprintf(stderr, "objfile: out of memory\n");
-        exit(1);
-    }
+    obj->sym_htab = xcalloc(obj->sym_htab_size, sizeof(*obj->sym_htab));
     secbuf_init(&obj->text);
     secbuf_init(&obj->data);
     secbuf_init(&obj->rodata);
@@ -242,7 +236,7 @@ int objfile_add_sym(ObjFile *obj, const char *name, int section,
         obj->syms = xrealloc(obj->syms, obj->sym_cap * sizeof(ObjSym));
     }
     int idx = obj->sym_count++;
-    obj->syms[idx].name = strdup(name);
+    obj->syms[idx].name = xstrdup(name);
     obj->syms[idx].section = section;
     obj->syms[idx].offset = offset;
     obj->syms[idx].size = size;
@@ -251,7 +245,7 @@ int objfile_add_sym(ObjFile *obj, const char *name, int section,
     obj->syms[idx].bind_pinned = false;
     obj->syms[idx].visibility = STV_DEFAULT;
     // Insert into hash table
-    struct SymHashNode *node = malloc(sizeof(struct SymHashNode));
+    struct SymHashNode *node = xmalloc(sizeof(struct SymHashNode));
     node->hash = h;
     node->len = len;
     node->sym_idx = idx;
@@ -403,7 +397,7 @@ int objfile_find_or_add_section(ObjFile *obj, const char *name,
     }
     ExtraSection *es = &obj->extra_secs[obj->extra_sec_count++];
     memset(es, 0, sizeof(*es));
-    es->name = strdup(name);
+    es->name = xstrdup(name);
     secbuf_init(&es->buf);
     es->sh_flags = sh_flags;
     es->sh_entsize = sh_entsize;

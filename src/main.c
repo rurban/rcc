@@ -115,9 +115,7 @@ static char *read_file(char *path) {
         error("cannot open %s: %m", path);
 
     size_t filemax = 1 << 20, size = 0;
-    char *buf = malloc(filemax);
-    if (!buf)
-        error("out of memory reading %s", path);
+    char *buf = xmalloc(filemax);
     for (;;) {
         if (size + 1 >= filemax) {
             filemax *= 2;
@@ -473,7 +471,7 @@ static char *wl_get_value(const char *arg, const char *tok) {
                 const char *next_comma = strchr(val, ',');
                 size_t val_len = next_comma ? (size_t)(next_comma - val) : strlen(val);
                 if (val_len == 0) return NULL;
-                char *out = malloc(val_len + 1);
+                char *out = xmalloc(val_len + 1);
                 memcpy(out, val, val_len);
                 out[val_len] = '\0';
                 return out;
@@ -482,7 +480,7 @@ static char *wl_get_value(const char *arg, const char *tok) {
                 // "...,tok=value,..."
                 size_t val_len = len - tok_len - 1;
                 if (val_len == 0) return NULL;
-                char *out = malloc(val_len + 1);
+                char *out = xmalloc(val_len + 1);
                 memcpy(out, p + tok_len + 1, val_len);
                 out[val_len] = '\0';
                 return out;
@@ -505,7 +503,7 @@ static void sanitize_list_rebuild(void) {
     if (opt_ubsan) n += snprintf(buf + n, sizeof buf - n, "%sundefined", n ? "," : "");
     if (opt_float_cast_overflow)
         n += snprintf(buf + n, sizeof buf - n, "%sfloat-cast-overflow", n ? "," : "");
-    if (n > 0) opt_sanitize_list = strdup(buf);
+    if (n > 0) opt_sanitize_list = xstrdup(buf);
 }
 
 // Parse a "-fsanitize=<list>" value: a comma
@@ -1510,13 +1508,13 @@ int main(int argc, char **argv) {
                 size_t gcc_len = strlen(GCC);
                 if (gcc_len > 4 && GCC[gcc_len - 1] == 'c' && GCC[gcc_len - 2] == 'c' && GCC[gcc_len - 3] == 'g' && GCC[gcc_len - 4] == '-') {
                     // Cross-compiler: strip trailing "-gcc", append "-objdump"
-                    char *triple = malloc(gcc_len - 3);
+                    char *triple = xmalloc(gcc_len - 3);
                     if (triple) {
                         assert(gcc_len > 4);
                         memcpy(triple, GCC, gcc_len - 4);
                         triple[gcc_len - 4] = '\0';
                         size_t len = strlen(triple) + 9;
-                        char *xobj = malloc(len);
+                        char *xobj = xmalloc(len);
                         if (xobj) {
                             snprintf(xobj, len, "%s-objdump", triple);
                             objdump = xobj;

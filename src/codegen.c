@@ -11470,7 +11470,7 @@ static void cg_emit_asan_globals(Program *prog) {
     if (count == 0) return;
 
     // Name strings in .rodata; remember each symbol for the array below.
-    int *name_syms = malloc(sizeof(int) * count);
+    int *name_syms = xmalloc(sizeof(int) * count);
     int ni = 0;
     cg_set_section(SEC_RODATA);
     for (LVar *var = prog->globals; var; var = var->next) {
@@ -20221,7 +20221,7 @@ static void cg_ir_cache_build(Program *prog) {
     int n = 0;
     for (TLItem *it = prog->items; it; it = it->next)
         if (it->kind == TL_FUNC) n++;
-    ir_cache = calloc((size_t)(n ? n : 1), sizeof(IRFunc *));
+    ir_cache = xcalloc((size_t)(n ? n : 1), sizeof(IRFunc *));
     ir_cache_n = n;
     int i = 0;
     for (TLItem *it = prog->items; it; it = it->next) {
@@ -22976,7 +22976,7 @@ struct ObjFile *codegen(Program *prog) {
         int fidx = objfile_find_sym(cg_obj, fn_sym);
         if (fidx < 0) continue; // shouldn't happen
         free(cg_obj->syms[fidx].name);
-        cg_obj->syms[fidx].name = strdup(default_sym);
+        cg_obj->syms[fidx].name = xstrdup(default_sym);
 
         // Emit resolver returning the default clone.
         // Use fidx (renamed symbol index) directly to avoid picking up

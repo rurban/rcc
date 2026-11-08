@@ -10,11 +10,7 @@
     } while (0)
 
 IRFunc *ir_func_new(Function *fn) {
-    IRFunc *f = calloc(1, sizeof *f);
-    if (!f) {
-        fprintf(stderr, "rcc: out of memory\n");
-        exit(1);
-    }
+    IRFunc *f = xcalloc(1, sizeof *f);
     f->fn = fn;
     return f;
 }
@@ -41,11 +37,7 @@ void ir_func_free(IRFunc *f) {
 }
 
 IRBlock *ir_block_new(IRFunc *f) {
-    IRBlock *b = calloc(1, sizeof *b);
-    if (!b) {
-        fprintf(stderr, "rcc: out of memory\n");
-        exit(1);
-    }
+    IRBlock *b = xcalloc(1, sizeof *b);
     b->id = f->nblocks;
     GROW(f->blocks, f->nblocks, f->capblocks);
     f->blocks[f->nblocks++] = b;
@@ -70,11 +62,7 @@ int ir_dbg_file_idx(const char *filename) {
 const char *ir_dbg_file(int idx) { return idx >= 1 && idx <= n_dbg_files ? dbg_files[idx - 1] : NULL; }
 
 IRInstr *ir_instr_new(IRFunc *f, IROp op, IRType type) {
-    IRInstr *i = calloc(1, sizeof *i);
-    if (!i) {
-        fprintf(stderr, "rcc: out of memory\n");
-        exit(1);
-    }
+    IRInstr *i = xcalloc(1, sizeof *i);
     i->op = (uint8_t)op;
     i->type = (uint8_t)type;
     i->a = i->b = i->c = IR_NONE;
@@ -205,11 +193,11 @@ void ir_remove_pred_edge(IRBlock *b, IRBlock *pred) {
 int ir_rpo(IRFunc *f, IRBlock **out) {
     int n = f->nblocks;
     if (n == 0) return 0;
-    unsigned char *seen = calloc((size_t)n, 1);
-    IRBlock **stack = malloc(sizeof(*stack) * (size_t)n);
-    int *next = calloc((size_t)n, sizeof(int));
+    unsigned char *seen = xcalloc((size_t)n, 1);
+    IRBlock **stack = xmalloc(sizeof(*stack) * (size_t)n);
+    int *next = xcalloc((size_t)n, sizeof(int));
     int sp = 0, cnt = 0;
-    IRBlock **post = malloc(sizeof(*post) * (size_t)n);
+    IRBlock **post = xmalloc(sizeof(*post) * (size_t)n);
     stack[sp++] = f->blocks[0];
     seen[0] = 1;
     while (sp) {
@@ -240,12 +228,12 @@ void ir_analyze_loops(IRFunc *f) {
     for (int i = 0; i < n; i++) f->blocks[i]->loop_depth = 0;
     if (n == 0) return;
     // DFS colors to find back edges (edge to a block still on the DFS stack).
-    unsigned char *color = calloc((size_t)n, 1); // 0 white, 1 gray, 2 black
-    IRBlock **stack = malloc(sizeof(*stack) * (size_t)n);
-    int *next = calloc((size_t)n, sizeof(int));
+    unsigned char *color = xcalloc((size_t)n, 1); // 0 white, 1 gray, 2 black
+    IRBlock **stack = xmalloc(sizeof(*stack) * (size_t)n);
+    int *next = xcalloc((size_t)n, sizeof(int));
     // back_src[h] = list of latches for header h
-    int **latch = calloc((size_t)n, sizeof(int *));
-    int *nlatch = calloc((size_t)n, sizeof(int));
+    int **latch = xcalloc((size_t)n, sizeof(int *));
+    int *nlatch = xcalloc((size_t)n, sizeof(int));
     int sp = 0;
     stack[sp++] = f->blocks[0];
     color[0] = 1;
@@ -267,8 +255,8 @@ void ir_analyze_loops(IRFunc *f) {
             sp--;
         }
     }
-    unsigned char *in = malloc((size_t)n);
-    int *work = malloc(sizeof(int) * (size_t)n);
+    unsigned char *in = xmalloc((size_t)n);
+    int *work = xmalloc(sizeof(int) * (size_t)n);
     for (int h = 0; h < n; h++) {
         if (!nlatch[h]) continue;
         memset(in, 0, (size_t)n);
@@ -485,10 +473,10 @@ void ir_verify(IRFunc *f) {
         }
     }
     // dominators (Cooper/Harvey/Kennedy) over reachable blocks
-    IRBlock **rpo = malloc(sizeof(*rpo) * (size_t)n);
+    IRBlock **rpo = xmalloc(sizeof(*rpo) * (size_t)n);
     int cnt = ir_rpo(f, rpo);
-    int *num = malloc(sizeof(int) * (size_t)n);
-    int *idom = malloc(sizeof(int) * (size_t)n);
+    int *num = xmalloc(sizeof(int) * (size_t)n);
+    int *idom = xmalloc(sizeof(int) * (size_t)n);
     for (int i = 0; i < n; i++) num[i] = idom[i] = -1;
     for (int i = 0; i < cnt; i++) num[rpo[i]->id] = i;
     idom[rpo[0]->id] = rpo[0]->id;

@@ -62,7 +62,7 @@ static char *build_tmp_path(const char *basename, const char *suffix) {
     tmpdir = "/tmp";
 #endif
     size_t len = strlen(tmpdir) + 1 + strlen(basename) + strlen(suffix) + 32;
-    char *path = malloc(len);
+    char *path = xmalloc(len);
     snprintf(path, len, "%s/rcc_lib_%s%s", tmpdir, basename, suffix);
     return path;
 }
@@ -83,7 +83,7 @@ static char *path_basename_noext(const char *path) {
 #endif
     char *dot = strrchr(base, '.');
     size_t len = dot ? (size_t)(dot - base) : strlen(base);
-    char *name = malloc(len + 1);
+    char *name = xmalloc(len + 1);
     memcpy(name, base, len);
     name[len] = '\0';
     return name;
@@ -138,7 +138,7 @@ RCCLib *rcc_lib_new(void) {
         init_builtin_names();
         lib_initialized = true;
     }
-    RCCLib *lib = calloc(1, sizeof(RCCLib));
+    RCCLib *lib = xcalloc(1, sizeof(RCCLib));
     return lib;
 }
 
@@ -182,7 +182,7 @@ void rcc_lib_reset(RCCLib *lib) {
 // -mno-ms-bitfields.  Unrecognized flags are ignored.
 static void apply_cflags(const char *cflags) {
     if (!cflags || !cflags[0]) return;
-    char *copy = strdup(cflags);
+    char *copy = xstrdup(cflags);
     char *sv = NULL;
     for (char *tok = strtok_r(copy, " \t", &sv); tok; tok = strtok_r(NULL, " \t", &sv)) {
         if (!strncmp(tok, "-D", 2) && tok[2])
@@ -205,7 +205,7 @@ static void apply_cflags(const char *cflags) {
 // external-rcc path (which parses the flag in main.c's parse_sanitize_list).
 static void apply_sanitize_from_ldflags(const char *ldflags) {
     if (!ldflags) return;
-    char *copy = strdup(ldflags);
+    char *copy = xstrdup(ldflags);
     char *sv = NULL;
     for (char *tok = strtok_r(copy, " \t", &sv); tok; tok = strtok_r(NULL, " \t", &sv)) {
         if (!strncmp(tok, "-fsanitize=", 11)) {

@@ -30,7 +30,7 @@ static u8id_ctx_t u8ident_new_ctx(void) {
     u8id_ctx_t i = i_ctx + 1;
     i_ctx++;
     if (i == U8ID_CTX_TRESH) {
-        ctxp = (struct ctx_t *)calloc(U8ID_CTX_TRESH, sizeof(struct ctx_t));
+        ctxp = (struct ctx_t *)xcalloc(U8ID_CTX_TRESH, sizeof(struct ctx_t));
     } else if (i > U8ID_CTX_TRESH) {
         struct ctx_t *tmp = (struct ctx_t *)xrealloc(ctxp, i * sizeof(struct ctx_t));
         if (tmp) ctxp = tmp;
@@ -63,7 +63,7 @@ static int u8ident_add_script_ctx(const uint8_t scr, struct ctx_t *c) {
         return -1;
     int i = c->count;
     if (unlikely(i == 8)) {
-        uint8_t *p = malloc(16);
+        uint8_t *p = xmalloc(16);
         memcpy(p, c->scr8, 8);
         c->u8p = p;
         c->u8p[i] = scr;
@@ -73,7 +73,7 @@ static int u8ident_add_script_ctx(const uint8_t scr, struct ctx_t *c) {
     } else {
         if (i > 8) {
             if (!c->u8p) {
-                c->u8p = calloc(16, 1);
+                c->u8p = xcalloc(16, 1);
                 memcpy(c->u8p, c->scr8, 8);
             }
             c->u8p[i] = scr;

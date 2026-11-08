@@ -1158,7 +1158,7 @@ Token *lex_one(char **pp, int *plineno) {
             // "\x2f\x2a..."`) used to overflow the fixed arena bump and
             // come back truncated with a stray byte -- corrupting the
             // generated test_resources.c and failing the build.
-            char *buf = malloc(2048);
+            char *buf = xmalloc(2048);
             int cap = 2048;
             int len = 0;
 

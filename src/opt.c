@@ -572,7 +572,7 @@ static void inline_htab_build(Program *prog) {
     for (TLItem *item = prog->items; item; item = item->next)
         if (item->kind == TL_FUNC) n++;
     free(inline_htab_nodes);
-    inline_htab_nodes = n ? malloc(sizeof(InlineHashNode) * (size_t)n) : NULL;
+    inline_htab_nodes = n ? xmalloc(sizeof(InlineHashNode) * (size_t)n) : NULL;
     int i = 0;
     for (TLItem *item = prog->items; item; item = item->next)
         if (item->kind == TL_FUNC) {
@@ -1210,7 +1210,7 @@ static void local_opt_addr_insert(LVar *var) {
     if (local_opt_addr_taken(var)) return;
     if ((local_opt_addr_n + 1) * 2 > local_opt_addr_cap) {
         size_t ncap = local_opt_addr_cap ? local_opt_addr_cap * 2 : 64;
-        LVar **ntab = calloc(ncap, sizeof(*ntab));
+        LVar **ntab = xcalloc(ncap, sizeof(*ntab));
         for (size_t i = 0; i < local_opt_addr_cap; i++)
             if (local_opt_addr_tab[i]) {
                 size_t j = local_opt_addr_hash(local_opt_addr_tab[i]) & (ncap - 1);
@@ -2282,13 +2282,13 @@ static void dce_htab_build(Function **fns, int n) {
     while (size < need) size <<= 1;
     if (size != dce_htab_size) {
         free(dce_htab);
-        dce_htab = calloc(size, sizeof(*dce_htab));
+        dce_htab = xcalloc(size, sizeof(*dce_htab));
         dce_htab_size = size;
     } else {
         memset(dce_htab, 0, sizeof(*dce_htab) * dce_htab_size);
     }
     free(dce_htab_nodes);
-    dce_htab_nodes = n ? malloc(sizeof(DceHashNode) * (size_t)(2 * n)) : NULL;
+    dce_htab_nodes = n ? xmalloc(sizeof(DceHashNode) * (size_t)(2 * n)) : NULL;
     int ni = 0;
     // Insert in reverse index order: each insert prepends to its bucket,
     // so the lowest-index match ends up at the chain head and wins on
@@ -2412,7 +2412,7 @@ void eliminate_unused_static_inline(Program *prog) {
     for (TLItem *item = prog->items; item; item = item->next)
         if (item->kind == TL_FUNC) n++;
     if (n == 0) return;
-    Function **fns = malloc(sizeof(Function *) * (size_t)n);
+    Function **fns = xmalloc(sizeof(Function *) * (size_t)n);
     int i = 0;
     for (TLItem *item = prog->items; item; item = item->next)
         if (item->kind == TL_FUNC) fns[i++] = item->fn;
@@ -2558,7 +2558,7 @@ void eliminate_unused_static_inline(Program *prog) {
     // DEFINE_STATIC_CALL-style addressable-marker local pointing at a
     // static-call key) leak into the object file as if the dead
     // function's body had still been emitted.
-    const char **omitted = malloc(sizeof(char *) * (size_t)n);
+    const char **omitted = xmalloc(sizeof(char *) * (size_t)n);
     int n_omitted = 0;
     TLItem **link = &prog->items;
     for (TLItem *item = prog->items; item;) {
@@ -2584,8 +2584,8 @@ void eliminate_unused_static_inline(Program *prog) {
     if (n_omitted > 0) {
         uint32_t otab_size = 16;
         while (otab_size < (uint32_t)n_omitted * 2) otab_size <<= 1;
-        OmitHashNode **otab = calloc(otab_size, sizeof(*otab));
-        OmitHashNode *onodes = malloc(sizeof(OmitHashNode) * (size_t)n_omitted);
+        OmitHashNode **otab = xcalloc(otab_size, sizeof(*otab));
+        OmitHashNode *onodes = xmalloc(sizeof(OmitHashNode) * (size_t)n_omitted);
         for (int k = 0; k < n_omitted; k++) {
             uint32_t len, h = dce_hash_str(omitted[k], &len) & (otab_size - 1);
             onodes[k].key = omitted[k];
@@ -2732,7 +2732,7 @@ static Node *peephole(Node *n) {
             n->rhs->rhs && n->rhs->rhs->kind == ND_NUM) {
             int64_t c = n->rhs->rhs->val;
             // x - (x + c) = -c ; x - (x - c) = c  (emit the folded constant)
-            Node *z = malloc(sizeof(Node));
+            Node *z = xmalloc(sizeof(Node));
             memset(z, 0, sizeof(Node));
             z->kind = ND_NUM;
             z->val = (n->rhs->kind == ND_SUB) ? c : -c;
@@ -2744,7 +2744,7 @@ static Node *peephole(Node *n) {
             n->lhs->kind == ND_LVAR && n->rhs->kind == ND_LVAR &&
             n->lhs->var == n->rhs->var) {
             if (n->kind == ND_SUB) {
-                Node *z = malloc(sizeof(Node));
+                Node *z = xmalloc(sizeof(Node));
                 memset(z, 0, sizeof(Node));
                 if (n->ty && (n->ty->kind == TY_FLOAT || n->ty->kind == TY_DOUBLE || n->ty->kind == TY_LDOUBLE)) {
                     z->kind = ND_FNUM;
@@ -2759,11 +2759,11 @@ static Node *peephole(Node *n) {
             // x+x → x<<1 (integer only, shift invalid for float)
             if (n->ty && (n->ty->kind == TY_FLOAT || n->ty->kind == TY_DOUBLE || n->ty->kind == TY_LDOUBLE))
                 break;
-            Node *sh = malloc(sizeof(Node));
+            Node *sh = xmalloc(sizeof(Node));
             memset(sh, 0, sizeof(Node));
             sh->kind = ND_SHL;
             sh->lhs = n->lhs;
-            Node *one = malloc(sizeof(Node));
+            Node *one = xmalloc(sizeof(Node));
             memset(one, 0, sizeof(Node));
             one->kind = ND_NUM;
             one->val = 1;
@@ -2782,7 +2782,7 @@ static Node *peephole(Node *n) {
             if (n->rhs->fval == 1.0 && (n->kind == ND_MUL || n->kind == ND_DIV))
                 return n->lhs;
             if (n->rhs->fval == 0.0 && n->kind == ND_MUL) {
-                Node *z = malloc(sizeof(Node));
+                Node *z = xmalloc(sizeof(Node));
                 memset(z, 0, sizeof(Node));
                 z->kind = ND_FNUM;
                 z->fval = 0.0;
@@ -2818,7 +2818,7 @@ static Node *peephole(Node *n) {
             }
             // x * 2.0 → x + x
             if (n->rhs->fval == 2.0 && n->kind == ND_MUL) {
-                Node *x2 = malloc(sizeof(Node));
+                Node *x2 = xmalloc(sizeof(Node));
                 memset(x2, 0, sizeof(Node));
                 *x2 = *n->lhs;
                 x2->next = NULL;
@@ -2828,21 +2828,21 @@ static Node *peephole(Node *n) {
             }
             // x * 3.0 → (x+x) + x
             if (n->rhs->fval == 3.0 && n->kind == ND_MUL) {
-                Node *x2 = malloc(sizeof(Node));
+                Node *x2 = xmalloc(sizeof(Node));
                 memset(x2, 0, sizeof(Node));
                 *x2 = *n->lhs;
                 x2->next = NULL;
-                Node *add1 = malloc(sizeof(Node));
+                Node *add1 = xmalloc(sizeof(Node));
                 memset(add1, 0, sizeof(Node));
                 add1->kind = ND_ADD;
                 add1->lhs = n->lhs;
                 add1->rhs = x2;
                 add1->ty = n->ty;
-                Node *x3 = malloc(sizeof(Node));
+                Node *x3 = xmalloc(sizeof(Node));
                 memset(x3, 0, sizeof(Node));
                 *x3 = *n->lhs;
                 x3->next = NULL;
-                Node *add2 = malloc(sizeof(Node));
+                Node *add2 = xmalloc(sizeof(Node));
                 memset(add2, 0, sizeof(Node));
                 add2->kind = ND_ADD;
                 add2->lhs = add1;
@@ -2852,7 +2852,7 @@ static Node *peephole(Node *n) {
             }
             // x * (-1.0) → -x
             if (n->rhs->fval == -1.0 && n->kind == ND_MUL) {
-                Node *neg = malloc(sizeof(Node));
+                Node *neg = xmalloc(sizeof(Node));
                 memset(neg, 0, sizeof(Node));
                 neg->kind = ND_NEG;
                 neg->lhs = n->lhs;
@@ -2861,7 +2861,7 @@ static Node *peephole(Node *n) {
             }
             // x / -1.0 → -x
             if (n->rhs->fval == -1.0 && n->kind == ND_DIV) {
-                Node *neg = malloc(sizeof(Node));
+                Node *neg = xmalloc(sizeof(Node));
                 memset(neg, 0, sizeof(Node));
                 neg->kind = ND_NEG;
                 neg->lhs = n->lhs;
@@ -2890,7 +2890,7 @@ static Node *peephole(Node *n) {
             if (n->rhs->val == 1 && (n->kind == ND_MUL || n->kind == ND_DIV))
                 return n->lhs;
             if (n->rhs->val == -1 && n->kind == ND_MUL) {
-                Node *nn = malloc(sizeof(Node));
+                Node *nn = xmalloc(sizeof(Node));
                 memset(nn, 0, sizeof(Node));
                 nn->kind = ND_NEG;
                 nn->lhs = n->lhs;
@@ -2898,7 +2898,7 @@ static Node *peephole(Node *n) {
                 return nn;
             }
             if (n->rhs->val == -1 && n->kind == ND_DIV) {
-                Node *nn = malloc(sizeof(Node));
+                Node *nn = xmalloc(sizeof(Node));
                 memset(nn, 0, sizeof(Node));
                 nn->kind = ND_NEG;
                 nn->lhs = n->lhs;
@@ -2906,7 +2906,7 @@ static Node *peephole(Node *n) {
                 return nn;
             }
             if (n->rhs->val == -1 && n->kind == ND_MOD) {
-                Node *z = malloc(sizeof(Node));
+                Node *z = xmalloc(sizeof(Node));
                 memset(z, 0, sizeof(Node));
                 z->kind = ND_NUM;
                 z->val = 0;
@@ -2914,7 +2914,7 @@ static Node *peephole(Node *n) {
                 return z;
             }
             if (n->rhs->val == 1 && n->kind == ND_MOD) {
-                Node *z = malloc(sizeof(Node));
+                Node *z = xmalloc(sizeof(Node));
                 memset(z, 0, sizeof(Node));
                 z->kind = ND_NUM;
                 z->val = 0;
@@ -2930,7 +2930,7 @@ static Node *peephole(Node *n) {
                 return n;
             }
             if (n->rhs->val == 0 && n->kind == ND_MUL) {
-                Node *z = malloc(sizeof(Node));
+                Node *z = xmalloc(sizeof(Node));
                 memset(z, 0, sizeof(Node));
                 z->kind = ND_NUM;
                 z->val = 0;
@@ -2949,7 +2949,7 @@ static Node *peephole(Node *n) {
                 if (k <= 30) {
                     if (n->kind == ND_MUL) {
                         // x * 2^k → x << k
-                        Node *sh = malloc(sizeof(Node));
+                        Node *sh = xmalloc(sizeof(Node));
                         memset(sh, 0, sizeof(Node));
                         sh->kind = ND_SHL;
                         sh->lhs = n->lhs;
@@ -2961,7 +2961,7 @@ static Node *peephole(Node *n) {
                     // Unsigned: x / 2^k → x >> k, x % 2^k → x & (2^k-1)
                     if (n->ty && n->ty->is_unsigned) {
                         if (n->kind == ND_DIV) {
-                            Node *sh = malloc(sizeof(Node));
+                            Node *sh = xmalloc(sizeof(Node));
                             memset(sh, 0, sizeof(Node));
                             sh->kind = ND_SHR;
                             sh->lhs = n->lhs;
@@ -2971,7 +2971,7 @@ static Node *peephole(Node *n) {
                             return sh;
                         }
                         if (n->kind == ND_MOD) {
-                            Node *andn = malloc(sizeof(Node));
+                            Node *andn = xmalloc(sizeof(Node));
                             memset(andn, 0, sizeof(Node));
                             andn->kind = ND_BITAND;
                             andn->lhs = n->lhs;
@@ -2990,17 +2990,17 @@ static Node *peephole(Node *n) {
                 int64_t m = n->rhs->val;
                 if (m == 3) {
                     // x * 3 = (x << 1) + x
-                    Node *sh = malloc(sizeof(Node));
+                    Node *sh = xmalloc(sizeof(Node));
                     memset(sh, 0, sizeof(Node));
                     sh->kind = ND_SHL;
                     sh->lhs = n->lhs;
-                    Node *c1 = malloc(sizeof(Node));
+                    Node *c1 = xmalloc(sizeof(Node));
                     memset(c1, 0, sizeof(Node));
                     c1->kind = ND_NUM;
                     c1->val = 1;
                     sh->rhs = c1;
                     sh->ty = n->ty;
-                    Node *add = malloc(sizeof(Node));
+                    Node *add = xmalloc(sizeof(Node));
                     memset(add, 0, sizeof(Node));
                     add->kind = ND_ADD;
                     add->lhs = sh;
@@ -3010,17 +3010,17 @@ static Node *peephole(Node *n) {
                 }
                 if (m == 5) {
                     // x * 5 = (x << 2) + x
-                    Node *sh = malloc(sizeof(Node));
+                    Node *sh = xmalloc(sizeof(Node));
                     memset(sh, 0, sizeof(Node));
                     sh->kind = ND_SHL;
                     sh->lhs = n->lhs;
-                    Node *c2 = malloc(sizeof(Node));
+                    Node *c2 = xmalloc(sizeof(Node));
                     memset(c2, 0, sizeof(Node));
                     c2->kind = ND_NUM;
                     c2->val = 2;
                     sh->rhs = c2;
                     sh->ty = n->ty;
-                    Node *add = malloc(sizeof(Node));
+                    Node *add = xmalloc(sizeof(Node));
                     memset(add, 0, sizeof(Node));
                     add->kind = ND_ADD;
                     add->lhs = sh;
@@ -3030,27 +3030,27 @@ static Node *peephole(Node *n) {
                 }
                 if (m == 6) {
                     // x * 6 = (x << 2) + (x << 1)
-                    Node *sh2 = malloc(sizeof(Node));
+                    Node *sh2 = xmalloc(sizeof(Node));
                     memset(sh2, 0, sizeof(Node));
                     sh2->kind = ND_SHL;
                     sh2->lhs = n->lhs;
-                    Node *c2 = malloc(sizeof(Node));
+                    Node *c2 = xmalloc(sizeof(Node));
                     memset(c2, 0, sizeof(Node));
                     c2->kind = ND_NUM;
                     c2->val = 2;
                     sh2->rhs = c2;
                     sh2->ty = n->ty;
-                    Node *sh1 = malloc(sizeof(Node));
+                    Node *sh1 = xmalloc(sizeof(Node));
                     memset(sh1, 0, sizeof(Node));
                     sh1->kind = ND_SHL;
                     sh1->lhs = n->lhs;
-                    Node *c1 = malloc(sizeof(Node));
+                    Node *c1 = xmalloc(sizeof(Node));
                     memset(c1, 0, sizeof(Node));
                     c1->kind = ND_NUM;
                     c1->val = 1;
                     sh1->rhs = c1;
                     sh1->ty = n->ty;
-                    Node *add = malloc(sizeof(Node));
+                    Node *add = xmalloc(sizeof(Node));
                     memset(add, 0, sizeof(Node));
                     add->kind = ND_ADD;
                     add->lhs = sh2;
@@ -3060,17 +3060,17 @@ static Node *peephole(Node *n) {
                 }
                 if (m == 7) {
                     // x * 7 = (x << 3) - x
-                    Node *sh = malloc(sizeof(Node));
+                    Node *sh = xmalloc(sizeof(Node));
                     memset(sh, 0, sizeof(Node));
                     sh->kind = ND_SHL;
                     sh->lhs = n->lhs;
-                    Node *c3 = malloc(sizeof(Node));
+                    Node *c3 = xmalloc(sizeof(Node));
                     memset(c3, 0, sizeof(Node));
                     c3->kind = ND_NUM;
                     c3->val = 3;
                     sh->rhs = c3;
                     sh->ty = n->ty;
-                    Node *sub = malloc(sizeof(Node));
+                    Node *sub = xmalloc(sizeof(Node));
                     memset(sub, 0, sizeof(Node));
                     sub->kind = ND_SUB;
                     sub->lhs = sh;
@@ -3080,17 +3080,17 @@ static Node *peephole(Node *n) {
                 }
                 if (m == 9) {
                     // x * 9 = (x << 3) + x
-                    Node *sh = malloc(sizeof(Node));
+                    Node *sh = xmalloc(sizeof(Node));
                     memset(sh, 0, sizeof(Node));
                     sh->kind = ND_SHL;
                     sh->lhs = n->lhs;
-                    Node *c3 = malloc(sizeof(Node));
+                    Node *c3 = xmalloc(sizeof(Node));
                     memset(c3, 0, sizeof(Node));
                     c3->kind = ND_NUM;
                     c3->val = 3;
                     sh->rhs = c3;
                     sh->ty = n->ty;
-                    Node *add = malloc(sizeof(Node));
+                    Node *add = xmalloc(sizeof(Node));
                     memset(add, 0, sizeof(Node));
                     add->kind = ND_ADD;
                     add->lhs = sh;
@@ -3100,27 +3100,27 @@ static Node *peephole(Node *n) {
                 }
                 if (m == 10) {
                     // x * 10 = (x << 3) + (x << 1)
-                    Node *sh3 = malloc(sizeof(Node));
+                    Node *sh3 = xmalloc(sizeof(Node));
                     memset(sh3, 0, sizeof(Node));
                     sh3->kind = ND_SHL;
                     sh3->lhs = n->lhs;
-                    Node *c3 = malloc(sizeof(Node));
+                    Node *c3 = xmalloc(sizeof(Node));
                     memset(c3, 0, sizeof(Node));
                     c3->kind = ND_NUM;
                     c3->val = 3;
                     sh3->rhs = c3;
                     sh3->ty = n->ty;
-                    Node *sh1 = malloc(sizeof(Node));
+                    Node *sh1 = xmalloc(sizeof(Node));
                     memset(sh1, 0, sizeof(Node));
                     sh1->kind = ND_SHL;
                     sh1->lhs = n->lhs;
-                    Node *c1 = malloc(sizeof(Node));
+                    Node *c1 = xmalloc(sizeof(Node));
                     memset(c1, 0, sizeof(Node));
                     c1->kind = ND_NUM;
                     c1->val = 1;
                     sh1->rhs = c1;
                     sh1->ty = n->ty;
-                    Node *add = malloc(sizeof(Node));
+                    Node *add = xmalloc(sizeof(Node));
                     memset(add, 0, sizeof(Node));
                     add->kind = ND_ADD;
                     add->lhs = sh3;
@@ -3130,33 +3130,33 @@ static Node *peephole(Node *n) {
                 }
                 if (m == 11) {
                     // x * 11 = (x << 3) + (x << 1) + x
-                    Node *sh3 = malloc(sizeof(Node));
+                    Node *sh3 = xmalloc(sizeof(Node));
                     memset(sh3, 0, sizeof(Node));
                     sh3->kind = ND_SHL;
                     sh3->lhs = n->lhs;
-                    Node *c3 = malloc(sizeof(Node));
+                    Node *c3 = xmalloc(sizeof(Node));
                     memset(c3, 0, sizeof(Node));
                     c3->kind = ND_NUM;
                     c3->val = 3;
                     sh3->rhs = c3;
                     sh3->ty = n->ty;
-                    Node *sh1 = malloc(sizeof(Node));
+                    Node *sh1 = xmalloc(sizeof(Node));
                     memset(sh1, 0, sizeof(Node));
                     sh1->kind = ND_SHL;
                     sh1->lhs = n->lhs;
-                    Node *c1 = malloc(sizeof(Node));
+                    Node *c1 = xmalloc(sizeof(Node));
                     memset(c1, 0, sizeof(Node));
                     c1->kind = ND_NUM;
                     c1->val = 1;
                     sh1->rhs = c1;
                     sh1->ty = n->ty;
-                    Node *add1 = malloc(sizeof(Node));
+                    Node *add1 = xmalloc(sizeof(Node));
                     memset(add1, 0, sizeof(Node));
                     add1->kind = ND_ADD;
                     add1->lhs = sh3;
                     add1->rhs = sh1;
                     add1->ty = n->ty;
-                    Node *add2 = malloc(sizeof(Node));
+                    Node *add2 = xmalloc(sizeof(Node));
                     memset(add2, 0, sizeof(Node));
                     add2->kind = ND_ADD;
                     add2->lhs = add1;
@@ -3166,17 +3166,17 @@ static Node *peephole(Node *n) {
                 }
                 if (m == 15) {
                     // x * 15 = (x << 4) - x
-                    Node *sh = malloc(sizeof(Node));
+                    Node *sh = xmalloc(sizeof(Node));
                     memset(sh, 0, sizeof(Node));
                     sh->kind = ND_SHL;
                     sh->lhs = n->lhs;
-                    Node *c4 = malloc(sizeof(Node));
+                    Node *c4 = xmalloc(sizeof(Node));
                     memset(c4, 0, sizeof(Node));
                     c4->kind = ND_NUM;
                     c4->val = 4;
                     sh->rhs = c4;
                     sh->ty = n->ty;
-                    Node *sub = malloc(sizeof(Node));
+                    Node *sub = xmalloc(sizeof(Node));
                     memset(sub, 0, sizeof(Node));
                     sub->kind = ND_SUB;
                     sub->lhs = sh;
@@ -3186,33 +3186,33 @@ static Node *peephole(Node *n) {
                 }
                 if (m == 13) {
                     // x * 13 = (x << 3) + (x << 2) + x
-                    Node *sh3 = malloc(sizeof(Node));
+                    Node *sh3 = xmalloc(sizeof(Node));
                     memset(sh3, 0, sizeof(Node));
                     sh3->kind = ND_SHL;
                     sh3->lhs = n->lhs;
-                    Node *c3 = malloc(sizeof(Node));
+                    Node *c3 = xmalloc(sizeof(Node));
                     memset(c3, 0, sizeof(Node));
                     c3->kind = ND_NUM;
                     c3->val = 3;
                     sh3->rhs = c3;
                     sh3->ty = n->ty;
-                    Node *sh2 = malloc(sizeof(Node));
+                    Node *sh2 = xmalloc(sizeof(Node));
                     memset(sh2, 0, sizeof(Node));
                     sh2->kind = ND_SHL;
                     sh2->lhs = n->lhs;
-                    Node *c2 = malloc(sizeof(Node));
+                    Node *c2 = xmalloc(sizeof(Node));
                     memset(c2, 0, sizeof(Node));
                     c2->kind = ND_NUM;
                     c2->val = 2;
                     sh2->rhs = c2;
                     sh2->ty = n->ty;
-                    Node *a1 = malloc(sizeof(Node));
+                    Node *a1 = xmalloc(sizeof(Node));
                     memset(a1, 0, sizeof(Node));
                     a1->kind = ND_ADD;
                     a1->lhs = sh3;
                     a1->rhs = sh2;
                     a1->ty = n->ty;
-                    Node *a2 = malloc(sizeof(Node));
+                    Node *a2 = xmalloc(sizeof(Node));
                     memset(a2, 0, sizeof(Node));
                     a2->kind = ND_ADD;
                     a2->lhs = a1;
@@ -3222,27 +3222,27 @@ static Node *peephole(Node *n) {
                 }
                 if (m == 14) {
                     // x * 14 = (x << 4) - (x << 1)
-                    Node *sh4 = malloc(sizeof(Node));
+                    Node *sh4 = xmalloc(sizeof(Node));
                     memset(sh4, 0, sizeof(Node));
                     sh4->kind = ND_SHL;
                     sh4->lhs = n->lhs;
-                    Node *c4 = malloc(sizeof(Node));
+                    Node *c4 = xmalloc(sizeof(Node));
                     memset(c4, 0, sizeof(Node));
                     c4->kind = ND_NUM;
                     c4->val = 4;
                     sh4->rhs = c4;
                     sh4->ty = n->ty;
-                    Node *sh1 = malloc(sizeof(Node));
+                    Node *sh1 = xmalloc(sizeof(Node));
                     memset(sh1, 0, sizeof(Node));
                     sh1->kind = ND_SHL;
                     sh1->lhs = n->lhs;
-                    Node *c1 = malloc(sizeof(Node));
+                    Node *c1 = xmalloc(sizeof(Node));
                     memset(c1, 0, sizeof(Node));
                     c1->kind = ND_NUM;
                     c1->val = 1;
                     sh1->rhs = c1;
                     sh1->ty = n->ty;
-                    Node *sub = malloc(sizeof(Node));
+                    Node *sub = xmalloc(sizeof(Node));
                     memset(sub, 0, sizeof(Node));
                     sub->kind = ND_SUB;
                     sub->lhs = sh4;
@@ -3257,7 +3257,7 @@ static Node *peephole(Node *n) {
             n->lhs && n->rhs &&
             n->lhs->kind == ND_LVAR && n->rhs->kind == ND_LVAR &&
             n->lhs->var == n->rhs->var) {
-            Node *z = malloc(sizeof(Node));
+            Node *z = xmalloc(sizeof(Node));
             memset(z, 0, sizeof(Node));
             z->kind = ND_NUM;
             z->val = (n->kind == ND_DIV) ? 1 : 0;
@@ -3268,7 +3268,7 @@ static Node *peephole(Node *n) {
     // x & 0 → 0, x | 0 → x, x ^ 0 → x, x & ~0 → x
     case ND_BITAND:
         if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 0) {
-            Node *z = malloc(sizeof(Node));
+            Node *z = xmalloc(sizeof(Node));
             memset(z, 0, sizeof(Node));
             z->kind = ND_NUM;
             z->val = 0;
@@ -3284,7 +3284,7 @@ static Node *peephole(Node *n) {
         if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR &&
             n->rhs->kind == ND_BITNOT && n->rhs->lhs && n->rhs->lhs->kind == ND_LVAR &&
             n->lhs->var == n->rhs->lhs->var) {
-            Node *z = malloc(sizeof(Node));
+            Node *z = xmalloc(sizeof(Node));
             memset(z, 0, sizeof(Node));
             z->kind = ND_NUM;
             z->val = 0;
@@ -3309,7 +3309,7 @@ static Node *peephole(Node *n) {
         if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == 0)
             return n->lhs;
         if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == ~0) {
-            Node *z = malloc(sizeof(Node));
+            Node *z = xmalloc(sizeof(Node));
             memset(z, 0, sizeof(Node));
             z->kind = ND_NUM;
             z->val = ~0;
@@ -3323,7 +3323,7 @@ static Node *peephole(Node *n) {
         if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR &&
             n->rhs->kind == ND_BITNOT && n->rhs->lhs && n->rhs->lhs->kind == ND_LVAR &&
             n->lhs->var == n->rhs->lhs->var) {
-            Node *z = malloc(sizeof(Node));
+            Node *z = xmalloc(sizeof(Node));
             memset(z, 0, sizeof(Node));
             z->kind = ND_NUM;
             z->val = ~0;
@@ -3349,7 +3349,7 @@ static Node *peephole(Node *n) {
             return n->lhs;
         if (n->rhs && n->rhs->kind == ND_NUM && n->rhs->val == ~0) {
             // x ^ ~0 = ~x
-            Node *nn = malloc(sizeof(Node));
+            Node *nn = xmalloc(sizeof(Node));
             memset(nn, 0, sizeof(Node));
             nn->kind = ND_BITNOT;
             nn->lhs = n->lhs;
@@ -3358,7 +3358,7 @@ static Node *peephole(Node *n) {
         }
         if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR && n->rhs->kind == ND_LVAR &&
             n->lhs->var == n->rhs->var) {
-            Node *z = malloc(sizeof(Node));
+            Node *z = xmalloc(sizeof(Node));
             memset(z, 0, sizeof(Node));
             z->kind = ND_NUM;
             z->val = 0;
@@ -3369,7 +3369,7 @@ static Node *peephole(Node *n) {
         if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR &&
             n->rhs->kind == ND_BITNOT && n->rhs->lhs && n->rhs->lhs->kind == ND_LVAR &&
             n->lhs->var == n->rhs->lhs->var) {
-            Node *z = malloc(sizeof(Node));
+            Node *z = xmalloc(sizeof(Node));
             memset(z, 0, sizeof(Node));
             z->kind = ND_NUM;
             z->val = ~0;
@@ -3416,7 +3416,7 @@ static Node *peephole(Node *n) {
                 new_kind = ND_NE;
             else
                 new_kind = ND_EQ;
-            Node *r = malloc(sizeof(Node));
+            Node *r = xmalloc(sizeof(Node));
             memset(r, 0, sizeof(Node));
             r->kind = new_kind;
             // swap for < and <=: !(x<y) = y<=x, !(x<=y) = y<x
@@ -3431,7 +3431,7 @@ static Node *peephole(Node *n) {
             return r;
         }
         if (n->rhs && n->rhs->kind == ND_NUM) {
-            Node *z = malloc(sizeof(Node));
+            Node *z = xmalloc(sizeof(Node));
             memset(z, 0, sizeof(Node));
             z->kind = ND_NUM;
             z->val = n->rhs->val ? 0 : 1;
@@ -3439,7 +3439,7 @@ static Node *peephole(Node *n) {
             return z;
         }
         if (n->rhs && n->rhs->kind == ND_FNUM) {
-            Node *z = malloc(sizeof(Node));
+            Node *z = xmalloc(sizeof(Node));
             memset(z, 0, sizeof(Node));
             z->kind = ND_NUM;
             z->val = n->rhs->fval != 0.0 ? 0 : 1;
@@ -3454,7 +3454,7 @@ static Node *peephole(Node *n) {
     case ND_LE:
         if (n->lhs && n->rhs && n->lhs->kind == ND_LVAR && n->rhs->kind == ND_LVAR &&
             n->lhs->var == n->rhs->var) {
-            Node *z = malloc(sizeof(Node));
+            Node *z = xmalloc(sizeof(Node));
             memset(z, 0, sizeof(Node));
             z->kind = ND_NUM;
             z->val = (n->kind == ND_EQ || n->kind == ND_LE) ? 1 : 0;
@@ -3467,11 +3467,11 @@ static Node *peephole(Node *n) {
         if (n->cond && n->then && n->els &&
             n->then->kind == ND_NUM && n->then->val == 1 &&
             n->els->kind == ND_NUM && n->els->val == 0) {
-            Node *ne = malloc(sizeof(Node));
+            Node *ne = xmalloc(sizeof(Node));
             memset(ne, 0, sizeof(Node));
             ne->kind = ND_NE;
             ne->lhs = n->cond;
-            Node *z0 = malloc(sizeof(Node));
+            Node *z0 = xmalloc(sizeof(Node));
             memset(z0, 0, sizeof(Node));
             z0->kind = ND_NUM;
             z0->val = 0;
@@ -3730,7 +3730,7 @@ static bool body_has_jumps(Node *n) {
 // Deep-clone an expression tree (not statements/blocks).
 static Node *deep_clone(Node *n) {
     if (!n) return NULL;
-    Node *c = malloc(sizeof(Node));
+    Node *c = xmalloc(sizeof(Node));
     memcpy(c, n, sizeof(Node));
     c->next = NULL;
     c->lhs = deep_clone(n->lhs);
@@ -3759,11 +3759,11 @@ static Node *deep_clone(Node *n) {
 static void shift_lvar(Node *n, LVar *var, int64_t delta) {
     if (!n) return;
     if (n->kind == ND_LVAR && n->var == var && delta != 0) {
-        Node *add = malloc(sizeof(Node));
+        Node *add = xmalloc(sizeof(Node));
         memset(add, 0, sizeof(Node));
         add->kind = ND_ADD;
         add->lhs = deep_clone(n);
-        Node *c = malloc(sizeof(Node));
+        Node *c = xmalloc(sizeof(Node));
         memset(c, 0, sizeof(Node));
         c->kind = ND_NUM;
         c->val = delta;
@@ -3812,38 +3812,38 @@ static Node *try_unroll_by2(Node *n) {
     if (body_has_jumps(n->body)) return NULL;
 
     // Build unrolled loop
-    Node *new_for = malloc(sizeof(Node));
+    Node *new_for = xmalloc(sizeof(Node));
     memset(new_for, 0, sizeof(Node));
     new_for->kind = ND_FOR;
     new_for->init = deep_clone(n->init);
     // New condition: i+1 < limit
-    Node *ivp1 = malloc(sizeof(Node));
+    Node *ivp1 = xmalloc(sizeof(Node));
     memset(ivp1, 0, sizeof(Node));
     ivp1->kind = ND_ADD;
     ivp1->lhs = deep_clone(n->cond->lhs);
-    Node *one = malloc(sizeof(Node));
+    Node *one = xmalloc(sizeof(Node));
     memset(one, 0, sizeof(Node));
     one->kind = ND_NUM;
     one->val = 1;
     one->ty = iv->ty;
     ivp1->rhs = one;
     ivp1->ty = n->cond->ty;
-    new_for->cond = malloc(sizeof(Node));
+    new_for->cond = xmalloc(sizeof(Node));
     memset(new_for->cond, 0, sizeof(Node));
     new_for->cond->kind = ND_LT;
     new_for->cond->lhs = ivp1;
     new_for->cond->rhs = deep_clone(n->cond->rhs);
     new_for->cond->ty = n->cond->ty;
     // New increment: i += 2
-    Node *inc2 = malloc(sizeof(Node));
+    Node *inc2 = xmalloc(sizeof(Node));
     memset(inc2, 0, sizeof(Node));
     inc2->kind = ND_ASSIGN;
     inc2->lhs = deep_clone(n->inc->lhs);
-    Node *add2 = malloc(sizeof(Node));
+    Node *add2 = xmalloc(sizeof(Node));
     memset(add2, 0, sizeof(Node));
     add2->kind = ND_ADD;
     add2->lhs = deep_clone(n->inc->lhs);
-    Node *two = malloc(sizeof(Node));
+    Node *two = xmalloc(sizeof(Node));
     memset(two, 0, sizeof(Node));
     two->kind = ND_NUM;
     two->val = 2;
@@ -3857,7 +3857,7 @@ static Node *try_unroll_by2(Node *n) {
     Node *body1 = deep_clone(n->body);
     Node *body2 = deep_clone(n->body);
     shift_lvar(body2, iv, 1);
-    Node *new_body = malloc(sizeof(Node));
+    Node *new_body = xmalloc(sizeof(Node));
     memset(new_body, 0, sizeof(Node));
     new_body->kind = ND_BLOCK;
     new_body->body = body1;
@@ -3865,23 +3865,23 @@ static Node *try_unroll_by2(Node *n) {
     new_for->body = new_body;
 
     // Remainder: if (i < limit) { body; }
-    Node *rem = malloc(sizeof(Node));
+    Node *rem = xmalloc(sizeof(Node));
     memset(rem, 0, sizeof(Node));
     rem->kind = ND_IF;
-    rem->cond = malloc(sizeof(Node));
+    rem->cond = xmalloc(sizeof(Node));
     memset(rem->cond, 0, sizeof(Node));
     rem->cond->kind = ND_LT;
     rem->cond->lhs = deep_clone(n->inc->lhs);
     rem->cond->rhs = deep_clone(n->cond->rhs);
     rem->cond->ty = n->cond->ty;
     Node *rem_body = deep_clone(n->body);
-    rem->then = malloc(sizeof(Node));
+    rem->then = xmalloc(sizeof(Node));
     memset(rem->then, 0, sizeof(Node));
     rem->then->kind = ND_BLOCK;
     rem->then->body = rem_body;
 
     // Wrap: { new_for; rem; }
-    Node *block = malloc(sizeof(Node));
+    Node *block = xmalloc(sizeof(Node));
     memset(block, 0, sizeof(Node));
     block->kind = ND_BLOCK;
     block->body = new_for;
@@ -4171,7 +4171,7 @@ static Node *cp_transform(Node *n, SsaConstCtx *ctx) {
     if (n->kind == ND_LVAR && n->var) {
         SsaConst *c = cp_find(ctx, n->var);
         if (c && c->is_const) {
-            Node *cn = malloc(sizeof(Node));
+            Node *cn = xmalloc(sizeof(Node));
             memset(cn, 0, sizeof(Node));
             cn->kind = c->is_float ? ND_FNUM : ND_NUM;
             cn->val = c->val;
@@ -4182,7 +4182,7 @@ static Node *cp_transform(Node *n, SsaConstCtx *ctx) {
         }
         if (c && c->equiv) {
             // Copy prop: replace x with equiv
-            Node *cn = malloc(sizeof(Node));
+            Node *cn = xmalloc(sizeof(Node));
             memset(cn, 0, sizeof(Node));
             cn->kind = ND_LVAR;
             cn->var = c->equiv;
