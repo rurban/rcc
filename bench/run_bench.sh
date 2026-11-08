@@ -79,6 +79,10 @@ CAKE_CC="$(which cake-cc.sh 2>/dev/null || true)"
 if [ -z "$CAKE_CC" ] && [ -x ./cake-cc.sh ]; then
 	CAKE_CC="./cake-cc.sh"
 fi
+FCC="$(which fcc 2>/dev/null || true)"
+if [ -z "$FCC" ] && [ -x ../flash-c/build/fcc ]; then
+	FCC="../flash-c/build/fcc"
+fi
 
 LARGE_SRC="bench/sqlite3.c"
 LARGE_SRC_URL="https://sqlite.org/2026/sqlite-amalgamation-3530200.zip"
@@ -133,6 +137,7 @@ ANTCC_EXE="bench/bench_antcc"
 CAKE_EXE="bench/bench_cake"
 CCC_EXE="bench/bench_ccc"
 BCC_EXE="bench/bench_bcc"
+FCC_EXE="bench/bench_fcc"
 GCC_EXE="bench/bench_gcc"
 GCC_O2_EXE="bench/bench_gcc_o2"
 CLANG_EXE="bench/bench_clang"
@@ -202,9 +207,9 @@ resume_gortex() {
 }
 
 cleanup() {
-	rm -f "$RCC_EXE" "$RCC_O1_EXE" "$RCC_O2_EXE" "$RCC_O3_EXE" "$TCC_EXE" "$GCC_EXE" "$GCC_O2_EXE" "$CLANG_EXE" "$CLANG_O2_EXE" "$CPROC_EXE" "$SCC_EXE" "$LACC_EXE" "$ANTCC_EXE" "$CAKE_EXE"
+	rm -f "$RCC_EXE" "$RCC_O1_EXE" "$RCC_O2_EXE" "$RCC_O3_EXE" "$TCC_EXE" "$GCC_EXE" "$GCC_O2_EXE" "$CLANG_EXE" "$CLANG_O2_EXE" "$CPROC_EXE" "$SCC_EXE" "$LACC_EXE" "$ANTCC_EXE" "$CAKE_EXE" "$FCC_EXE"
 
-	rm -f "$KEFIR_EXE" "$SLIMCC_EXE" "$XCC_EXE" "$CCC_EXE" "$BCC_EXE" "$LARGE_SO"
+	rm -f "$KEFIR_EXE" "$SLIMCC_EXE" "$XCC_EXE" "$CCC_EXE" "$FCC_EXE" "$BCC_EXE" "$LARGE_SO"
 	# Must run on every exit path: a paused daemon left behind is worse than a
 	# noisy benchmark.
 	resume_gortex
@@ -489,6 +494,9 @@ fi
 if [ -n "$CAKE_CC" ]; then
    run_bench "CAKE" "$CAKE_CC" "$SRC -o $CAKE_EXE" "$CAKE_EXE" || true
 fi
+if [ -n "$FCC" ]; then
+   run_bench "FCC" "$FCC" "$SRC -o $FCC_EXE" "$FCC_EXE" || true
+fi
 if [ -n "$BCC" ]; then
    run_bench "BCC" "$BCC" "$SRC -o $BCC_EXE" "$BCC_EXE" || true
 fi
@@ -569,6 +577,9 @@ if [ -n "$CAKE_CC" ]; then
 fi
 if [ -n "$CCC" ]; then
    run_bench_awfy "CCC" "$CCC" "-std=c99" "bench/awfy_ccc" || true
+fi
+if [ -n "$FCC" ]; then
+   run_bench_awfy "BCC" "$FCC" "-std=c99" "bench/awfy_bcc" || true
 fi
 if [ -n "$BCC" ]; then
    run_bench_awfy "BCC" "$BCC" "-std=c99" "bench/awfy_bcc" || true
@@ -693,6 +704,10 @@ if [ -f "$LARGE_SRC" ]; then
     if [ -n "$CCC" ]; then
         # shellcheck disable=SC2086
 	_compile_large "CCC" "$CCC" $LARGE_CFLAGS
+    fi
+    if [ -n "$FCC" ]; then
+        # shellcheck disable=SC2086
+	_compile_large "BCC" "$FCC" $LARGE_CFLAGS
     fi
     if [ -n "$BCC" ]; then
         # shellcheck disable=SC2086

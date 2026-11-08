@@ -6911,7 +6911,7 @@ int main(int argc, char **argv) {
                   contains(a, "8cc") || contains(a, "chibicc") ||
                   contains(a, "antcc") || contains(a, "cake") ||
                   contains(a, "ccomp") || contains(a, "kcc") ||
-                  contains(a, "bcc")))
+                  contains(a, "bcc") || contains(a, "fcc")))
             rcc = a;
         else if (only_test_count < MAX_ONLY_TESTS)
             only_tests[only_test_count++] = a;
