@@ -18820,8 +18820,8 @@ VReg gen_inner(Node *node) {
                     asm_cmp_imm(cg_sec, r_rhs, sz, sz * 8); // cmp count, bits
                     emit_jcc_fixup(cg_sec, ARM64_CC, skip); // count < bits -> skip
                     // stash value + count (the raw call clobbers regs)
-                    asm_stur_phy(cg_sec, REG(r_lhs), CG_ARM_FP, sf ? 3 : 2, -v_slot);
-                    asm_stur_phy(cg_sec, REG(r_rhs), CG_ARM_FP, sf ? 3 : 2, -s_slot);
+                    asm_stur_fp(cg_sec, r_lhs, v_slot);
+                    asm_stur_fp(cg_sec, r_rhs, s_slot);
                     VReg d = alloc_reg_avoid2(r_rhs, -1);
                     emit_adrp_add(d, data_label); // d = &Data
                     arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, REG(d), ARM64_LSL, 0); // x0 = &Data
@@ -19190,9 +19190,7 @@ VReg gen_inner(Node *node) {
                         VReg r_high = alloc_reg_avoid2(r_a, r_b);
                         arm64_smulh(cg_sec, REG(r_high), REG(r_save), REG(r_b)); // high(a*b)
                         VReg r_sext = alloc_reg_avoid2(r_a, r_b);
-                        arm64_subs_imm(cg_sec, 1, ARM64_XZR, REG(r_a), 0, 0); // flags = r_a
-                        arm64_sub_imm(cg_sec, 1, REG(r_sext), ARM64_XZR, 1, 0); // r_sext = -1
-                        arm64_csel(cg_sec, 1, REG(r_sext), REG(r_sext), ARM64_XZR, ARM64_MI); // sext
+                        arm64_asr_imm(cg_sec, 1, REG(r_sext), REG(r_a), 63); // sign of the low half
                         arm64_eor_reg(cg_sec, 1, REG(r_high), REG(r_high), REG(r_sext), ARM64_LSL, 0);
                         asm_cmp_zero(cg_sec, r_high, 8);
                         emit_jcc_fixup(cg_sec, ARM64_EQ, skip); // no overflow -> skip
@@ -19212,7 +19210,7 @@ VReg gen_inner(Node *node) {
                     int a_slot = current_fn_stack_size + fn_struct_ret_off + 8;
                     fn_struct_ret_off += 8;
                     if (fn_struct_ret_off > fn_struct_ret_total) fn_struct_ret_total = fn_struct_ret_off;
-                    asm_stur_phy(cg_sec, REG(is_ptr ? r_save : r_a), CG_ARM_FP, sz == 8 ? 3 : 2, -a_slot);
+                    asm_stur_fp(cg_sec, is_ptr ? r_save : r_a, a_slot);
                     VReg d = alloc_reg_avoid2(r_a, r_b);
                     if (data_label) emit_adrp_add(d, data_label); // d = &Data (none in Pass 1)
                     arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, REG(d), ARM64_LSL, 0); // x0 = &Data
