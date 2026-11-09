@@ -35,6 +35,9 @@ size_t strspn(const char *s, const char *accept);
 size_t strcspn(const char *s, const char *reject);
 char *strpbrk(const char *s, const char *accept);
 char *strtok(char *str, const char *delim);
+#ifdef __APPLE__
+void *memmem(const void *big, size_t big_len, const void *little, size_t little_len);
+#endif
 #else
 // Pull in the platform <string.h> for every mem*/str* function this
 // bundled copy tracks, PLUS the __USE_XOPEN2K8/__USE_MISC-guarded
