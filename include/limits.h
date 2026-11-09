@@ -286,8 +286,8 @@
  * literals (torture/c23-complit-5.c) on Windows. */
 #if defined(__linux__)
 #include_next <limits.h>
-#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
-/* The BSDs: PATH_MAX, NAME_MAX, PIPE_BUF, IOV_MAX, ... live only in the
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__) || defined(__APPLE__)
+/* The BSDs and macOS: PATH_MAX, NAME_MAX, PIPE_BUF, IOV_MAX, ... live only in the
  * platform's own <limits.h> (sys/syslimits.h) and nothing above defines
  * them; FreeBSD's <ssp/stdlib.h> (included by <stdlib.h> under
  * _FORTIFY_SOURCE) needs PATH_MAX from here. */

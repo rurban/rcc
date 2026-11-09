@@ -60,6 +60,38 @@ int fgetc(FILE *stream);
 int getc(FILE *stream);
 char *fgets(char *buf, int size, FILE *stream);
 int fflush(FILE *stream);
+#ifdef __APPLE__
+/* Without a prototype rcc passes arguments in registers, but Apple's arm64
+ * ABI puts variadic ones on the stack, and a pointer result would be cut to
+ * int. So declare the variadic and non-int functions callers depend on. */
+int scanf(const char *fmt, ...);
+int fscanf(FILE *stream, const char *fmt, ...);
+int sscanf(const char *str, const char *fmt, ...);
+int dprintf(int fd, const char *fmt, ...);
+int asprintf(char **ret, const char *fmt, ...);
+int vprintf(const char *fmt, __builtin_va_list ap);
+int vfprintf(FILE *stream, const char *fmt, __builtin_va_list ap);
+int vsprintf(char *buf, const char *fmt, __builtin_va_list ap);
+int vsnprintf(char *buf, size_t size, const char *fmt, __builtin_va_list ap);
+int vasprintf(char **ret, const char *fmt, __builtin_va_list ap);
+int vdprintf(int fd, const char *fmt, __builtin_va_list ap);
+int vscanf(const char *fmt, __builtin_va_list ap);
+int vfscanf(FILE *stream, const char *fmt, __builtin_va_list ap);
+int vsscanf(const char *str, const char *fmt, __builtin_va_list ap);
+FILE *freopen(const char *path, const char *mode, FILE *stream);
+FILE *fdopen(int fd, const char *mode);
+FILE *popen(const char *command, const char *mode);
+FILE *tmpfile(void);
+long ftell(FILE *stream);
+int fseek(FILE *stream, long offset, int whence);
+int fileno(FILE *stream);
+int feof(FILE *stream);
+int ferror(FILE *stream);
+int fputc(int c, FILE *stream);
+int fputs(const char *s, FILE *stream);
+int putc(int c, FILE *stream);
+int puts(const char *s);
+#endif
 #endif
 
 #endif
