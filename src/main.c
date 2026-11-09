@@ -1872,9 +1872,12 @@ int main(int argc, char **argv) {
             xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -r -o \"%s\"", backend_out);
         } else
             xappendf(&cmd, &cmd_len, &cmd_cap,
-                     GCC " -o \"%s\" -arch arm64"
-                         " -Wl,-undefined,dynamic_lookup",
-                     backend_out);
+                     GCC " -o \"%s\" -arch arm64%s",
+                     backend_out,
+                     // Only a library may leave symbols for dyld to find:
+                     // for a program it hides real link errors, and
+                     // configure's link checks then find every function.
+                     opt_shared ? " -Wl,-undefined,dynamic_lookup" : "");
 #else
         if (opt_pie)
             xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -pie -o \"%s\"", backend_out);
