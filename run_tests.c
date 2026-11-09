@@ -1777,6 +1777,8 @@ static int test_expected_exit(const char *base) {
 // exceeds the 30s compile ceiling under --parallel load.
 static int test_compile_timeout(const char *base) {
     if (streq(base, "101_cleanup")) return 120;
+    // 1.4MB of generated code: about 6s on a quiet machine, more on CI.
+    if (streq(base, "test_long_cond_branch")) return 120;
     return 30;
 }
 // libubsan halt_on_error exits 1 on Linux/glibc but aborts (SIGABRT, 128+6)

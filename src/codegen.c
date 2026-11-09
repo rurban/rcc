@@ -20,6 +20,10 @@ SecBuf *cg_sec;
 ObjFile *cg_obj;
 static bool cg_discard_result;
 bool cg_dry_run; // pass 1: track regs only (extern for codegen_asm.h)
+bool cg_long_cond_branches; // see asm_jcc_label (extern for codegen_asm.h)
+// Pass 1 size above which a function's B.cond may not reach: well under the
+// +-1MB range, as pass 2 emits the sanitizer checks that pass 1 leaves out.
+#define CG_LONG_COND_FN_SIZE (128 * 1024)
 CgAsciiStr *cg_ascii_strings;
 
 // ---------------------------------------------------------------------------
@@ -20897,6 +20901,7 @@ struct ObjFile *codegen(Program *prog) {
         cg_dbg_fn = fn->name;
         current_fn_def = fn;
         current_fn_stack_size = fn->stack_size;
+        cg_long_cond_branches = false;
         if (cg_ir_try_function(prog, fn, fn_emitting_local_copy))
             continue;
         memset(spill_slot, 0, sizeof(spill_slot));
@@ -21446,6 +21451,7 @@ struct ObjFile *codegen(Program *prog) {
 #endif
         // Pass 2: Emit binary prologue, body, epilogue
         cg_sec = saved_sec;
+        cg_long_cond_branches = _dummy.len > CG_LONG_COND_FN_SIZE;
         secbuf_free(&_dummy);
         cg_dry_run = false;
         used_regs = 0;
