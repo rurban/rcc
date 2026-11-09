@@ -582,6 +582,39 @@ __attribute__((unused)) static size_t asm_lea_tpoff_base_reg(SecBuf *s, VReg dst
 
 #endif
 
+// A jmp/jcc in inline asm to a name that is not an asm-local label is queued
+// by cg_inline_fixup_cb (below) for cg_def_label to patch when a C label of
+// that name shows up. When
+// none ever does (`jmp nlr_push_tail`: a tail jump to another function, as in
+// micropython's naked nlr_push) the placeholder displacement used to be left
+// as 0 with no relocation, silently jumping to the next instruction. At the end
+// of each function, turn every still-unresolved target into a PLT32 relocation
+// against an undefined symbol -- exactly what `call foo` does. Assembler-local
+// style names (.L..., numeric) are left alone, as before.
+#ifndef ARCH_ARM64
+typedef struct {
+    size_t patch_off;
+    int section;
+    const char *label;
+} InlineBranch;
+static InlineBranch *inline_branches;
+static int n_inline_branches, cap_inline_branches;
+
+static void cg_flush_inline_branches(void) {
+    for (int i = 0; i < n_inline_branches; i++) {
+        const char *l = inline_branches[i].label;
+        if (l[0] == '.' || (l[0] >= '0' && l[0] <= '9') || cg_label_ht_get(l) != (size_t)-1) continue;
+        int sidx = objfile_find_sym(cg_obj, l);
+        if (sidx < 0) sidx = objfile_add_sym(cg_obj, l, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
+        objfile_add_reloc(cg_obj, inline_branches[i].section, inline_branches[i].patch_off, sidx,
+                          R_X86_64_PLT32, -4);
+    }
+    n_inline_branches = 0;
+}
+#else
+#define cg_flush_inline_branches() ((void)0)
+#endif
+
 // Forward-fixup callback for assemble_inline: registers unresolved labels
 // into the codegen fixup table so cg_def_label can patch them later.
 // patch_off is the offset of the 4-byte REL32 operand within section
@@ -599,6 +632,13 @@ static void cg_inline_fixup_cb(size_t patch_off, int section, const char *label,
     SecBuf *sbuf = objfile_section_buf(cg_obj, section);
     // instr_off = patch_off - 1 (type=0 patches at instr_off+1); delta formula is identical.
     asm_fixup_ht_add_sec2(patch_off - 1, dup, 0, sbuf, section);
+#ifndef ARCH_ARM64
+    if (n_inline_branches == cap_inline_branches) {
+        cap_inline_branches = cap_inline_branches ? cap_inline_branches * 2 : 16;
+        inline_branches = xrealloc(inline_branches, (size_t)cap_inline_branches * sizeof(*inline_branches));
+    }
+    inline_branches[n_inline_branches++] = (InlineBranch){patch_off, section, dup};
+#endif
 }
 
 // Bridge for the remaining printf("  <asm line>\n", ...)-based codegen (x86 only):
@@ -20073,6 +20113,7 @@ static size_t cg_begin_fn_symbol(Program *prog, Function *fn, bool emitting_loca
 // ---- IR backend interface (cg_ir.h) ----
 size_t cg_ir_begin_fn(Program *prog, Function *fn, bool emitting_local_copy, const char **sym_out) {
     cg_dry_run = false;
+    cg_flush_inline_branches();
     cg_label_ht_reset();
     cg_branch_sites_reset();
     asm_fixup_ht_reset();
@@ -20315,6 +20356,7 @@ static size_t global_var_align(LVar *var) {
 struct ObjFile *codegen(Program *prog) {
     init_local_builtins();
     // Reset label and fixup hashtables for new compilation unit
+    cg_flush_inline_branches();
     cg_label_ht_reset();
     cg_branch_sites_reset();
     asm_fixup_ht_reset();
@@ -21396,6 +21438,7 @@ struct ObjFile *codegen(Program *prog) {
         cmp_lhs_protect_depth = 0;
         for (int _ci = 0; _ci < CMP_LHS_PROTECT_MAX_DEPTH; _ci++)
             cmp_lhs_protect_slots[_ci] = -1;
+        cg_flush_inline_branches();
         cg_label_ht_reset();
         cg_branch_sites_reset();
         asm_fixup_ht_reset();
@@ -23016,6 +23059,7 @@ struct ObjFile *codegen(Program *prog) {
                         SB_GLOBAL, ST_GNU_IFUNC);
     }
 #endif
+    cg_flush_inline_branches();
 #ifdef RCC_CFI
     if (cg_obj->cfi_fn_count) objfile_flush_eh_frame(cg_obj);
 #endif

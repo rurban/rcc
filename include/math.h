@@ -83,7 +83,7 @@ int ilogb(double); /* mingw-w64 provides no ilogb symbol at all */
  * glibc). Map them to rcc's runtime builtins, dispatched on operand size.
  * signbit is already provided as a builtin macro by the preprocessor. */
 #define fpclassify(x) \
-    (sizeof(x) == sizeof(float)  ? __builtin_fpclassifyf(x) : \
+    (sizeof(x) == sizeof(float)  ? __rcc_fpclassifyf(x) : \
      sizeof(x) == sizeof(double) ? __builtin_fpclassify(x)  : \
                                    __builtin_fpclassifyl(x))
 #define isinf(x) \
@@ -96,7 +96,7 @@ int ilogb(double); /* mingw-w64 provides no ilogb symbol at all */
      sizeof(x) == sizeof(double) ? __builtin_isfinite(x)  : \
                                    __builtin_isfinitel(x))
 #define isnormal(x) \
-    (sizeof(x) == sizeof(float)  ? __builtin_isnormalf(x) : \
+    (sizeof(x) == sizeof(float)  ? (__rcc_fpclassifyf(x) == FP_NORMAL) : \
      sizeof(x) == sizeof(double) ? __builtin_isnormal(x)  : \
                                    __builtin_isnormall(x))
 
@@ -259,6 +259,16 @@ long double gammal(long double);
 #define FP_NORMAL       2
 #define FP_SUBNORMAL    3
 #define FP_ZERO         4
+
+/* A float argument reaches __builtin_fpclassify promoted to double, where a
+ * float subnormal is an ordinary normal number. Reclassify those by range. */
+static inline int __rcc_fpclassifyf(float f) {
+    double d = f;
+    int c = __builtin_fpclassify(d);
+    if (c == FP_NORMAL && d < 1.17549435082228751e-38 && d > -1.17549435082228751e-38)
+        return FP_SUBNORMAL;
+    return c;
+}
 
 #ifndef _WIN32
 /* Special ilogb()/ilogbf()/ilogbl() return values (C99 7.12.6.5p2):

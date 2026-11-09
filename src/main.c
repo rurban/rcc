@@ -676,7 +676,9 @@ int main(int argc, char **argv) {
             opt_funroll = false;
         } else if (!strcmp(argv[i], "-fno-builtin") || !strncmp(argv[i], "-fno-builtin-", 13) ||
                    !strcmp(argv[i], "-fno-common") || !strcmp(argv[i], "-fcommon") ||
-                   !strcmp(argv[i], "-fdata-sections") || !strcmp(argv[i], "-ffunction-sections")) {
+                   !strcmp(argv[i], "-fdata-sections") || !strcmp(argv[i], "-ffunction-sections") ||
+                   !strcmp(argv[i], "-fno-asynchronous-unwind-tables") || !strcmp(argv[i], "-fasynchronous-unwind-tables") ||
+                   !strcmp(argv[i], "-funwind-tables") || !strcmp(argv[i], "-fno-unwind-tables")) {
             // -fno-builtin[-NAME]: disable recognizing NAME (or every
             // libc function) as a compiler builtin with known semantics.
             // rcc's own __builtin_* recognition is name-prefix-gated
@@ -699,6 +701,12 @@ int main(int argc, char **argv) {
             // no-op rather than rejected (found via micropython's
             // `-Werror ... -fdata-sections -ffunction-sections` build,
             // which hard-failed at the very first preprocess step).
+            // -f[no-][asynchronous-]unwind-tables: whether to emit .eh_frame.
+            // rcc's output is always unwindable and an extra .eh_frame costs
+            // nothing, so these are accepted as no-ops. They are real GCC
+            // flags, so a -Werror build (micropython's, whose first preprocess
+            // step died on -fno-asynchronous-unwind-tables) must not see them
+            // as unrecognized.
         } else if (!strcmp(argv[i], "-W")) {
             opt_W = true;
         } else if (!strcmp(argv[i], "-Werror")) {
@@ -1955,8 +1963,32 @@ int main(int argc, char **argv) {
         }
 #endif
 
-        if (libs_len)
+        if (libs_len) {
+            // rcc's own ELF linker rescans every archive until nothing new
+            // resolves (see resolve_archives()); a one-pass gcc/ld does not, so
+            // the same command line that links natively failed here with
+            // "undefined reference" when one .a needs another listed before it
+            // (openrc: librc.a libeinfo.a libshared.a, libshared.a -> librc.a).
+            // Give the fallback the same semantics with a group, unless the
+            // caller already brackets one (groups cannot nest).
+            bool group = false;
+#ifdef __linux__
+            if (!strstr(libs, "-group")) {
+                for (const char *p = libs; *p && !group; p++) {
+                    bool starts = p == libs || p[-1] == ' ' || p[-1] == '"';
+                    if (starts && p[0] != '-' && p[0] != ' ') {
+                        const char *e = p;
+                        while (*e && *e != ' ' && *e != '"') e++;
+                        if (e - p > 2 && e[-1] == 'a' && e[-2] == '.') group = true;
+                        p = e - 1;
+                    }
+                }
+            }
+#endif
+            if (group) xappendf(&cmd, &cmd_len, &cmd_cap, " -Wl,--start-group");
             xappendf(&cmd, &cmd_len, &cmd_cap, "%s", libs);
+            if (group) xappendf(&cmd, &cmd_len, &cmd_cap, " -Wl,--end-group");
+        }
 
         // RCC's own codegen emits a genuine external call for math.h
         // functions (fabs/sqrt/pow/...) rather than inlining the simple

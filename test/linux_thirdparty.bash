@@ -972,13 +972,18 @@ test_libxo_chimerautils() {
  libtoolize
  autoreconf -fi
  fix_and_configure --prefix="$LIBXO"
- make && make test && make install
+ # install first: the tests dlopen $prefix/lib/libxo/encoder/test.enc, which
+ # only `make install` creates ("encoder not found: test" otherwise).
+ make && make install && make test
  cd ../
 
  export PKG_CONFIG_PATH="$LIBXO/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
  sed -i "s|type: 'boolean', value: 'true'|type: 'boolean', value: true|g" meson_options.txt
  sed -i 's|NL_TEXTMAX|2048|g' src.freebsd/coreutils/nl/nl.c # glibc NL_TEXTMAX is 2GB, use musl's size
  muon_init
+ # muon links shared_module() libstdbuf.so without -shared (gcc then fails
+ # with "undefined reference to main" too).
+ sed -i '/^build .*libstdbuf\.so: /{n;s/LINK_ARGS = -fPIC/& -shared/}' muonbuild/build.ninja
  muon_build
 
  ./muonbuild/src.freebsd/coreutils/echo/echo 'echo hello_world' > hello.sh
@@ -1263,7 +1268,9 @@ test_oniguruma() {
 
 test_openrc() {
  github_tar OpenRC openrc 0.63.3
- muon_init
+ # openrc's meson.build says c_std=c99, which muon ignores; src/shared/misc.c
+ # has a member named `unix`, a macro under the default gnu dialect (gcc too).
+ CFLAGS="${CFLAGS:-} -std=c99" muon_init
  muon_build
  muon_test
 }

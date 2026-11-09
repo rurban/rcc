@@ -58,6 +58,26 @@ complete list of changes see the git log.
   movhpd and pshufd with memory operands, unsuffixed shifts by %cl, pclmul
   selectors, and .quad literals above INT64_MAX.
 
+  More fixes from the remaining third-party projects: duplicate `case`
+  values (also overlapping GNU ranges) are an error, as in GCC (autoconf
+  probes such as Tcl's TCL_WIDE_INT_IS_LONG depend on it);
+  fpclassify()/isnormal() classify subnormal double and float values
+  correctly (they came out as zero/normal); `__attribute__((naked))` emits
+  no prologue/epilogue (the body is the asm); a `jmp`/`jcc` in inline asm to
+  an external function gets a relocation instead of a zero displacement;
+  -f[no-][asynchronous-]unwind-tables are accepted under -Werror. Linking:
+  atexit()/at_quick_exit()/pthread_atfork() resolve from libc_nonshared.a, so
+  such programs link without the gcc fallback; the empty libutil.a/libdl.a
+  stubs of glibc >= 2.34 no longer force it either; symbols a shared library
+  exports only under a hidden version (glibc's __malloc_hook) count as
+  undefined, as with ld; and the gcc fallback brackets static archives in a
+  linker group, matching rcc's own rescan-until-fixed-point archive order.
+
+  Every malloc/calloc/realloc/strdup in the compiler goes through the shared
+  xmalloc/xcalloc/xrealloc/xstrdup (src/alloc.c), which print "rcc: out of
+  memory" and exit(1) instead of dereferencing NULL or leaking on a failed
+  realloc.
+
 * Changes in v1.2.3 (2026-11-06) (Reini Urban)
 
   -O2 SSA IR backend (x86-64 ELF, x86-64 Windows/COFF, AArch64 ELF and Darwin):

@@ -1235,6 +1235,51 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
     return 0;
 }
 
+// System library directories searched after -L (shared by find_shared_lib()
+// and the lookup of empty glibc stub archives in link_elf()).
+static const char *const std_lib_dirs[] = {
+#ifdef __aarch64__
+    "/usr/lib64",
+    "/usr/lib/aarch64-linux-gnu",
+    "/usr/aarch64-linux-gnu/lib",
+    "/lib/aarch64-linux-gnu",
+    "/lib64",
+#else
+    "/usr/lib64",
+    "/usr/lib/x86_64-linux-gnu",
+    "/lib/x86_64-linux-gnu",
+    "/lib64",
+#endif
+    NULL,
+};
+
+// glibc >= 2.34 keeps atexit/at_quick_exit/pthread_atfork out of libc.so.6;
+// they live in libc_nonshared.a, which a real ld reaches through the GROUP()
+// in the libc.so linker script, and crtbegin.o supplies __dso_handle that
+// they reference. Without this every program calling atexit() reported the
+// symbol as undefined and was handed to gcc -- which does not rescan
+// archives, so statically linked archives in dependency-wrong order (openrc's
+// librc.a/libshared.a) then failed. load_archive() only pulls members that
+// satisfy a still-undefined reference, so this never adds unused code.
+static void pull_libc_nonshared(LinkState *s) {
+    if (s->opt_static) return; // static glibc links need the full libc.a; gcc handles those
+    for (int i = 0; std_lib_dirs[i]; i++) {
+        char path[600];
+        struct stat st;
+        snprintf(path, sizeof(path), "%s/libc_nonshared.a", std_lib_dirs[i]);
+        if (stat(path, &st) != 0) continue;
+        if (load_archive(s, path) != 0) return;
+        break;
+    }
+    int dh = link_find_sym(s, "__dso_handle");
+    if (dh >= 0 && s->syms[dh].sec < 0) {
+        int data_sec = link_find_or_create_sec(s, ".data", true, true, false, false, false, 8);
+        uint8_t zero[8] = {0};
+        size_t off = link_sec_append(s, data_sec, zero, 8, 8);
+        link_add_sym(s, "__dso_handle", data_sec, off, 8, STB_GLOBAL, STT_OBJECT, -1);
+    }
+}
+
 // Find a shared library by name in the standard, architecture-specific
 // system library directories (never the bare /lib or /usr/lib: on a
 // multilib system those commonly hold the *other* architecture's copy,
@@ -1261,23 +1306,8 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
 // exactly this script-plus-real-so.6 pairing).
 static int find_shared_lib(const char *libname, char *out_path, size_t out_sz,
                            char *out_soname, size_t out_soname_sz) {
-    static const char *dirs[] = {
-#ifdef __aarch64__
-        "/usr/lib64",
-        "/usr/lib/aarch64-linux-gnu",
-        "/usr/aarch64-linux-gnu/lib",
-        "/lib/aarch64-linux-gnu",
-        "/lib64",
-#else
-        "/usr/lib64",
-        "/usr/lib/x86_64-linux-gnu",
-        "/lib/x86_64-linux-gnu",
-        "/lib64",
-#endif
-        NULL,
-    };
-    for (int i = 0; dirs[i]; i++) {
-        snprintf(out_path, out_sz, "%s/%s", dirs[i], libname);
+    for (int i = 0; std_lib_dirs[i]; i++) {
+        snprintf(out_path, out_sz, "%s/%s", std_lib_dirs[i], libname);
         if (is_real_elf_so(out_path)) {
             if (out_soname) snprintf(out_soname, out_soname_sz, "%s", libname);
             return 0;
@@ -1452,11 +1482,25 @@ static bool so_mark_defined(const char *path, const char **names,
     const uint8_t *dynstr_sh = ef.image + e_shoff + sym_link * 64;
     uint64_t dynstr_off = r64le(dynstr_sh + 24);
     uint64_t n_syms = sym_size / sym_entsz;
+    // .gnu.version (versym): one u16 per .dynsym entry; bit 15 marks a
+    // non-default ("hidden", `name@VER`) version. Those are compat symbols a
+    // new link cannot bind to -- glibc >= 2.34 keeps __malloc_hook that way, so
+    // a configure probe must find it undefined, as `ld` does.
+    const uint8_t *versym = NULL;
+    for (int i = 0; i < e_shnum; i++) {
+        const uint8_t *sh = ef.image + e_shoff + (uint64_t)i * 64;
+        if (r32le(sh + 4) == SHT_GNU_versym) {
+            uint64_t vo = r64le(sh + 24), vs = r64le(sh + 32);
+            if (vo + vs <= ef.size && vs >= n_syms * 2) versym = ef.image + vo;
+            break;
+        }
+    }
     for (uint64_t si = 0; si < n_syms; si++) {
         const uint8_t *se = ef.image + sym_off + si * sym_entsz;
         if (r16le(se + 6) == SHN_UNDEF) continue; // imported, not defined here
         uint8_t bind = se[4] >> 4;
         if (bind != STB_GLOBAL && bind != STB_WEAK) continue;
+        if (versym && (r16le(versym + si * 2) & 0x8000)) continue;
         const char *sname = (const char *)(ef.image + dynstr_off + r32le(se));
         for (int i = 0; i < n; i++) {
             if (!found[i] && strcmp(sname, names[i]) == 0) {
@@ -2398,6 +2442,7 @@ int link_elf(LinkState *s) {
     if (s->opt_shared) return -1;
 #endif
     if (resolve_archives(s) != 0) return -1;
+    pull_libc_nonshared(s);
 
     // -Wl, options this function itself must act on (rpath/soname/
     // -z suboptions/--no-undefined/--as-needed/muldefs handling below);
@@ -2830,6 +2875,17 @@ int link_elf(LinkState *s) {
                             snprintf(apath, sizeof(apath), "%s/%s", user_dirs[di], aname);
                             struct stat ast;
                             if (stat(apath, &ast) == 0) found_a = true;
+                        }
+                        // glibc >= 2.34 ships libutil/libdl/libpthread/librt as
+                        // empty "!<arch>\n" stubs (the code moved into libc), with
+                        // no lib<name>.so at all. Nothing to load or record, so a
+                        // real ld links them silently; so do we. A non-empty system
+                        // archive is NOT accepted: resolve_archives() only reads
+                        // -L dirs, so we would drop its code.
+                        for (int si = 0; std_lib_dirs[si] && !found_a; si++) {
+                            struct stat ast;
+                            snprintf(apath, sizeof(apath), "%s/%s", std_lib_dirs[si], aname);
+                            if (stat(apath, &ast) == 0 && ast.st_size == 8) found_a = true;
                         }
                         if (found_a) {
                             lp = end;

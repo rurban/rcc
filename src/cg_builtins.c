@@ -690,6 +690,9 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
 
             asm_fixup_add(cg_sec, jz_zero, format(".L.fc_zero.%d", c), 1);
             cg_def_label(format(".L.fc_zero.%d", c));
+            // r_tmp holds the (zero) exponent field here; the mantissa test
+            // needs the original bits, else every subnormal reads as zero.
+            asm_mov_reg_reg(cg_sec, r_tmp, r_arg, 8);
 #ifdef ARCH_ARM64
             emit_mov_imm64(REG(r), 0x000FFFFFFFFFFFFFULL);
 #else

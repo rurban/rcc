@@ -32,6 +32,7 @@ struct VarAttr {
     bool is_gnu_inline;
     bool is_always_inline;
     bool is_noinline; // __attribute__((noinline)): never inline this function (any inliner)
+    bool is_naked; // __attribute__((naked)): no prologue/epilogue; body is basic asm only
     bool is_weak;
     bool is_used; // __attribute__((used)) / __attribute__((__used__))
     bool is_tls;
@@ -2859,6 +2860,15 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                 if (equalc(tok, "noinline") || equalc(tok, "__noinline__")) {
                     if (attr)
                         attr->is_noinline = true;
+                    tok = tok->next;
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
+                if (equalc(tok, "naked") || equalc(tok, "__naked__")) {
+                    if (attr)
+                        attr->is_naked = true;
                     tok = tok->next;
                     if (equalc(tok, ","))
                         tok = tok->next;
@@ -10270,6 +10280,47 @@ static Node *parse_asm_stmt(Token **rest, Token *tok) {
     return node;
 }
 
+// GCC rejects two case labels of one switch with the same value, or ranges
+// that overlap ("duplicate case value"). Autoconf probes lean on that: Tcl's
+// `switch (0) { case 1: case (sizeof(long long)==sizeof(long)): ; }` must
+// FAIL to compile when long and long long have the same size, which is how
+// configure learns TCL_WIDE_INT_IS_LONG (without it Tcl_GetInt("0") fails and
+// init.tcl cannot load). Sort + scan, so huge generated switches stay O(n log n).
+// Values are compared as parsed (not converted to the controlling type), so
+// this never reports a false duplicate.
+typedef struct {
+    int64_t lo, hi;
+    Node *node;
+} CaseSpan;
+static int case_span_cmp(const void *a, const void *b) {
+    const CaseSpan *x = a, *y = b;
+    if (x->lo != y->lo) return x->lo < y->lo ? -1 : 1;
+    return x->node < y->node ? -1 : x->node > y->node;
+}
+static void check_duplicate_cases(Node *sw) {
+    int n = 0;
+    for (Node *c = sw->case_next; c; c = c->case_next) n++;
+    if (n < 2) return;
+    CaseSpan *v = xmalloc(sizeof(CaseSpan) * (size_t)n);
+    int i = 0;
+    for (Node *c = sw->case_next; c; c = c->case_next) {
+        v[i].lo = c->case_val;
+        v[i].hi = c->is_case_range && c->case_end >= c->case_val ? c->case_end : c->case_val;
+        v[i].node = c;
+        i++;
+    }
+    qsort(v, (size_t)n, sizeof(CaseSpan), case_span_cmp);
+    Node *dup = NULL;
+    int64_t maxhi = v[0].hi;
+    for (i = 1; i < n && !dup; i++) {
+        if (v[i].lo <= maxhi) dup = v[i].node;
+        else
+            maxhi = v[i].hi > maxhi ? v[i].hi : maxhi;
+    }
+    free(v);
+    if (dup) error_tok(dup->tok, "duplicate case value");
+}
+
 static Node *stmt(Token **rest, Token *tok) {
     // C23 [[attribute]] prefixing a statement or label (e.g. as an if/while
     // body, where the enclosing block loop's attribute handler does not run).
@@ -10650,6 +10701,7 @@ static Node *stmt(Token **rest, Token *tok) {
             current_switch = node;
             current_ctrl = node;
             node->then = stmt(&tok, tok);
+            check_duplicate_cases(node);
             current_switch = saved;
             current_ctrl = saved_ctrl;
             enum_scope_restore(saved_enum_log);
@@ -10677,6 +10729,7 @@ static Node *stmt(Token **rest, Token *tok) {
         current_switch = node;
         current_ctrl = node;
         node->then = stmt(&tok, tok);
+        check_duplicate_cases(node);
         current_switch = saved;
         current_ctrl = saved_ctrl;
         enum_scope_restore(saved_enum_log);
@@ -15546,6 +15599,31 @@ static void global_initializer_impl(Token **rest, Token *tok, LVar *var) {
     }
 }
 
+// __attribute__((naked)): GCC emits no prologue/epilogue and allows only basic
+// asm in the body (micropython's nlr_push/nlr_jump on x86-64: the asm saves the
+// caller's registers and tail-jumps to C, so a frame in between corrupts it).
+// Emit such a function as file-scope asm: the symbol, then the asm templates.
+static void naked_collect_asm(Node *n, char **text) {
+    for (; n; n = n->next) {
+        if (n->kind == ND_ASM && n->asm_noperands == 0 && n->asm_template)
+            *text = format("%s%s\n", *text, n->asm_template);
+        else if (n->kind == ND_BLOCK)
+            naked_collect_asm(n->body, text);
+    }
+}
+static char *naked_body_asm(Function *fn) {
+    char *body = "";
+    naked_collect_asm(fn->body, &body);
+    const char *name = fn->asm_name ? fn->asm_name : fn->name;
+#ifdef ARCH_ARM64
+    const char *fn_type = "%function";
+#else
+    const char *fn_type = "@function";
+#endif
+    return format(".text\n.balign 16\n%s.type %s,%s\n%s:\n%s.size %s,.-%s\n",
+                  fn->is_static ? "" : format(".globl %s\n", name), name, fn_type, name, body, name, name);
+}
+
 static char *parse_toplevel_asm(Token **rest, Token *tok) {
     while (equalc(tok, "volatile") || equalc(tok, "__volatile__") ||
            equalc(tok, "__volatile") || equalc(tok, "goto"))
@@ -16367,9 +16445,17 @@ Program *parse(Token *tok) {
                         ipf->next = inline_pack_fns;
                         inline_pack_fns = ipf;
                     } else {
+                        char *naked_text = attr.is_naked ? naked_body_asm(fn) : NULL;
                         TLItem *item = arena_alloc(sizeof(TLItem));
-                        item->kind = TL_FUNC;
-                        item->fn = fn;
+                        if (naked_text) {
+                            // __attribute__((naked)): no prologue/epilogue, the body is the asm.
+                            item->kind = TL_ASM;
+                            item->asm_str = naked_text;
+                            fn->is_noinline = true; // never inline asm that expects to own the frame
+                        } else {
+                            item->kind = TL_FUNC;
+                            item->fn = fn;
+                        }
                         tl_item_cur = tl_item_cur->next = item;
                     }
                     // Clear `locals`: it still holds this function's
