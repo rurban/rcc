@@ -212,23 +212,50 @@ __attribute__((unused)) static CgFwdList *asm_fwd_push(CgFwdList *head, size_t i
     return n;
 }
 
+extern bool cg_dry_run;
+// Set per function: its conditional branches may not reach their targets.
+extern bool cg_long_cond_branches;
+
+// Word offset of a branch, refusing one its `bits`-wide field cannot hold:
+// patching it anyway would silently jump somewhere else.
+static inline int64_t arm64_branch_imm(int64_t delta, int bits) {
+    int64_t imm = delta / 4;
+    int64_t lim = (int64_t)1 << (bits - 1);
+    if (!cg_dry_run && (imm < -lim || imm >= lim))
+        error("arm64 branch target out of range (%lld bytes away)", (long long)delta);
+    return imm;
+}
+
+static inline void arm64_check_adr_range(int64_t delta) {
+    if (!cg_dry_run && (delta < -(1 << 20) || delta >= (1 << 20)))
+        error("arm64 adr target out of range (%lld bytes away)", (long long)delta);
+}
+
+// A type 1 (B.cond) fixup whose site holds a B was emitted in the long form
+// by asm_jcc_label, and is patched as a B.
+static inline int arm64_fixup_type(uint32_t insn, int type) {
+    return (type == 1 && (insn & 0xFC000000U) == 0x14000000U) ? 0 : type;
+}
+
 // Patch all fixups in the list to point to target_off
 __attribute__((unused)) static void asm_fwd_patch_all(SecBuf *s, CgFwdList *head, size_t target_off) {
     while (head) {
         uint32_t insn = *(uint32_t *)(s->data + head->instr_off);
         int64_t delta = (int64_t)((int64_t)target_off - (int64_t)head->instr_off);
-        if (head->type == 0) {
+        int type = arm64_fixup_type(insn, head->type);
+        if (type == 0) {
             // B: 26-bit signed word offset in bits [25:0]
-            int64_t imm = delta / 4;
+            int64_t imm = arm64_branch_imm(delta, 26);
             insn = (insn & ~0x03FFFFFFU) | (uint32_t)(imm & 0x03FFFFFFU);
-        } else if (head->type == 2) {
+        } else if (type == 2) {
             // ADR: 21-bit byte offset, immhi[23:5] | immlo[30:29]
+            arm64_check_adr_range(delta);
             int32_t immlo = (int32_t)(delta & 3);
             int32_t immhi = (int32_t)(delta >> 2);
             insn = (insn & ~0x60FFFFE0U) | (uint32_t)((immhi & 0x7FFFF) << 5) | (uint32_t)((immlo & 3) << 29);
         } else {
             // B.cond: 19-bit signed word offset in bits [23:5]
-            int64_t imm = delta / 4;
+            int64_t imm = arm64_branch_imm(delta, 19);
             insn = (insn & ~0x00FFFFE0U) | (uint32_t)((imm & 0x7FFFF) << 5);
         }
         secbuf_patch32le(s, head->instr_off, insn);
@@ -295,9 +322,10 @@ static inline void asm_fixup_add(SecBuf *s, size_t instr_off, const char *label,
 #ifdef ARCH_ARM64
         uint32_t insn = *(uint32_t *)(s->data + instr_off);
         int64_t delta = (int64_t)((int64_t)target - (int64_t)instr_off);
+        type = arm64_fixup_type(insn, type);
         if (type == 0) {
             // B: 26-bit signed word offset in bits [25:0]
-            int64_t imm = delta / 4;
+            int64_t imm = arm64_branch_imm(delta, 26);
             insn = (insn & ~0x03FFFFFFU) | (uint32_t)(imm & 0x03FFFFFFU);
         } else if (type == 2) {
             // ADR: 21-bit byte offset, immhi[23:5] | immlo[30:29]
@@ -306,11 +334,11 @@ static inline void asm_fixup_add(SecBuf *s, size_t instr_off, const char *label,
             insn = (insn & ~0x60FFFFE0U) | (uint32_t)((immhi & 0x7FFFF) << 5) | (uint32_t)((immlo & 3) << 29);
         } else if (type == 3) {
             // TBZ/TBNZ: 14-bit signed word offset in bits [18:5]
-            int64_t imm = delta / 4;
+            int64_t imm = arm64_branch_imm(delta, 14);
             insn = (insn & ~0x0007FFE0U) | (uint32_t)((imm & 0x3FFF) << 5);
         } else {
             // B.cond/CBZ/CBNZ: 19-bit signed word offset in bits [23:5]
-            int64_t imm = delta / 4;
+            int64_t imm = arm64_branch_imm(delta, 19);
             insn = (insn & ~0x00FFFFE0U) | (uint32_t)((imm & 0x7FFFF) << 5);
         }
         secbuf_patch32le(s, instr_off, insn);
@@ -347,8 +375,12 @@ static inline void asm_patch_jmp_fwd(SecBuf *s, size_t off) {
 static inline void asm_patch_jcc_fwd(SecBuf *s, size_t off) {
 #ifdef ARCH_ARM64
     uint32_t insn = *(uint32_t *)(s->data + off);
-    int64_t imm = (int64_t)((int64_t)s->len - (int64_t)off) / 4; // B.cond: imm19, word offset from the branch
-    insn = (insn & ~0x00FFFFE0U) | (uint32_t)((imm & 0x7FFFF) << 5);
+    int64_t delta = (int64_t)s->len - (int64_t)off;
+    if (arm64_fixup_type(insn, 1) == 0) {
+        insn = (insn & ~0x03FFFFFFU) | (uint32_t)(arm64_branch_imm(delta, 26) & 0x03FFFFFFU);
+    } else {
+        insn = (insn & ~0x00FFFFE0U) | (uint32_t)((arm64_branch_imm(delta, 19) & 0x7FFFF) << 5);
+    }
     secbuf_patch32le(s, off, insn);
 #else
     int32_t disp = (int32_t)(s->len - (off + 6));
@@ -373,22 +405,24 @@ static inline void asm_fixup_resolve(SecBuf *s, const char *label, size_t target
 #ifdef ARCH_ARM64
             uint32_t insn = *(uint32_t *)(ts->data + n->instr_off);
             int64_t delta = (int64_t)((int64_t)target_off - (int64_t)n->instr_off);
-            if (n->type == 0) {
+            int type = arm64_fixup_type(insn, n->type);
+            if (type == 0) {
                 // B: 26-bit signed word offset in bits [25:0]
-                int64_t imm = delta / 4;
+                int64_t imm = arm64_branch_imm(delta, 26);
                 insn = (insn & ~0x03FFFFFFU) | (uint32_t)(imm & 0x03FFFFFFU);
-            } else if (n->type == 2) {
+            } else if (type == 2) {
                 // ADR: 21-bit byte offset, immhi[23:5] | immlo[30:29]
+                arm64_check_adr_range(delta);
                 int32_t immlo = (int32_t)(delta & 3);
                 int32_t immhi = (int32_t)(delta >> 2);
                 insn = (insn & ~0x60FFFFE0U) | (uint32_t)((immhi & 0x7FFFF) << 5) | (uint32_t)((immlo & 3) << 29);
-            } else if (n->type == 3) {
+            } else if (type == 3) {
                 // TBZ/TBNZ: 14-bit signed word offset in bits [18:5]
-                int64_t imm = delta / 4;
+                int64_t imm = arm64_branch_imm(delta, 14);
                 insn = (insn & ~0x0007FFE0U) | (uint32_t)((imm & 0x3FFF) << 5);
             } else {
                 // B.cond/CBZ/CBNZ: 19-bit signed word offset in bits [23:5]
-                int64_t imm = delta / 4;
+                int64_t imm = arm64_branch_imm(delta, 19);
                 insn = (insn & ~0x00FFFFE0U) | (uint32_t)((imm & 0x7FFFF) << 5);
             }
             secbuf_patch32le(ts, n->instr_off, insn);
@@ -1537,7 +1571,29 @@ static inline void asm_call_reg(SecBuf *s, VReg r) {
 #endif
 }
 
+static inline void asm_patch_branch(SecBuf *s, size_t instr_off, size_t target_off, int type);
+
+#ifdef ARCH_ARM64
+// A B.cond reaches only +-1MB, so in a function that may be larger branch
+// around a B instead: b.!cond +8; b target. Returns the offset of the B.
+static inline size_t asm_long_jcc(SecBuf *s, int cond) {
+    size_t off = s->len;
+    arm64_bcond(s, (Arm64Cond)(cond ^ 1), 2);
+    asm_record(ASM_JCC, off, 1, -1, -1, -1, 0, 0, 0, NULL, cond ^ 1, -1, false);
+    off = s->len;
+    cg_record_branch(off, 0);
+    arm64_b(s, 0);
+    // Not ASM_JMP: execution can still fall through to what comes next.
+    asm_record(ASM_JCC, off, 1, -1, -1, -1, 0, 0, 0, NULL, cond, -1, false);
+    return off;
+}
+#endif
+
 static inline size_t asm_jcc_label(SecBuf *s, int cond) {
+#ifdef ARCH_ARM64
+    if (cg_long_cond_branches && cond < ARM64_AL)
+        return asm_long_jcc(s, cond);
+#endif
     size_t off = s->len;
     cg_record_branch(off, 1);
 #ifdef ARCH_ARM64
@@ -1590,13 +1646,20 @@ static inline size_t asm_b_back(SecBuf *s, size_t target_off) {
 
 // Emit B.cond to a known target position (backward — no fixup needed)
 static inline size_t asm_bcond_back(SecBuf *s, int cond, size_t target_off) {
+#ifdef ARCH_ARM64
+    if (cg_long_cond_branches && cond < ARM64_AL) {
+        size_t b_off = asm_long_jcc(s, cond);
+        asm_patch_branch(s, b_off, target_off, 0);
+        return b_off;
+    }
+#endif
     size_t off = s->len;
     cg_record_branch(off, 1);
 #ifdef ARCH_ARM64
     arm64_bcond(s, (Arm64Cond)cond, 0);
     int64_t delta = (int64_t)((int64_t)target_off - (int64_t)off);
     uint32_t insn = *(uint32_t *)(s->data + off);
-    int64_t imm = delta / 4;
+    int64_t imm = arm64_branch_imm(delta, 19);
     insn = (insn & ~0x00FFFFE0U) | (uint32_t)((imm & 0x7FFFF) << 5);
     secbuf_patch32le(s, off, insn);
 #else
@@ -1615,13 +1678,14 @@ static inline void asm_patch_branch(SecBuf *s, size_t instr_off, size_t target_o
 #ifdef ARCH_ARM64
     uint32_t insn = *(uint32_t *)(s->data + instr_off);
     int64_t delta = (int64_t)((int64_t)target_off - (int64_t)instr_off);
+    type = arm64_fixup_type(insn, type);
     if (type == 0) {
         // B: 26-bit signed word offset in bits [25:0]
-        int64_t imm = delta / 4;
+        int64_t imm = arm64_branch_imm(delta, 26);
         insn = (insn & ~0x03FFFFFFU) | (uint32_t)(imm & 0x03FFFFFFU);
     } else {
         // B.cond: 19-bit signed word offset in bits [23:5]
-        int64_t imm = delta / 4;
+        int64_t imm = arm64_branch_imm(delta, 19);
         insn = (insn & ~0x00FFFFE0U) | (uint32_t)((imm & 0x7FFFF) << 5);
     }
     secbuf_patch32le(s, instr_off, insn);
