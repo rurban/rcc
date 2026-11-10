@@ -73,6 +73,18 @@ complete list of changes see the git log.
   undefined, as with ld; and the gcc fallback brackets static archives in a
   linker group, matching rcc's own rescan-until-fixed-point archive order.
 
+  The clang build no longer passes -Wl,-w to the fallback link on
+  GNU/Linux: GNU ld.bfd reports a reference to a symbol that exists only
+  under a non-default (hidden/compat) version as a warning, and -w let
+  such a link silently succeed where it must fail (kept on the BSDs, where
+  it silences ld.lld's "strcpy() misused" notices). Case ranges in switch
+  are rejected under -pedantic as in GCC ("ISO C does not support range
+  expressions in switch statements before C2Y"); duplicate-case detection
+  converts the labels to the switch expression's type first and reports
+  each conflict as it is parsed (so the rest of the file still gets
+  diagnosed); and -W warns when a case label's value changes on that
+  conversion.
+
   Every malloc/calloc/realloc/strdup in the compiler goes through the shared
   xmalloc/xcalloc/xrealloc/xstrdup (src/alloc.c), which print "rcc: out of
   memory" and exit(1) instead of dereferencing NULL or leaking on a failed

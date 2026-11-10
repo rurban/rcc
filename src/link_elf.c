@@ -752,7 +752,7 @@ static int load_archive(LinkState *s, const char *path) {
             if (used[i] || !symnames[i]) continue;
             if (link_verbose && strstr(symnames[i], "glbflags")) {
                 int fs = link_find_sym(s, symnames[i]);
-                fprintf(stderr, "DBG sym %d %s find=%d sec=%d\n", i, symnames[i], fs,
+                fprintf(stderr, "DBG sym %u %s find=%d sec=%d\n", i, symnames[i], fs,
                         fs >= 0 ? s->syms[fs].sec : -99);
             }
             // link_find_sym returning >= 0 only means a symbol by this

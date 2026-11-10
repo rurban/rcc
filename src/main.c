@@ -1895,19 +1895,28 @@ int main(int argc, char **argv) {
         // compilation: '-no-pie'" to stderr on an otherwise successful
         // link -- harmless, but it pollutes any caller capturing this
         // process's stderr (run_tests.c folds compile stderr into a
-        // test's compared output). Suppress that specific warning class.
+        // test's compared output). -Wno-unused-command-line-argument
+        // suppresses exactly that warning class and does not affect
+        // link success/failure, so it is safe on every platform.
+        xappendf(&cmd, &cmd_len, &cmd_cap, " -Wno-unused-command-line-argument");
+#if defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+        // The BSDs' own ld.lld carries local patches that print a
+        // "warning: strcpy() is almost always misused, please use
+        // strlcpy()"-style notice for any object referencing a handful
+        // of libc functions it considers risky (strcpy/sprintf/etc,
+        // regardless of whether the call is actually unsafe) -- the same
+        // output-pollution problem. -Wl,-w (--no-warnings) silences those
+        // ld *warnings* only.
         //
-        // Separately, the BSDs' own ld.lld carries local patches that
-        // print a "warning: strcpy() is almost always misused, please
-        // use strlcpy()"-style notice for any object referencing a
-        // handful of libc functions it considers risky (strcpy/sprintf/
-        // etc, regardless of whether the call is actually unsafe) --
-        // the exact same output-pollution problem. -Wl,-w
-        // (--no-warnings) silences every ld *warning* without touching
-        // *errors*: a genuine link failure still exits non-zero and
-        // still prints, this only drops opinions about code this
-        // fallback link was never asked to lint.
-        xappendf(&cmd, &cmd_len, &cmd_cap, " -Wno-unused-command-line-argument -Wl,-w");
+        // This must NOT be passed on GNU/Linux: GNU ld.bfd reports a
+        // reference to a symbol that exists only under a non-default
+        // (compat) version as a *warning*, and -w would suppress it and
+        // let the link succeed -- exactly the case test_link_hidden_version_symbol
+        // asserts must fail. On GNU the genuine failure stays a hard
+        // "undefined reference" error either way, so no suppression is
+        // needed there.
+        xappendf(&cmd, &cmd_len, &cmd_cap, " -Wl,-w");
+#endif
 #endif
 #endif
 

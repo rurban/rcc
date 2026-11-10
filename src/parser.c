@@ -10285,40 +10285,24 @@ static Node *parse_asm_stmt(Token **rest, Token *tok) {
 // `switch (0) { case 1: case (sizeof(long long)==sizeof(long)): ; }` must
 // FAIL to compile when long and long long have the same size, which is how
 // configure learns TCL_WIDE_INT_IS_LONG (without it Tcl_GetInt("0") fails and
-// init.tcl cannot load). Sort + scan, so huge generated switches stay O(n log n).
-// Values are compared as parsed (not converted to the controlling type), so
-// this never reports a false duplicate.
-typedef struct {
-    int64_t lo, hi;
-    Node *node;
-} CaseSpan;
-static int case_span_cmp(const void *a, const void *b) {
-    const CaseSpan *x = a, *y = b;
-    if (x->lo != y->lo) return x->lo < y->lo ? -1 : 1;
-    return x->node < y->node ? -1 : x->node > y->node;
-}
-static void check_duplicate_cases(Node *sw) {
-    int n = 0;
-    for (Node *c = sw->case_next; c; c = c->case_next) n++;
-    if (n < 2) return;
-    CaseSpan *v = xmalloc(sizeof(CaseSpan) * (size_t)n);
-    int i = 0;
-    for (Node *c = sw->case_next; c; c = c->case_next) {
-        v[i].lo = c->case_val;
-        v[i].hi = c->is_case_range && c->case_end >= c->case_val ? c->case_end : c->case_val;
-        v[i].node = c;
-        i++;
-    }
-    qsort(v, (size_t)n, sizeof(CaseSpan), case_span_cmp);
-    Node *dup = NULL;
-    int64_t maxhi = v[0].hi;
-    for (i = 1; i < n && !dup; i++) {
-        if (v[i].lo <= maxhi) dup = v[i].node;
-        else
-            maxhi = v[i].hi > maxhi ? v[i].hi : maxhi;
-    }
-    free(v);
-    if (dup) error_tok(dup->tok, "duplicate case value");
+// init.tcl cannot load). The check runs incrementally, as each case label is
+// parsed: error_tok() longjmps to the statement-level recovery point, so a
+// batch check after the body is parsed would report only the first conflict
+// and leave the rest of the switch (and file) unparsed.
+// C11 6.8.4.2p3: a case label is converted to the type of the switch
+// expression, wrapping for unsigned / narrower types exactly like a C
+// cast. Duplicate detection must compare the CONVERTED values --
+// `case -31` in a `switch (unsigned char)` is 225, inside the converted
+// range of `case -32 ... -30` (224..226), which raw signed comparison
+// would miss (or, worse, report at the wrong case).
+static long long case_label_conv(long long v, Type *t) {
+    int bits = (int)(t->size * 8);
+    if (bits <= 0 || bits >= 64) return v;
+    uint64_t m = (1ULL << bits) - 1;
+    uint64_t u = (uint64_t)v & m;
+    if (!t->is_unsigned && (u & (1ULL << (bits - 1))))
+        u |= ~m;
+    return (long long)u;
 }
 
 static Node *stmt(Token **rest, Token *tok) {
@@ -10701,7 +10685,6 @@ static Node *stmt(Token **rest, Token *tok) {
             current_switch = node;
             current_ctrl = node;
             node->then = stmt(&tok, tok);
-            check_duplicate_cases(node);
             current_switch = saved;
             current_ctrl = saved_ctrl;
             enum_scope_restore(saved_enum_log);
@@ -10729,7 +10712,6 @@ static Node *stmt(Token **rest, Token *tok) {
         current_switch = node;
         current_ctrl = node;
         node->then = stmt(&tok, tok);
-        check_duplicate_cases(node);
         current_switch = saved;
         current_ctrl = saved_ctrl;
         enum_scope_restore(saved_enum_log);
@@ -10750,7 +10732,24 @@ static Node *stmt(Token **rest, Token *tok) {
             !eval_const_expr(val_node, &v))
             error_tok(val_node->tok, "case label is not an integer constant expression");
         node->case_val = v;
+        // The label is converted to the type of the switch expression
+        // (C11 6.8.4.2p3); warn when the conversion changes the value
+        // (GCC's -Woverflow / -Wswitch-outside-range, both on with -Wall).
+        if (opt_W && current_switch && current_switch->cond &&
+            is_integer(current_switch->cond->ty)) {
+            long long cv = case_label_conv(v, current_switch->cond->ty);
+            if (cv != v)
+                warn_tok(val_node->tok, "case label value changes when converted to the "
+                                         "switch expression's type");
+        }
         if (equalc(tok, "...")) {
+            // GNU extension: a case range. ISO C has no such construct, so
+            // -pedantic rejects it (GCC: "ISO C does not support range
+            // expressions in switch statements before C2Y"; promoted to an
+            // error by -pedantic-errors).
+            if (opt_pedantic)
+                warn_tok(tok, "ISO C does not support range expressions in switch "
+                               "statements before C2Y");
             tok = tok->next;
             Node *end_node = conditional(&tok, tok);
             check_type(end_node);
@@ -10761,6 +10760,39 @@ static Node *stmt(Token **rest, Token *tok) {
             node->case_end = ev;
             node->is_case_range = true;
         }
+        // C11 6.8.4.2p10: duplicate / overlapping case labels. Checked per
+        // label as it is parsed (not after the body is parsed):
+        // error_tok() longjmps to the statement-level recovery point, so a
+        // later conflict still gets its own diagnostic and the rest of the
+        // switch (and file) is parsed normally.
+        {
+            Type *sty = current_switch->cond && is_integer(current_switch->cond->ty)
+                            ? current_switch->cond->ty
+                            : NULL;
+            long long clo = sty ? case_label_conv(v, sty) : v;
+            long long chi = node->is_case_range
+                                ? (sty ? case_label_conv(node->case_end, sty)
+                                       : node->case_end)
+                                : clo;
+            if (chi >= clo) {
+                for (Node *p = current_switch->case_next; p; p = p->case_next) {
+                    long long plo = sty ? case_label_conv(p->case_val, sty) : p->case_val;
+                    long long phi = p->is_case_range
+                                        ? (sty ? case_label_conv(p->case_end, sty)
+                                               : p->case_end)
+                                        : plo;
+                    if (phi < plo) continue; // empty range: covers no value
+                    if (clo <= phi && plo <= chi)
+                        error_tok(node->tok, "duplicate case value");
+                }
+            }
+        }
+        // Register the label BEFORE parsing its body: a body-less label
+        // (`case 2: case 1+1: ...`) is parsed as the enclosing label's
+        // body statement, so the inner label must see this one in
+        // case_next to be checked against it.
+        node->case_next = current_switch->case_next;
+        current_switch->case_next = node;
         tok = skip(tok, ":");
         // C23: a label may be immediately followed by a declaration or the
         // end of the enclosing compound statement, with an empty (null)
@@ -10772,8 +10804,6 @@ static Node *stmt(Token **rest, Token *tok) {
             node->lhs = new_node(ND_NULL, tok);
         else
             node->lhs = stmt(&tok, tok);
-        node->case_next = current_switch->case_next;
-        current_switch->case_next = node;
         *rest = tok;
         return node;
     }
