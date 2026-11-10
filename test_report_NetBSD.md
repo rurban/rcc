@@ -2,12 +2,12 @@
 
 **Platform**: NetBSD
 
-Generated: November 08 2026 13:57
+Generated: November 10 2026 17:51
 
 ## Overall Summary
 
-- **Total**: 800
-- **Passed**: 578
+- **Total**: 811
+- **Passed**: 589
 - **Failed**: 0
 - **Overall Pass Rate**: 72%
 
@@ -20,8 +20,8 @@ Generated: November 08 2026 13:57
 
 ## RCC Unit Tests
 
-- **Total**: 447
-- **Passed**: 447
+- **Total**: 458
+- **Passed**: 458
 - **Failed**: 0
 - **Pass Rate**: 100%
 

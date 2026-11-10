@@ -1036,7 +1036,20 @@ test_lwan(){
  sed -i 's|__builtin_inf()|HUGE_VAL|g' src/samples/forthsalon/forth.c
  replace_line "#if defined(__x86_64__)" "#if 0" src/lib/lwan-websocket.c
  replace_line "#if __x86_64__" "#if 0" src/lib/lwan-template.c
- cmake_init
+ # The `testsuite` target always depends on the techempower sample, which is
+ # only built when both mariadb and sqlite3 dev libs are present (mariadb is
+ # absent here) -- `make testsuite` dies with "No rule to make target
+ # techempower". Drop the dependency and skip the TWFB tests when the
+ # harness binary was not built.
+ sed -i 's|DEPENDS testrunner techempower|DEPENDS testrunner|' CMakeLists.txt
+ sed -i 's|    self.ensureHighlander()|    if not os.path.exists(self.harness_paths.get(harness, "")):\n        self.skipTest("harness binary not built")\n    self.ensureHighlander()|' src/scripts/testsuite.py
+ # CMake's find_package(Python3) picks up a uv-managed python3.10 (no
+ # `requests`) ahead of the system python3, and the `testsuite` target runs
+ # testsuite.py with it. Install `requests` for the system python3 and force
+ # CMake to use that same interpreter for the testsuite.
+ python3 -m pip install --user --break-system-packages requests >/dev/null 2>&1 || \
+  python3 -m pip install --user requests >/dev/null 2>&1 || true
+ cmake_init -DPython3_EXECUTABLE="$(command -v python3)"
  make testsuite
 }
 
@@ -1484,6 +1497,10 @@ test_rpmalloc() {
  #replace_line "#if defined(__clang__) || defined(__GNUC__)" "#if 1" rpmalloc/rpmalloc.h
  use_stdbit '#include <stdint.h' rpmalloc/rpmalloc.c
  python3 configure.py
+ # The test binary links a C++ object (main-override.cc, compiled with
+ # clang++), but the link driver is rcc (a C driver) which does not add
+ # the C++ runtime; append libstdc++ to that edge (both build types).
+ sed -i 's|^  libs = -lrpmalloc-test$|  libs = -lrpmalloc-test -lstdc++|' build.ninja
  sed -i 's|-fstrict-aliasing||g' build.ninja
  sed -i 's|-fno-math-errno||g' build.ninja
  sed -i 's|-ffinite-math-only||g' build.ninja

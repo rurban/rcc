@@ -486,6 +486,38 @@ static void alu_mr(SecBuf *s, int size, int op, X86Mem dst, X86Reg src) {
     emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, dst.seg, src);
 }
 
+// Immediate-to-memory ALU (r/m, imm): "cmpl $5, 8(%rax)" and friends —
+// alu_ri's mirror for a memory destination, using the 0x80/0x81/0x83
+// ALU group with the opcode in the ModRM.reg field and the memory in the
+// r/m field. Without this, asm.c's CMP block had no dispatch arm for
+// (imm, mem) and silently dropped the instruction: OpenSSL's
+// sha512/sha256 asm ends each 16-round group with
+// "cmpb $0, 7(%rbp); jnz .Lrounds_16_xx" — a K-constant-table terminator
+// walk — and dropping the cmpb left the jnz testing stale flags from the
+// last arithmetic op, so the rounds loop ran 0..N extra groups with the
+// K pointer walking off the table: sometimes a (lucky-flags) correct
+// digest, sometimes a wrong one, and eventually a segfault in
+// "add 0x0(%rbp),%r12" with the pointer megabytes past the table.
+static void alu_im(SecBuf *s, int size, int op, X86Mem mem, int32_t imm) {
+    size16_pfx(s, size);
+    maybe_rex(s, size == 8, X86_NOREG, mem.index, mem.base);
+    if (size != 1 && imm >= -128 && imm <= 127)
+        emit1(s, 0x83);
+    else if (size == 1)
+        emit1(s, 0x80);
+    else
+        emit1(s, 0x81);
+    emit_mem(s, mem.base, mem.index, mem.scale, mem.disp, mem.seg, (X86Reg)op);
+    if (size != 1 && imm >= -128 && imm <= 127)
+        emit1(s, (uint8_t)(int8_t)imm);
+    else if (size == 1)
+        emit1(s, (uint8_t)imm);
+    else if (size == 2)
+        secbuf_emit16le(s, (uint16_t)imm);
+    else
+        emit_imm32(s, imm);
+}
+
 void x86_add_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { alu_rr(s, sz, 0, d, sr); }
 void x86_add_ri(SecBuf *s, int sz, X86Reg d, int32_t i) { alu_ri(s, sz, 0, d, i); }
 void x86_add_rm(SecBuf *s, int sz, X86Reg d, X86Mem m) { alu_rm(s, sz, 0, d, m); }
@@ -509,6 +541,7 @@ void x86_xor_mr(SecBuf *s, int sz, X86Mem d, X86Reg sr) { alu_mr(s, sz, 6, d, sr
 void x86_cmp_rr(SecBuf *s, int sz, X86Reg a, X86Reg b) { alu_rr(s, sz, 7, a, b); }
 void x86_cmp_ri(SecBuf *s, int sz, X86Reg a, int32_t i) { alu_ri(s, sz, 7, a, i); }
 void x86_cmp_rm(SecBuf *s, int sz, X86Reg a, X86Mem b) { alu_rm(s, sz, 7, a, b); }
+void x86_cmp_im(SecBuf *s, int sz, X86Mem m, int32_t i) { alu_im(s, sz, 7, m, i); }
 void x86_cmp_mr(SecBuf *s, int sz, X86Mem a, X86Reg b) {
     size16_pfx(s, sz);
     maybe_rex(s, sz == 8, b, a.index, a.base);
@@ -720,6 +753,10 @@ static void bop_rm(SecBuf *s, int sz, uint8_t op2, X86Reg dst, X86Mem src) {
 }
 void x86_bsf_rm(SecBuf *s, int sz, X86Reg d, X86Mem sm) { bop_rm(s, sz, 0xbc, d, sm); }
 void x86_bsr_rm(SecBuf *s, int sz, X86Reg d, X86Mem sm) { bop_rm(s, sz, 0xbd, d, sm); }
+// IMUL dst, src (memory) — 0F AF /r, same opcode as the reg-reg form; the
+// missing arm was what silently dropped OpenSSL mont5's "imulq 32+8(%rsp),
+// %rbx" (the 8x reduction scale load) from the assembled output.
+void x86_imul_rm(SecBuf *s, int sz, X86Reg d, X86Mem sm) { bop_rm(s, sz, 0xaf, d, sm); }
 // ADCX/ADOX (ADX extension): unsigned-carry-only (ADCX, mandatory 66
 // prefix) resp. overflow-flag-only (ADOX, mandatory F3 prefix)
 // add-with-carry; 66/F3 [REX.W] 0F 38 F6 /r. Used by OpenSSL/LibreSSL's
@@ -771,6 +808,22 @@ void x86_bt_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { bop(s, sz, 0xa3, d, sr)
 void x86_bts_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { bop(s, sz, 0xab, d, sr); }
 void x86_btr_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { bop(s, sz, 0xb3, d, sr); }
 void x86_btc_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { bop(s, sz, 0xbb, d, sr); }
+
+// BT r, $imm8 (0F BA /7 ib): "bt $0x1c, %edx" -- the fixed-bit feature
+// probe used throughout OpenSSL's x86_64cpuid.s. asm.c's BT dispatch
+// had no immediate arm: the immediate landed in the register-form path
+// where R(0) parsed it as a garbage register, so every CPU feature
+// probe became "test a random bit of a random register" and the
+// feature flags (and the code paths chosen from them) went wrong.
+void x86_bt_ri(SecBuf *s, int sz, X86Reg r, int32_t imm) {
+    size16_pfx(s, sz);
+    maybe_rex(s, sz == 8, r, 0, 0);
+    // 0F BA /ib sub-ops: /4=BT, /5=BTS, /6=BTR, /7=BTC (NOT /7=BT).
+    emit1(s, 0x0f);
+    emit1(s, 0xba);
+    emit1(s, modrm(3, 4, r));
+    emit1(s, (uint8_t)imm);
+}
 
 // XADD r/m, r (0F C0/C1 /r): adds src into dst, dst's original value -> src.
 void x86_xadd_mr(SecBuf *s, int sz, X86Mem d, X86Reg sr) {

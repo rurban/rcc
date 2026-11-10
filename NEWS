@@ -56,7 +56,18 @@ complete list of changes see the git log.
   assembler gained correct handling of sym(%rip)
   relocations for every mnemonic, %ah..%bh, shld/shrd, movlps/movhps/movlpd/
   movhpd and pshufd with memory operands, unsuffixed shifts by %cl, pclmul
-  selectors, and .quad literals above INT64_MAX.
+  selectors, .quad literals above INT64_MAX, cmov with an explicit size
+  suffix (cmovcq/cmovgl/... -- previously all encoded as cmove), and
+  two-operand imul with a memory or an immediate source (previously
+  silently dropped), cmp with an immediate and a memory destination
+  (cmpb $0, 7(%rbp) -- the K-table loop terminator in OpenSSL's
+  sha512/sha256 asm; previously silently dropped, the following jne
+  tested stale flags and the round loop ran until the K pointer walked
+  off the table: sha_test/ssl_test segfaults and flag-dependent wrong
+  SHA-384/512 digests), and bt with an immediate bit index
+  (bt $0x1c, %edx -- the CPUID feature probe; previously encoded as a
+  register-form BT with a garbage register, corrupting every detected
+  CPU feature).
 
   More fixes from the remaining third-party projects: duplicate `case`
   values (also overlapping GNU ranges) are an error, as in GCC (autoconf

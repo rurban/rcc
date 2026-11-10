@@ -2148,7 +2148,11 @@ int pe_write_out_implib(const char *dll_path, const char *implib_path) {
     free(longnames);
 
     for (int i = 0; i < n_members; i++) {
-        pe_ar_header(&out, &out_len, &out_cap, NULL, member_longoff[i], member_len[i]);
+        // member_longoff[i] is always >= 0 here (every member is in the
+        // long-name table), so `name` is not read; pass it anyway so the
+        // function contract (name non-NULL when longname_off < 0) holds.
+        pe_ar_header(&out, &out_len, &out_cap, member_name[i], member_longoff[i],
+                     member_len[i]);
         pe_buf_append_bytes(&out, &out_len, &out_cap, member_data[i], member_len[i]);
         if (member_len[i] & 1) {
             uint8_t pad = '\n';

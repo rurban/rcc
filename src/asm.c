@@ -3233,6 +3233,24 @@ static X86Cond parse_x86_cc(const char *cc_s) {
     return X86_E;
 }
 
+// True iff s[0,n) is a recognized condition code name. Unlike parse_x86_cc,
+// this reports the answer instead of silently defaulting to X86_E: that
+// default is what masked GAS's explicit cmov size suffix ("cmovcq" == cmovc
+// at 64-bit, "cmovgl" == cmovg at 32-bit): "cq"/"nzq"/"geq"/... are not
+// condition codes, so they all quietly became CMOVZ -- mis-encoding every
+// suffixed cmov (OpenSSL's BN mont reductions use dozens of them).
+static bool x86_cc_known(const char *s, size_t n) {
+    static const char *const ccs[] = {"e", "z", "ne", "nz", "l", "nge", "le", "ng",
+                                      "g", "nle", "ge", "nl", "b", "c", "nae",
+                                      "be", "na", "a", "nbe", "ae", "nc",
+                                      "s", "ns", "p", "pe", "np", "po", "o",
+                                      "no", NULL};
+    for (int i = 0; ccs[i]; i++)
+        if (strlen(ccs[i]) == n && !strncmp(s, ccs[i], n))
+            return true;
+    return false;
+}
+
 static bool encode_x86_insn(AsmState *as, const char *mnem, char *ops_str);
 
 // Assemble one x86 instruction. A RIP-relative memory operand naming a SYMBOL
@@ -4045,8 +4063,14 @@ static bool encode_x86_insn(AsmState *as, const char *mnem, char *ops_str) {
     if (!strncmp(mnem, "imul", 4)) {
         if (nops == 2 && is_reg(0) && is_reg(1))
             x86_imul_rr(buf, sz, R(1), R(0));
+        else if (nops == 2 && is_reg(1) && is_mem(0))
+            x86_imul_rm(buf, sz, R(1), M(0));
         else if (nops == 3 && is_imm(2))
             x86_imul_rri(buf, sz, R(1), R(0), (int32_t)IMM(2));
+        else if (nops == 2 && is_imm(0) && is_reg(1))
+            // 2-operand immediate form (AT&T: immediate first): same
+            // 69/6B encoding with dst == src
+            x86_imul_rri(buf, sz, R(1), R(1), (int32_t)IMM(0));
         else if (nops == 1)
             x86_imul_r(buf, sz, R(0));
         return true;
@@ -4211,6 +4235,8 @@ static bool encode_x86_insn(AsmState *as, const char *mnem, char *ops_str) {
             x86_cmp_rm(buf, sz, R(1), M(0));
         else if (is_reg(0) && is_mem(1))
             x86_cmp_mr(buf, sz, M(1), R(0));
+        else if (is_imm(0) && is_mem(1))
+            x86_cmp_im(buf, sz, M(1), (int32_t)IMM(0));
         return true;
     }
     if (!strncmp(mnem, "test", 4)) {
@@ -4229,7 +4255,23 @@ static bool encode_x86_insn(AsmState *as, const char *mnem, char *ops_str) {
 
     // CMOVcc
     if (!strncmp(mnem, "cmov", 4)) {
-        X86Cond cc = parse_x86_cc(mnem + 4);
+        const char *ccs = mnem + 4;
+        size_t cn = strlen(ccs);
+        char ccbuf[8];
+        // GAS also accepts an explicit size suffix on cmov ("cmovcq" ==
+        // cmovc at 64-bit, "cmovgl" == cmovg at 32-bit). Strip one trailing
+        // size letter when the remainder is a complete condition code;
+        // "cmovb" (below) / "cmovl" (less) keep their letter -- the
+        // remainder would not be a condition code, so they never lose it.
+        if (cn >= 2) {
+            char last = ccs[cn - 1];
+            if ((last == 'q' || last == 'w' || last == 'l' || last == 'b') && x86_cc_known(ccs, cn - 1)) {
+                memcpy(ccbuf, ccs, cn - 1);
+                ccbuf[cn - 1] = '\0';
+                ccs = ccbuf;
+            }
+        }
+        X86Cond cc = parse_x86_cc(ccs);
         if (is_reg(0) && is_reg(1))
             x86_cmovcc(buf, sz, cc, R(1), R(0));
         return true;
@@ -4496,7 +4538,10 @@ static bool encode_x86_insn(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
     if (!strncmp(mnem, "bt", 2)) {
-        if (is_mem(1)) x86_bt_mr(buf, sz, M(1), R(0));
+        if (is_imm(0) && is_reg(1))
+            x86_bt_ri(buf, sz, R(1), (int32_t)IMM(0));
+        else if (is_mem(1))
+            x86_bt_mr(buf, sz, M(1), R(0));
         else
             x86_bt_rr(buf, sz, R(1), R(0));
         return true;

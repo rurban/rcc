@@ -10740,7 +10740,7 @@ static Node *stmt(Token **rest, Token *tok) {
             long long cv = case_label_conv(v, current_switch->cond->ty);
             if (cv != v)
                 warn_tok(val_node->tok, "case label value changes when converted to the "
-                                         "switch expression's type");
+                                        "switch expression's type");
         }
         if (equalc(tok, "...")) {
             // GNU extension: a case range. ISO C has no such construct, so
@@ -10749,7 +10749,7 @@ static Node *stmt(Token **rest, Token *tok) {
             // error by -pedantic-errors).
             if (opt_pedantic)
                 warn_tok(tok, "ISO C does not support range expressions in switch "
-                               "statements before C2Y");
+                              "statements before C2Y");
             tok = tok->next;
             Node *end_node = conditional(&tok, tok);
             check_type(end_node);
@@ -10767,20 +10767,20 @@ static Node *stmt(Token **rest, Token *tok) {
         // switch (and file) is parsed normally.
         {
             Type *sty = current_switch->cond && is_integer(current_switch->cond->ty)
-                            ? current_switch->cond->ty
-                            : NULL;
+                ? current_switch->cond->ty
+                : NULL;
             long long clo = sty ? case_label_conv(v, sty) : v;
             long long chi = node->is_case_range
-                                ? (sty ? case_label_conv(node->case_end, sty)
-                                       : node->case_end)
-                                : clo;
+                ? (sty ? case_label_conv(node->case_end, sty)
+                       : node->case_end)
+                : clo;
             if (chi >= clo) {
                 for (Node *p = current_switch->case_next; p; p = p->case_next) {
                     long long plo = sty ? case_label_conv(p->case_val, sty) : p->case_val;
                     long long phi = p->is_case_range
-                                        ? (sty ? case_label_conv(p->case_end, sty)
-                                               : p->case_end)
-                                        : plo;
+                        ? (sty ? case_label_conv(p->case_end, sty)
+                               : p->case_end)
+                        : plo;
                     if (phi < plo) continue; // empty range: covers no value
                     if (clo <= phi && plo <= chi)
                         error_tok(node->tok, "duplicate case value");

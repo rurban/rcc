@@ -4,6 +4,88 @@ Batch run: 2026-08-14 (full 221/221 targets; supersedes the 2026-08-06
 partial 199/221 run below)
 Binary: rcc HEAD (third_party branch)
 
+## 2026-11-09/10 rerun: 212 -> 216 pass of 223
+
+Newly passing (checklist flipped): **liballegro5, lwan, rpmalloc, tcl**
+(libopus and libxo_chimerautils were already flipped with their fixes).
+
+- **tcl**: passes once duplicate `case` values are an error (its
+  configure probe `case 1: case (sizeof(long long) == sizeof(long)):`
+  is meant to fail where long == long long; rcc accepted it and Tcl
+  misdetected Tcl_WideInt). Range/duplicate diagnostics also fixed
+  torture c23-switch-1 (ranges rejected under -pedantic, labels
+  converted to the switch type before the duplicate check, each
+  conflict reported as parsed): `make test-torture` 3605/3609 (100%).
+- **rpmalloc**: its test binary links one C++ object through the rcc
+  C driver, which does not add -lstdc++; the recipe appends it to
+  build.ninja after configure.py (186s, PASS).
+- **lwan**: recipe drops the CMake `DEPENDS techempower` (the sample
+  needs mariadb dev libs, absent) and skips the 5 TWFB tests when the
+  harness binary is unbuilt, plus Python3_EXECUTABLE pin + pip
+  requests: `Ran 95 tests ... OK (skipped=5)`. The 2026-11-10
+  "chunked-encoding hang" was NOT rcc: with orphaned testrunner
+  processes from a killed run removed, the rcc build is 90/95,
+  identical to a gcc build (same 5 TWFB errors before the skip patch);
+  isolated tests pass in 0.2s.
+- **liballegro5**: builds and its test suite passes after the
+  subnormal fpclassify()/isnormal() fix (they came out
+  zero/normal).
+
+Not passing (evidence):
+
+- **openssl**: builds; `test/exptest` (the 2026-11-09/10 rc=139/RIP=0
+  with seed 1794297727) is FIXED (two rcc x86-assembler bugs: suffixed
+  cmovs all encoded as cmove; 2-operand imul with memory/immediate
+  source silently dropped). The sha_test/ssl_test SHA-512 segfault
+  cluster is also FIXED: a third assembler bug — `cmpb $0,7(%rbp)`
+  (the K-constant-table loop terminator in sha512/sha256 asm) matched
+  no dispatch arm and was silently dropped, so the rounds loop's `jne`
+  tested stale flags and ran until the K pointer walked off the table
+  (flag-dependent: sometimes correct digests, sometimes segfault at
+  `add 0x0(%rbp),%r12`); sha_test, sha384/512 digests and the
+  SHA-512-using TLS paths are green. The remaining `make test`
+  failures (of the original 78-recipe cluster; ssl_test cores since
+  2026-11-08) are all rcc x86-assembler gaps, NOT the linker or C
+  codegen (proved by a gcc/gas bisection of the 845 libcrypto
+  objects and by gas-vs-rcc .o diffs of all 39 .s files): a fourth
+  assembler bug — `bt $0x1c,%edx` (immediate bit index, the CPUID
+  feature probes in x86_64cpuid.s) fell into the register form with
+  the immediate parsed as a garbage register, so every CPU feature
+  probe tested a random bit of a random register — is now fixed
+  (0F BA /4 ib). With all four fixes, `make test` fails in 64
+  recipes (was 78; sha_test, dgst/sha, exp_test and 10 others now
+  pass); 05-test_rc4.t, previously passing on the mis-detected
+  features' pure-C fallback, newly fails because correct feature
+  detection now selects the asm RC4 path, which has its own gaps.
+  Remaining gaps: (a) every VEX mnemonic
+  (vmovdqu/vmovdqa/vpaddq/vsha512rnds2/vperm2i128/vbroadcasti128,
+  ...) with a %ymmN operand is encoded 128-bit (asm.c dispatch
+  routes all VEX forms to the xmm encoders; the VEX encoders in
+  x86_enc.c exist but are unconnected) — breaks the AVX2/SHA-NI
+  paths (sha512ext, aes-gcm-avx512, rsaz-avx512, ...);
+  (b) larger per-file divergences in bsaes (248 pxor lines),
+  sha1-mb, sha1/sha256/sha512 (K-table walk + VEX), vpaes,
+  aesni-x86_64, x86_64-mont/5, rc4/rc4-md5, chacha, ecp_nistz256,
+  x25519, ghash, poly1305, keccak, e_padlock — each needs its own
+  root cause.
+- **php**: 16885/21705 pass; the 20 failures look environmental, not
+  rcc (12 openssl/TLS stream wrappers — system OpenSSL 3.6 disables
+  TLS<=1.2; 6 Phar openssl-hash; FFI bug80847; 2 ftps:// opendir),
+  unverified against a gcc build.
+- **micropython**: builds and runs (1029/1033); the 4 failures
+  reproduce on a gcc-built port — not rcc.
+- **nqp, openrc, pacman, python**: remain open as before (nqp on
+  unfixed.txt; openrc/camgunz `unix` member; pacman build failure;
+  python 5 failing files).
+
+CI note (fixed this session): `test_link_hidden_version_symbol` was
+deterministically red on every _clang_ build — the clang fallback link
+adds -Wl,-w, and GNU ld.bfd reports the compat-version reference as a
+_warning_, so the bad link exited 0; -w is now BSD-only. Full suite
+green on gcc (469/469, 118/118 TCC, 15/15, 220/220) and clang
+(469/469, 117/118 — the 1 is run_tests.c's pre-existing `#ifdef
+__clang__` atexit TODO quirk).
+
 ## 2026-11-07/08 rerun: 114 -> 128 pass of 221
 
 Fixed: `__builtin_bswapN` tail-jmp'd as a bare symbol (zstd, cgit pass; git

@@ -1145,7 +1145,7 @@
   c23-stddef-1                        PASS (compile only)
   c23-stddef-2                        PASS (compile only)
   c23-stdint-1                        PASS (compile only)
-  c23-switch-1                        PASS (compile only)
+  c23-switch-1                        PASS (expected error)
   c23-tag-1                           PASS (compile only)
   c23-tag-2                           PASS (compile only)
   c23-tag-3                           PASS (compile only)
@@ -3966,4 +3966,4 @@
 
 Torture: 3605/3609 passed (100%), 0 failed, 354 skipped, 4 todo.
 
-Dg-error tests: 36/36 passed (caught expected error), 0 failed.
+Dg-error tests: 37/37 passed (caught expected error), 0 failed.
