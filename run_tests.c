@@ -1820,7 +1820,8 @@ static const char *test_unit_env(const char *base) {
         streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable") ||
         streq(base, "test_ubsan_ptr") || streq(base, "test_ubsan_align") ||
         streq(base, "test_ubsan_bounds") || streq(base, "test_ubsan_fco") ||
-        streq(base, "test_ubsan_rn"))
+        streq(base, "test_ubsan_rn") ||
+        streq(base, "test_ubsan_ptr_neg") || streq(base, "test_ubsan_ptr_neg_add"))
         return "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=0";
     return NULL;
 }
@@ -1834,7 +1835,8 @@ static const char *extra_ldflags(const char *base, const char *srcfile) {
         streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null") ||
         streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable") ||
         streq(base, "test_ubsan_ptr") || streq(base, "test_ubsan_align") ||
-        streq(base, "test_ubsan_bounds") || streq(base, "test_ubsan_rn"))
+        streq(base, "test_ubsan_bounds") || streq(base, "test_ubsan_rn") ||
+        streq(base, "test_ubsan_ptr_neg") || streq(base, "test_ubsan_ptr_neg_add"))
         return " -fsanitize=undefined";
     bool lm = streq(base, "22_floating_point") || streq(base, "24_math_library");
     bool pt = false;
@@ -3871,7 +3873,8 @@ static int run_unit_tests(void) {
                  streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable") ||
                  streq(base, "test_ubsan_ptr") || streq(base, "test_ubsan_align") ||
                  streq(base, "test_ubsan_bounds") || streq(base, "test_ubsan_fco") ||
-                 streq(base, "test_ubsan_rn"))) {
+                 streq(base, "test_ubsan_rn") ||
+                 streq(base, "test_ubsan_ptr_neg") || streq(base, "test_ubsan_ptr_neg_add"))) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
                 continue;
@@ -3983,7 +3986,8 @@ static int run_unit_tests(void) {
                  streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable") ||
                  streq(base, "test_ubsan_ptr") || streq(base, "test_ubsan_align") ||
                  streq(base, "test_ubsan_bounds") || streq(base, "test_ubsan_fco") ||
-                 streq(base, "test_ubsan_rn"))) {
+                 streq(base, "test_ubsan_rn") ||
+                 streq(base, "test_ubsan_ptr_neg") || streq(base, "test_ubsan_ptr_neg_add"))) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
                 free(nl[i]);
