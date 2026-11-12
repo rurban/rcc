@@ -530,10 +530,25 @@ F<.lib> on Windows).
 Link with the pthreads library and define the appropriate feature-test
 macros.
 
-=item B<-shared>
+=item B<-shared>, B<-dynamiclib>
 
 Produce a shared library (F<.so>/F<.dylib>/F<.dll>) instead of an
-executable.
+executable.  B<-dynamiclib> is the Darwin spelling that GNU libtool passes
+on macOS.
+
+On Darwin a shared library is linked with B<-undefined dynamic_lookup>, so
+its undefined symbols are left for dyld to resolve at load time.  A program
+is not: an undefined symbol is a link error, as with B<cc>, so configure
+link checks only find functions that exist.  rcc's own Mach-O linker does
+not report undefined symbols yet; sanitizer builds always use the system
+linker.
+
+=item B<-install_name> I<name>, B<-compatibility_version> I<version>, B<-current_version> I<version>
+
+Darwin: set a shared library's install name and version numbers, as GNU
+libtool passes them.  Equivalent to B<-Wl,-install_name,>I<name>,
+B<-Wl,-compatibility_version,>I<version> and
+B<-Wl,-current_version,>I<version>.
 
 =item B<-static>
 

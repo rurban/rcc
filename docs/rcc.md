@@ -729,8 +729,10 @@ emitting gcc's exact libubsan descriptor + handler:
 - **`nonnull-attribute`** — a null C string passed to a `nonnull` string
   function (`strlen` / `strcmp` / `strchr` / …)
   (`__ubsan_handle_nonnull_arg`).
-- **`pointer-overflow`** — pointer `+` / `-` arithmetic wraps the address space
-  (`__ubsan_handle_pointer_overflow`).
+- **`pointer-overflow`** — pointer arithmetic with an integer offset wraps the
+  address space: a non-negative offset past the top or a negative one past
+  zero, as in GCC (`__ubsan_handle_pointer_overflow`). A subscript folded into
+  a load (`p[i]`) is not checked.
 - **`unreachable`** — execution reaches `__builtin_unreachable`
   (`__ubsan_handle_builtin_unreachable`).
 
@@ -759,7 +761,10 @@ emitting gcc's exact libubsan descriptor + handler:
 | `-Lpath`                            | Add a linker library search directory.                                                                                                                                                                                                       |
 | `-lname`                            | Link `lib`_name_.                                                                                                                                                                                                                            |
 | `-pthread`                          | Link pthreads and define its feature-test macros.                                                                                                                                                                                            |
-| `-shared`                           | Produce a shared library instead of an executable.                                                                                                                                                                                           |
+| `-shared`, `-dynamiclib`            | Produce a shared library instead of an executable (`-dynamiclib` is the Darwin spelling). On Darwin only a library is linked with `-undefined dynamic_lookup`.                                                                               |
+| `-install_name name`                | Darwin: shared library install name (⇒ `-Wl,-install_name,name`), as GNU libtool passes it.                                                                                                                                                  |
+| `-compatibility_version v`          | Darwin: shared library compatibility version (⇒ `-Wl,-compatibility_version,v`).                                                                                                                                                             |
+| `-current_version v`                | Darwin: shared library current version (⇒ `-Wl,-current_version,v`).                                                                                                                                                                         |
 | `-static`                           | Link statically.                                                                                                                                                                                                                             |
 | `-rdynamic`                         | Export all symbols to the dynamic symbol table (⇒ `-Wl,-E`).                                                                                                                                                                                 |
 | `-nodefaultlibs`, `-nostdlib`, `-r` | Do not link default runtime libraries.                                                                                                                                                                                                       |
