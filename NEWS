@@ -101,6 +101,29 @@ complete list of changes see the git log.
   memory" and exit(1) instead of dereferencing NULL or leaking on a failed
   realloc.
 
+  macOS/arm64 fixes found building libredwg with
+  -fsanitize=address,undefined: a conditional branch in a function over 1MB (B.cond reaches only +-1MB) is
+  emitted as a branch around an unconditional B, and a branch that still
+  cannot reach its target is a compile error instead of a jump into
+  unrelated code. The UBSan overflow checks no longer overwrite a local in a
+  large frame, no longer report every negative product, and no longer
+  compute l + l when the lhs was spilled; pointer additions are checked by
+  offset sign as on x86-64, so negative offsets are not reported, and
+  test_ubsan_ptr_neg now actually runs with -fsanitize=undefined. The ASan
+  check keeps the shadow base out of the address register. Relocatable
+  Mach-O objects get a correct section layout, which rcc's own linker now
+  reads back correctly, and extern asm-named objects are no longer defined.
+
+  macOS: the bundled <string.h> and <stdio.h> now declare memmem, the scanf
+  and v*printf families and the other variadic or non-int stdio functions
+  (an undeclared function is called as int with its arguments in
+  registers, which truncates pointers and breaks variadic calls), and
+  <limits.h> chains to the SDK for PATH_MAX. Programs are no longer linked
+  with -undefined dynamic_lookup, which made configure link checks find
+  functions that do not exist; shared libraries still are.
+  -dynamiclib, -install_name, -compatibility_version and -current_version
+  are accepted, as GNU libtool passes them on macOS.
+
 * Changes in v1.2.3 (2026-11-06) (Reini Urban)
 
   -O2 SSA IR backend (x86-64 ELF, x86-64 Windows/COFF, AArch64 ELF and Darwin):

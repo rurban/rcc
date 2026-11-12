@@ -469,6 +469,10 @@ every `__attribute__`/`__builtin_*`/`#pragma` extension — in
     -lname             add lib
     -pthread           link with pthreads library
     -shared            create shared library
+    -dynamiclib        same as -shared (Darwin)
+    -install_name name Darwin: library install name (=> -Wl,-install_name,name)
+    -compatibility_version v, -current_version v
+                       Darwin: library version numbers (=> -Wl,...)
     -static            link statically
     -rdynamic          export all symbols to the dynamic symbol table (=> -Wl,-E)
     -nodefaultlibs     no libc
