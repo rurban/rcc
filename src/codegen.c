@@ -19184,19 +19184,34 @@ VReg gen_inner(Node *node) {
                         free_reg(r_sext);
                     } else if (!strcmp(inst, "add")) {
                         arm64_adds_reg(cg_sec, sf, REG(r_a), REG(r_a), REG(r_b), ARM64_LSL, 0);
-                        if (is_ptr) emit_jcc_fixup(cg_sec, ARM64_CC, skip); // no carry -> skip
-                        else
+                        if (is_ptr) {
+                            // As on x86-64: the carry is set by every base +
+                            // negative offset, so fire only when a
+                            // non-negative offset leaves result <u base, or
+                            // a negative one leaves result >u base.
+                            char *neg = format(".L.ubsan_po_neg.%d", n);
+                            char *fire = format(".L.ubsan_po_fire.%d", n);
+                            asm_cmp_zero(cg_sec, r_b, 8); // offset sign
+                            emit_jcc_fixup(cg_sec, ARM64_MI, neg);
+                            asm_cmp_reg_reg(cg_sec, r_a, r_save, 8); // result - base
+                            emit_jcc_fixup(cg_sec, ARM64_HS, skip); // no wrap past the top
+                            emit_jmp_fixup(cg_sec, fire);
+                            cg_def_label(neg);
+                            asm_cmp_reg_reg(cg_sec, r_a, r_save, 8); // result - base
+                            emit_jcc_fixup(cg_sec, ARM64_LS, skip); // no wrap past zero
+                            cg_def_label(fire);
+                        } else
                             emit_jcc_fixup(cg_sec, ARM64_VC, skip); // no overflow -> skip
                     } else {
                         arm64_subs_reg(cg_sec, sf, REG(r_a), REG(r_a), REG(r_b), ARM64_LSL, 0);
                         emit_jcc_fixup(cg_sec, ARM64_VC, skip); // no overflow -> skip
                     }
                     // The handler is a raw call (clobbers caller-saved regs).
-                    // Stash the value (result for signed, base for pointer).
+                    // Stash the result, which is what the expression yields.
                     int a_slot = current_fn_stack_size + fn_struct_ret_off + 8;
                     fn_struct_ret_off += 8;
                     if (fn_struct_ret_off > fn_struct_ret_total) fn_struct_ret_total = fn_struct_ret_off;
-                    asm_stur_fp(cg_sec, is_ptr ? r_save : r_a, a_slot);
+                    asm_stur_fp(cg_sec, r_a, a_slot);
                     VReg d = alloc_reg_avoid2(r_a, r_b);
                     if (data_label) emit_adrp_add(d, data_label); // d = &Data (none in Pass 1)
                     arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, REG(d), ARM64_LSL, 0); // x0 = &Data
@@ -19204,13 +19219,16 @@ VReg gen_inner(Node *node) {
                     if (sz == 4) arm64_sxtw(cg_sec, ARM64_X1, REG(r_save)); // x1 = sext(a)
                     else
                         arm64_orr_reg(cg_sec, 1, ARM64_X1, ARM64_XZR, REG(r_save), ARM64_LSL, 0);
-                    if (!is_ptr) {
+                    if (is_ptr) {
+                        // __ubsan_handle_pointer_overflow(data, base, result)
+                        arm64_orr_reg(cg_sec, 1, ARM64_X2, ARM64_XZR, REG(r_a), ARM64_LSL, 0);
+                    } else {
                         if (sz == 4) arm64_sxtw(cg_sec, ARM64_X2, REG(r_b)); // x2 = sext(b)
                         else
                             arm64_orr_reg(cg_sec, 1, ARM64_X2, ARM64_XZR, REG(r_b), ARM64_LSL, 0);
                     }
                     emit_direct_call(handler, false); // report stub
-                    asm_ldur_fp(cg_sec, is_ptr ? r_save : r_a, a_slot); // restore
+                    asm_ldur_fp(cg_sec, r_a, a_slot); // restore the result
                     cg_def_label(skip);
                     free_reg(r_save);
                     if (lhs_spilled) {
