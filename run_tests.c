@@ -1815,7 +1815,8 @@ static int test_unit_expected_exit(const char *base) {
 // with a deterministic exit (1) instead of trapping: the UBSan FPE signal
 // handler would otherwise intercept the SIGFPE with a build-dependent exit.
 static const char *test_unit_env(const char *base) {
-    if (streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
+    if (streq(base, "test_ubsan_shift_slots") ||
+        streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
         streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null") ||
         streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable") ||
         streq(base, "test_ubsan_ptr") || streq(base, "test_ubsan_align") ||
@@ -1831,7 +1832,8 @@ static const char *extra_ldflags(const char *base, const char *srcfile) {
     if (streq(base, "test_ubsan_fco"))
         return " -fsanitize=float-cast-overflow";
     // -fsanitize=undefined unit test: compile+link with the gcc UBSan runtime.
-    if (streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
+    if (streq(base, "test_ubsan_shift_slots") ||
+        streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
         streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null") ||
         streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable") ||
         streq(base, "test_ubsan_ptr") || streq(base, "test_ubsan_align") ||
@@ -3868,7 +3870,8 @@ static int run_unit_tests(void) {
              * paths differ, and qemu arm64_cross is not covered.
              * test_ubsan_intoverflow uses the same libubsan link + halt. */
             if ((!streq(platform, "linux") && !streq(platform, "arm64")) &&
-                (streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
+                (streq(base, "test_ubsan_shift_slots") ||
+                 streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
                  streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null") ||
                  streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable") ||
                  streq(base, "test_ubsan_ptr") || streq(base, "test_ubsan_align") ||
@@ -3981,7 +3984,8 @@ static int run_unit_tests(void) {
             /* See the parallel path's matching skip: UBSan divzero/intoverflow
              * rely on the libubsan runtime, verified on native Linux and arm64. */
             if ((!streq(platform, "linux") && !streq(platform, "arm64")) &&
-                (streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
+                (streq(base, "test_ubsan_shift_slots") ||
+                 streq(base, "test_ubsan_divzero") || streq(base, "test_ubsan_intoverflow") ||
                  streq(base, "test_ubsan_shift") || streq(base, "test_ubsan_null") ||
                  streq(base, "test_ubsan_nonnull") || streq(base, "test_ubsan_unreachable") ||
                  streq(base, "test_ubsan_ptr") || streq(base, "test_ubsan_align") ||

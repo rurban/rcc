@@ -885,6 +885,15 @@ int fn_struct_ret_off = 0; // next free offset within the struct-ret-buf area
 static int cmp_lhs_protect_depth = 0;
 static int cmp_lhs_protect_slots[CMP_LHS_PROTECT_MAX_DEPTH];
 int fn_struct_ret_total = 0; // high-water mark of struct-ret-buf space used
+// The -fsanitize=undefined check of a shift by a runtime count is generated
+// in Pass 2 only, but its two stash slots come out of the struct-ret area,
+// whose size Pass 1 fixes. Pass 1 reserves them here; otherwise every later
+// slot of the function sits 16 bytes per check below the frame.
+static void ubsan_shift_reserve_slots(void) {
+    fn_struct_ret_off += 16;
+    if (fn_struct_ret_off > fn_struct_ret_total)
+        fn_struct_ret_total = fn_struct_ret_off;
+}
 // Same two-pass-stable allocation scheme as fn_struct_ret_off/total, for
 // GNU nested-function trampoline slots (see rcc.h's TRAMPOLINE_SIZE);
 // this region starts right after fn_struct_ret_total's (see the `off`
@@ -18805,6 +18814,8 @@ VReg gen_inner(Node *node) {
             // Call the gcc libubsan handler when the count exceeds the type
             // width (sh >= bits): __ubsan_handle_shift_out_of_bounds
             // (x0=&Data, x1=value, x2=count, sign-extended).
+            if (opt_ubsan && cg_dry_run && sz <= 8 && !use_unsigned(node->ty))
+                ubsan_shift_reserve_slots();
             if (opt_ubsan && !cg_dry_run && sz <= 8 && !use_unsigned(node->ty)) {
                 int n = ubsan_ctr++;
                 char *data_label = cg_emit_ubsan_divrem_data(node->ty, node->rhs->ty,
@@ -18864,6 +18875,8 @@ VReg gen_inner(Node *node) {
             // (rdi=&Data, rsi=value, rdx=count, sign-extended). Subset of
             // gcc's full condition (which also handles neg-value arithmetic
             // right shift); the common sh>=bits case is complete.
+            if (opt_ubsan && cg_dry_run && sz <= 8 && !use_unsigned(node->ty))
+                ubsan_shift_reserve_slots();
             if (opt_ubsan && !cg_dry_run && sz <= 8 && !use_unsigned(node->ty)) {
                 int n = ubsan_ctr++;
                 char *data_label = cg_emit_ubsan_divrem_data(node->ty, node->rhs->ty,
