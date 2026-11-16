@@ -4433,6 +4433,13 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     for (int i = 0; i < NUM_REGS; i++)
         live_now += (used_regs >> i) & 1;
     bool use_staging = (live_now + nreg_args_count + stack_scratch >= NUM_REGS);
+    // Sanitizer checks emitted only in Pass 2 raise register pressure, so
+    // Pass 2 may stage here where Pass 1 did not; reserve the slots up front.
+    if (cg_dry_run && !use_staging && (opt_ubsan || opt_asan)) {
+        fn_struct_ret_off += 8 * nreg_args_count;
+        if (fn_struct_ret_off > fn_struct_ret_total)
+            fn_struct_ret_total = fn_struct_ret_off;
+    }
     // Bitmask of scratch registers holding already-computed register-passed
     // arguments. Built up incrementally as each arg is evaluated below (an
     // arg that gets staged to memory is NOT added: its register is legitimately
