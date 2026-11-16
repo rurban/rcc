@@ -886,6 +886,34 @@ else
     printf '  %-44s SKIP (needs a Mach-O target)\n' "Mach-O objects keep labels out of symtab"
 fi
 
+# ---------------------------------------------------------------------------
+# 22. -dead_strip keeps a static function that is only called directly.
+#    ld64 treats each function of an MH_SUBSECTIONS_VIA_SYMBOLS object as
+#    an atom and keeps one only if a relocation refers to it, so every
+#    arm64 call, the one to a static callee defined earlier included,
+#    carries a CALL26 relocation. Linked with the system linker, which is
+#    the one that strips.
+# ---------------------------------------------------------------------------
+if [ "$SOEXT" = dylib ] && [ "$(uname -m)" = arm64 ]; then
+    cat > "$TMP/ds.c" <<'EOF'
+static int ds_helper(int x) { return x * 3 + 1; }
+static int ds_twice(int x) { return ds_helper(x) + ds_helper(x + 1); }
+int main(void) { return ds_twice(4) == 29 ? 0 : 1; }
+EOF
+    if "$RCC" -c "$TMP/ds.c" -o "$TMP/ds.o" 2>"$TMP/e22" \
+        && cc -Wl,-dead_strip "$TMP/ds.o" -o "$TMP/ds_prog" 2>>"$TMP/e22"; then
+        if ("$TMP/ds_prog") 2>/dev/null; then
+            pass "-dead_strip keeps directly called statics"
+        else
+            fail "-dead_strip keeps directly called statics" "program exited nonzero or crashed"
+        fi
+    else
+        fail "-dead_strip keeps directly called statics" "$(tr '\n' ' ' < "$TMP/e22")"
+    fi
+else
+    printf '  %-44s SKIP (needs a Mach-O arm64 target)\n' "-dead_strip keeps directly called statics"
+fi
+
 echo ""
 echo "Link tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

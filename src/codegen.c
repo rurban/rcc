@@ -1939,6 +1939,20 @@ int cg_obj_var_sym_idx(LVar *var) {
 }
 #endif
 
+#ifdef ARCH_ARM64
+// Whether a call or tail call to a static function earlier in the same
+// section is patched directly instead of getting a relocation. Not on
+// Mach-O: objects are MH_SUBSECTIONS_VIA_SYMBOLS, so ld64 treats each
+// function as an atom of its own and follows only references that carry a
+// relocation; -dead_strip and order files need a CALL26/JUMP26 to every
+// callee.
+#ifdef __APPLE__
+#define ARM64_PATCH_LOCAL_CALLS 0
+#else
+#define ARM64_PATCH_LOCAL_CALLS 1
+#endif
+#endif
+
 static void emit_direct_call(const char *name, bool is_asm_label) {
     if (cg_dry_run) return;
     if (is_asm_reserved(name))
@@ -1968,7 +1982,7 @@ static void emit_direct_call(const char *name, bool is_asm_label) {
 #ifdef _WIN32
     if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT) {
 #else
-    if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT &&
+    if (ARM64_PATCH_LOCAL_CALLS && sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT &&
         cg_obj->syms[sidx].bind == SB_LOCAL) {
 #endif
         int32_t disp = (int32_t)((int64_t)cg_obj->syms[sidx].offset - (int64_t)off);
@@ -2032,7 +2046,7 @@ static void emit_direct_jmp(char *name, bool is_asm_label) {
 #ifdef _WIN32
     if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT) {
 #else
-    if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT &&
+    if (ARM64_PATCH_LOCAL_CALLS && sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT &&
         cg_obj->syms[sidx].bind == SB_LOCAL) {
 #endif
         int32_t disp = (int32_t)((int64_t)cg_obj->syms[sidx].offset - (int64_t)off);
