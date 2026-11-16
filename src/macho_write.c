@@ -79,6 +79,7 @@
 // n_desc flags
 #define N_WEAK_REF 0x0040 // undefined symbol is a weak reference (may be missing)
 #define N_WEAK_DEF 0x0080 // defined symbol is a weak (coalesced) definition
+#define N_ALT_ENTRY 0x0200 // alternate entry into the preceding atom
 
 // ---------------------------------------------------------------------------
 // Write helpers (little-endian)
@@ -233,6 +234,66 @@ static void macho_seg_sect_name(char segname[16], char sectname[16],
     }
 }
 
+// An internal codegen label, ".L..." in ELF spelling (see the symbol table
+// below).
+static bool is_macho_label(const char *name) {
+    return name[0] == '.' && name[1] == 'L';
+}
+
+// Flag each symbol that one of the relocations refers to.
+static void mark_reloc_syms(bool *used, const ObjReloc *relocs, int count) {
+    for (int i = 0; i < count; i++)
+        if (relocs[i].sym_idx >= 0) used[relocs[i].sym_idx] = true;
+}
+
+// A symbol defined in __text that is not an internal label.
+typedef struct {
+    uint64_t offset;
+    int idx;
+} TextSym;
+
+static int textsym_cmp(const void *a, const void *b) {
+    uint64_t x = ((const TextSym *)a)->offset, y = ((const TextSym *)b)->offset;
+    return (x > y) - (x < y);
+}
+
+// Whether a relocation is an arm64 address word that holds a __text label.
+static bool is_label_addr_reloc(const ObjFile *obj, const ObjReloc *r) {
+    return r->type == R_AARCH64_ABS64 && r->sym_idx >= 0 &&
+        obj->syms[r->sym_idx].section == SEC_TEXT &&
+        is_macho_label(obj->syms[r->sym_idx].name);
+}
+
+// Point each address word that holds a __text label (a computed-goto or
+// jump table entry) at the symbol the label follows, normally its
+// function, and add the label's offset from that symbol to the word,
+// which already holds the addend. This is how clang refers to a block
+// address, and the label then needs no symbol of its own. ts holds the
+// non-label __text symbols, sorted by offset.
+static void retarget_label_relocs(ObjFile *obj, SecBuf *buf, ObjReloc *relocs, int count,
+                                  const TextSym *ts, int nts) {
+    for (int i = 0; i < count; i++) {
+        ObjReloc *r = &relocs[i];
+        if (!is_label_addr_reloc(obj, r) || r->offset + 8 > buf->len) continue;
+        uint64_t off = obj->syms[r->sym_idx].offset;
+        int lo = 0, hi = nts; // first entry past off
+        while (lo < hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (ts[mid].offset <= off) lo = mid + 1;
+            else hi = mid;
+        }
+        // No symbol before the label, or a weak one that the link may replace
+        // with another definition: the label keeps its own symbol.
+        if (lo == 0 || obj->syms[ts[lo - 1].idx].bind == SB_WEAK) continue;
+        uint8_t *p = buf->data + r->offset;
+        uint64_t word = 0;
+        for (int b = 0; b < 8; b++) word |= (uint64_t)p[b] << (8 * b);
+        word += off - ts[lo - 1].offset;
+        for (int b = 0; b < 8; b++) p[b] = (uint8_t)(word >> (8 * b));
+        r->sym_idx = ts[lo - 1].idx;
+    }
+}
+
 // Map an ObjSym/ObjReloc section id (built-in SEC_TEXT..SEC_THREAD_VARS or a
 // dynamic SEC_NUM+i custom section) to its 1-based Mach-O section ordinal.
 // extra_ord[i] holds the ordinal assigned to obj->extra_secs[i]; computed
@@ -360,17 +421,78 @@ int macho_write(ObjFile *obj, const char *path) {
     } Nlist;
     Nlist *nlist = xcalloc((size_t)(obj->sym_count + 1), sizeof(Nlist));
 
+    // Internal codegen labels are named the ELF way, ".L...". ld64 starts a
+    // new atom at every symbol of a MH_SUBSECTIONS_VIA_SYMBOLS object, so a
+    // label in the symbol table would split its function and get its own
+    // LC_FUNCTION_STARTS entry. As with LLVM's temporary symbols, a label
+    // that no relocation refers to is left out of the symbol table, and on
+    // arm64 an address word that holds a __text label refers to the label's
+    // function plus an offset instead (retarget_label_relocs). A label that
+    // a relocation still needs is written under the Mach-O assembler-local
+    // prefix, a bare "L", which ld64 keeps out of the linked symbol table;
+    // in __text it is also an N_ALT_ENTRY into the function's atom, like
+    // clang's .alt_entry, unless no real symbol precedes it. C names carry
+    // the "_" prefix and cannot clash with the renamed labels.
+    if (is_arm64) {
+        bool any = false;
+        for (int i = 0; i < obj->data_reloc_count && !any; i++)
+            any = is_label_addr_reloc(obj, &obj->data_relocs[i]);
+        for (int i = 0; i < obj->rodata_reloc_count && !any; i++)
+            any = is_label_addr_reloc(obj, &obj->rodata_relocs[i]);
+        for (int i = 0; i < obj->extra_sec_count && !any; i++)
+            for (int j = 0; j < obj->extra_secs[i].reloc_count && !any; j++)
+                any = is_label_addr_reloc(obj, &obj->extra_secs[i].relocs[j]);
+        if (any) {
+            TextSym *ts = xmalloc((size_t)(obj->sym_count + 1) * sizeof(TextSym));
+            int nts = 0;
+            for (int i = 0; i < obj->sym_count; i++) {
+                ObjSym *os = &obj->syms[i];
+                if (os->section != SEC_TEXT || is_macho_label(os->name)) continue;
+                ts[nts].offset = os->offset;
+                ts[nts].idx = i;
+                nts++;
+            }
+            qsort(ts, (size_t)nts, sizeof(TextSym), textsym_cmp);
+            retarget_label_relocs(obj, &obj->data, obj->data_relocs, obj->data_reloc_count, ts, nts);
+            retarget_label_relocs(obj, &obj->rodata, obj->rodata_relocs, obj->rodata_reloc_count, ts, nts);
+            for (int i = 0; i < obj->extra_sec_count; i++)
+                retarget_label_relocs(obj, &obj->extra_secs[i].buf, obj->extra_secs[i].relocs,
+                                      obj->extra_secs[i].reloc_count, ts, nts);
+            free(ts);
+        }
+    }
+    bool *label_used = xcalloc((size_t)(obj->sym_count + 1), sizeof(bool));
+    mark_reloc_syms(label_used, obj->text_relocs, obj->text_reloc_count);
+    mark_reloc_syms(label_used, obj->data_relocs, obj->data_reloc_count);
+    mark_reloc_syms(label_used, obj->rodata_relocs, obj->rodata_reloc_count);
+    mark_reloc_syms(label_used, obj->init_array_relocs, obj->init_array_reloc_count);
+    mark_reloc_syms(label_used, obj->fini_array_relocs, obj->fini_array_reloc_count);
+    mark_reloc_syms(label_used, obj->data_tls_relocs, obj->data_tls_reloc_count);
+    mark_reloc_syms(label_used, obj->thread_vars_relocs, obj->thread_vars_reloc_count);
+    for (int i = 0; i < obj->extra_sec_count; i++)
+        mark_reloc_syms(label_used, obj->extra_secs[i].relocs, obj->extra_secs[i].reloc_count);
+    uint64_t first_text_sym = UINT64_MAX;
+    for (int i = 0; i < obj->sym_count; i++) {
+        ObjSym *os = &obj->syms[i];
+        if (os->section == SEC_TEXT && !is_macho_label(os->name) && os->offset < first_text_sym)
+            first_text_sym = os->offset;
+    }
+
     // Locals first (Mach-O requires locals before globals)
     for (int i = 0; i < obj->sym_count; i++) {
         ObjSym *os = &obj->syms[i];
         if (os->bind != SB_LOCAL) continue;
         if (os->section == SEC_UNDEF) continue; // undefined symbols go below
+        bool label = is_macho_label(os->name);
+        if (label && !label_used[i]) continue;
         sym_map[i] = nsyms;
         Nlist *n = &nlist[nsyms++];
-        n->strx = mstrtab_add(&mst, os->name);
+        n->strx = mstrtab_add(&mst, label ? os->name + 1 : os->name);
         n->type = (os->section == SEC_UNDEF) ? N_UNDF : N_SECT;
         n->sect = obj_section_ord(os->section, extra_ord);
         n->desc = 0;
+        if (label && os->section == SEC_TEXT && os->offset > first_text_sym)
+            n->desc = N_ALT_ENTRY;
         n->value = os->offset;
     }
     int ilocalsym = 0;
@@ -523,6 +645,7 @@ int macho_write(ObjFile *obj, const char *path) {
     if (!f) {
         free(sym_map);
         free(nlist);
+        free(label_used);
         free(mst.data);
         free(extra_ord);
         free(extra_off);
@@ -872,6 +995,7 @@ int macho_write(ObjFile *obj, const char *path) {
     fclose(f);
     free(sym_map);
     free(nlist);
+    free(label_used);
     free(mst.data);
     free(extra_ord);
     free(extra_off);

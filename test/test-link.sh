@@ -827,6 +827,65 @@ else
     printf '  %-44s SKIP (needs ELF target + readelf/nm)\n' "link keeps .debug_* of -g objects"
 fi
 
+# ---------------------------------------------------------------------------
+# 21. Mach-O objects keep internal labels out of the symbol table. ld64
+#    starts an atom at every symbol of an MH_SUBSECTIONS_VIA_SYMBOLS
+#    object, so a label symbol would split its function: the linked
+#    program would get a LC_FUNCTION_STARTS entry at each branch target,
+#    which leaks, atos and lldb show as an unnamed function. A label that
+#    a relocation needs (here a computed-goto target) is an "L" symbol and
+#    an alternate entry into its function's atom. The program is linked
+#    with the system linker, which is the one that builds atoms.
+# ---------------------------------------------------------------------------
+if [ "$SOEXT" = dylib ] && command -v nm >/dev/null 2>&1; then
+    cat > "$TMP/lbl.c" <<'EOF'
+static int lbl_classify(int x) {
+    if (x < 0) return -1;
+    else if (x > 3) return 4;
+    switch (x) { case 0: return 10; case 1: return 11; default: return 12; }
+}
+static int lbl_goto(int n) {
+    static void *tbl[] = { &&a, &&b };
+    int acc = 0, i;
+    for (i = 0; i < n; i++) {
+        goto *tbl[i & 1];
+    a:  acc += 1; continue;
+    b:  acc += 10; continue;
+    }
+    return acc;
+}
+int main(void) {
+    int s = 0, i;
+    for (i = -2; i < 6; i++) s += lbl_classify(i);
+    return s == 51 && lbl_goto(5) == 23 ? 0 : 1;
+}
+EOF
+    if "$RCC" -c "$TMP/lbl.c" -o "$TMP/lbl.o" 2>"$TMP/e21" \
+        && cc "$TMP/lbl.o" -o "$TMP/lbl_prog" 2>>"$TMP/e21"; then
+        dotl=$(nm -a "$TMP/lbl.o" | grep -c ' \.L')
+        splits=$(nm -m "$TMP/lbl.o" | grep '(__TEXT,__text)' | grep ' L' | grep -vc 'alt entry')
+        unnamed=0
+        if command -v dyld_info >/dev/null 2>&1; then
+            unnamed=$(dyld_info -function_starts "$TMP/lbl_prog" | grep -c '+')
+        fi
+        if ! "$TMP/lbl_prog"; then
+            fail "Mach-O objects keep labels out of symtab" "program exited nonzero"
+        elif [ "$dotl" -ne 0 ]; then
+            fail "Mach-O objects keep labels out of symtab" "$dotl .L symbols in the object"
+        elif [ "$splits" -ne 0 ]; then
+            fail "Mach-O objects keep labels out of symtab" "$splits __text labels are not alt entries"
+        elif [ "$unnamed" -ne 0 ]; then
+            fail "Mach-O objects keep labels out of symtab" "$unnamed function starts without a symbol"
+        else
+            pass "Mach-O objects keep labels out of symtab"
+        fi
+    else
+        fail "Mach-O objects keep labels out of symtab" "$(tr '\n' ' ' < "$TMP/e21")"
+    fi
+else
+    printf '  %-44s SKIP (needs a Mach-O target)\n' "Mach-O objects keep labels out of symtab"
+fi
+
 echo ""
 echo "Link tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
