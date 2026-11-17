@@ -3833,8 +3833,9 @@ static char *cpu_arena_text(const char *s) {
     return p;
 }
 
+#ifndef ARCH_ARM64
 // Copy `src` into cpu_body_buf with every `$` replaced by "__rcc_".
-static void cpu_app_expr(const char *src) {
+static void cpu_app_x86_expr(const char *src) {
     for (const char *p = src; *p; p++) {
         if (*p == '$') cpu_app("__rcc_");
         else
@@ -3842,7 +3843,6 @@ static void cpu_app_expr(const char *src) {
     }
 }
 
-#ifndef ARCH_ARM64
 // Feature name -> C expression over the CPUID registers, mirroring GCC's
 // libgcc/common/config/i386/cpuinfo.h get_available_features(): names are the
 // ones i386-isas.h's isa_names_table accepts. `$xx` names a register of a
@@ -4081,7 +4081,7 @@ static char *cpu_feature_text(const char *name) {
         for (int l = 0; l < NL; l++)
             if (mask & (1u << l)) cpu_app("%s", cpu_leaves[l].body);
         cpu_app("__rcc_r=(");
-        cpu_app_expr(cpu_feats_x86[i].expr);
+        cpu_app_x86_expr(cpu_feats_x86[i].expr);
         cpu_app(")?1:0;__rcc_r;})");
         return cpu_arena_text(cpu_body_buf);
     }
