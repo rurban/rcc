@@ -2,7 +2,7 @@ This is the NEWS file for RCC, the Regoshi C Compiler. It summarizes
 user-visible changes for each release, most recent first. For the
 complete list of changes see the git log.
 
-* Changes in v1.2.4 (????-??-??) (Reini Urban)
+* Changes in v1.2.4 (2026-11-18) (Reini Urban)
 
   Optional libdwarf support: if the Makefile finds libdwarfp (header +
   library; probe result in HAVE_LIBDWARF, override with `make
